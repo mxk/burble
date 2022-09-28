@@ -3,12 +3,16 @@ name = "burble"
 version = "0.1.0"
 authors = ["Maxim Khitrov <max@mxcrypt.com>"]
 edition = "2021"
+rust-version = "1.56"
 description = "User-mode Bluetooth LE library"
 license = "MPL-2.0"
 publish = false
 
 [dependencies]
+bitvec = "1.0.1"
+bytes = "1.2.1"
 rusb = "0.9.1"
+strum = { version = "0.24.1", features = ["derive"] }
 thiserror = "1.0.36"
 tracing = "0.1.36"
 

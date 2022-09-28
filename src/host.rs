@@ -1,18 +1,25 @@
 use std::fmt::{Debug, Display, Formatter};
+use std::time::Duration;
 
+use bytes::{Bytes, BytesMut};
 use rusb::UsbContext;
 use tracing::{debug, trace, warn};
 
-#[derive(Debug, thiserror::Error)]
-#[error("libusb error")]
-pub struct UsbError {
-    #[from]
-    source: rusb::Error,
+const TIMEOUT: Duration = Duration::from_millis(5);
+
+/// Local host errors.
+#[derive(Clone, Copy, Debug, thiserror::Error)]
+pub enum HostError {
+    #[error("USB error")]
+    Usb {
+        #[from]
+        source: rusb::Error,
+    },
 }
 
-pub type Result<T> = std::result::Result<T, UsbError>;
-pub type Device = rusb::Device<rusb::Context>;
-pub type DeviceHandle = rusb::DeviceHandle<rusb::Context>;
+type Result<T> = std::result::Result<T, HostError>;
+type Device = rusb::Device<rusb::Context>;
+type DeviceHandle = rusb::DeviceHandle<rusb::Context>;
 
 /// Provides access to Bluetooth controllers.
 #[derive(Debug)]
@@ -21,6 +28,7 @@ pub struct Host {
 }
 
 impl Host {
+    /// Returns a new `Host` instances that can enumerate available controllers.
     pub fn new() -> Result<Self> {
         let ctx = if cfg!(windows) {
             rusb::Context::with_options(&[rusb::UsbOption::use_usbdk()])
@@ -30,6 +38,7 @@ impl Host {
         Ok(Self { ctx })
     }
 
+    /// Returns information about all available controllers.
     pub fn controllers(&self) -> Result<Vec<ControllerInfo>> {
         Ok(self
             .ctx
@@ -40,6 +49,7 @@ impl Host {
     }
 }
 
+/// Information about a Bluetooth controller.
 #[derive(Debug)]
 pub struct ControllerInfo {
     dev: Device,
@@ -47,14 +57,87 @@ pub struct ControllerInfo {
 }
 
 impl ControllerInfo {
+    /// Returns `Some(ControllerInfo)` if `dev` is a valid Bluetooth controller.
     fn for_device(dev: Device) -> Option<Self> {
         Endpoints::discover(&dev).map(|ep| Self { dev, ep })
+    }
+
+    /// Opens the controller for HCI communication.
+    pub fn open(&self) -> Result<Controller> {
+        debug!("Opening {:?}", self.dev);
+        Controller::open(self.dev.open()?, self.ep)
     }
 }
 
 impl Display for ControllerInfo {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         self.dev.fmt(f)
+    }
+}
+
+/// Opened Bluetooth controller.
+#[derive(Debug)]
+pub struct Controller {
+    dev: DeviceHandle,
+    ep: Endpoints,
+}
+
+impl Controller {
+    fn open(mut dev: DeviceHandle, ep: Endpoints) -> Result<Self> {
+        dev.set_auto_detach_kernel_driver(true)
+            .or_else(|e| match e {
+                rusb::Error::NotSupported => {
+                    warn!("Automatic kernel driver detachment not supported");
+                    Ok(())
+                }
+                _ => Err(e),
+            })?;
+        dev.claim_interface(ep.main_iface)?;
+        if let Some(isoch) = ep.isoch_iface {
+            // Do not reserve any bandwidth for the isochronous interface.
+            dev.claim_interface(isoch)?;
+            dev.set_alternate_setting(isoch, 0)?;
+        }
+        Ok(Controller { dev, ep })
+    }
+}
+
+pub trait Transport: Send + Sync {
+    fn write_cmd(&self, b: &[u8]) -> Result<()>;
+    fn write_async_data(&self, b: &[u8]) -> Result<()>;
+    fn read_event(&self) -> Result<Bytes>;
+}
+
+impl Transport for Controller {
+    fn write_cmd(&self, b: &[u8]) -> Result<()> {
+        // [Vol 4] Part B, Section 2.2.2
+        let r = self.dev.write_control(
+            rusb::request_type(
+                rusb::Direction::Out,
+                rusb::RequestType::Class,
+                rusb::Recipient::Interface,
+            ),
+            0,
+            0,
+            self.ep.main_iface as _,
+            b,
+            TIMEOUT,
+        );
+        ensure_eq(r, b.len())
+    }
+
+    fn write_async_data(&self, b: &[u8]) -> Result<()> {
+        let r = self.dev.write_bulk(self.ep.acl_out, b, TIMEOUT);
+        ensure_eq(r, b.len())
+    }
+
+    fn read_event(&self) -> Result<Bytes> {
+        let mut b = BytesMut::zeroed(2 + 255); // [Vol 4] Part E, Section 5.4.4
+        let n = self
+            .dev
+            .read_interrupt(self.ep.hci_evt, b.as_mut(), TIMEOUT)?;
+        b.truncate(n);
+        Ok(b.freeze())
     }
 }
 
@@ -130,5 +213,14 @@ impl Endpoints {
         // [Vol 4] Part B, Section 6.2
         let d = ifc.descriptors().next().unwrap();
         d.class_code() == 0xE0 && d.sub_class_code() == 0x01 && d.protocol_code() == 0x01
+    }
+}
+
+#[inline]
+fn ensure_eq(r: rusb::Result<usize>, want: usize) -> Result<()> {
+    match r {
+        Ok(n) if n == want => Ok(()),
+        Ok(_) => Err(HostError::from(rusb::Error::Interrupted)),
+        Err(e) => Err(HostError::from(e)),
     }
 }
