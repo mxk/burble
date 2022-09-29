@@ -1,10 +1,8 @@
 /// HCI event codes ([Vol 4] Part E, Section 7.7).
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, strum::FromRepr)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, strum::FromRepr)]
 #[non_exhaustive]
 #[repr(u8)]
 pub enum EventCode {
-    #[default]
-    Unknown = 0x00,
     InquiryComplete = 0x01,
     InquiryResult = 0x02,
     ConnectionComplete = 0x03,
@@ -69,15 +67,14 @@ pub enum EventCode {
     InquiryResponseNotification = 0x56,
     AuthenticatedPayloadTimeoutExpired = 0x57,
     SamStatusChange = 0x58,
+    Vendor = 0xFF,
 }
 
 /// HCI LE subevent codes ([Vol 4] Part E, Section 7.7.65).
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, strum::FromRepr)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, strum::FromRepr)]
 #[non_exhaustive]
 #[repr(u8)]
 pub enum SubeventCode {
-    #[default]
-    Unknown = 0x00,
     ConnectionComplete = 0x01,
     AdvertisingReport = 0x02,
     ConnectionUpdateComplete = 0x03,

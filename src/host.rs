@@ -2,8 +2,6 @@
 
 use std::fmt::Debug;
 
-use bytes::Bytes;
-
 pub use usb::*;
 
 mod usb;
@@ -11,10 +9,11 @@ mod usb;
 /// Local host errors.
 #[derive(Clone, Copy, Debug, thiserror::Error)]
 pub enum Error {
-    #[error("USB error")]
+    #[error("USB error: {source}")]
     Usb {
         #[from]
         source: rusb::Error,
+        // TODO: Add backtrace once stabilized
     },
 }
 
@@ -24,5 +23,5 @@ type Result<T> = std::result::Result<T, Error>;
 pub trait Transport: Send + Sync {
     fn write_cmd(&self, b: &[u8]) -> Result<()>;
     fn write_async_data(&self, b: &[u8]) -> Result<()>;
-    fn read_event(&self) -> Result<Bytes>;
+    fn read_event(&self, b: &mut [u8]) -> Result<usize>;
 }

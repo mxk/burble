@@ -1,6 +1,8 @@
 //! Host Controller Interface.
 
 use std::fmt::{Display, Formatter};
+use std::io::Cursor;
+use std::slice;
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use tracing::trace;
@@ -12,6 +14,9 @@ use crate::host;
 mod codes;
 mod info;
 
+#[cfg(test)]
+mod tests;
+
 /// Error type returned by the HCI layer.
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum Error {
@@ -21,6 +26,7 @@ pub enum Error {
     Hci {
         #[from]
         status: Status,
+        // TODO: Add backtrace once stabilized
     },
     #[error("invalid event: {0:?}")]
     InvalidEvent(Bytes),
@@ -97,23 +103,87 @@ impl Cmd {
 }
 
 const EVT_HDR: usize = 2;
+const EVT_BUF: usize = EVT_HDR + u8::MAX as usize;
 
-/// Combined event code.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum EvtType {
-    Hci(EventCode),
-    Le(SubeventCode),
-}
-
-/// HCI event decoder.
-#[derive(Clone, Debug)]
+/// HCI event buffer.
+#[derive(Clone, Debug, Default)]
 struct Evt {
     typ: EvtType,
-    orig: Bytes,
-    b: Bytes,
+    cur: Cursor<BytesMut>,
 }
 
 impl Evt {
+    /// Allocates a new event buffer.
+    fn new() -> Self {
+        let mut buf = BytesMut::zeroed(EVT_BUF);
+        unsafe { buf.set_len(0) }
+        Self {
+            typ: EvtType::Pending,
+            cur: Cursor::new(buf),
+        }
+    }
+
+    /// Resets the decoder and returns a buffer for receiving the next event.
+    fn reset(&mut self) -> &mut [u8] {
+        self.typ = EvtType::Pending;
+        self.cur.set_position(0);
+        let buf = self.cur.get_mut();
+        unsafe {
+            buf.set_len(0);
+            slice::from_raw_parts_mut(buf.as_mut_ptr(), buf.capacity())
+        }
+    }
+
+    /// Parses event header after receiving `n` bytes into the buffer. The
+    /// subevent code for LE events is also consumed.
+    fn ready(&mut self, n: usize) -> Result<()> {
+        unsafe { self.cur.get_mut().set_len(n) };
+        trace!("Event: {:02x?}", self.as_ref());
+        if n < EVT_HDR {
+            return Err(Error::InvalidEvent(Bytes::copy_from_slice(self.as_ref())));
+        }
+        let (code, len) = (self.u8(), self.u8());
+        if self.cur.remaining() != len as usize {
+            return Err(Error::InvalidEvent(Bytes::copy_from_slice(self.as_ref())));
+        }
+        self.typ = match EventCode::from_repr(code) {
+            Some(EventCode::LeMetaEvent) => {
+                // After the header is validated, we allow further decoding
+                // calls to panic if there is missing data.
+                let subevent = self.u8();
+                match SubeventCode::from_repr(subevent) {
+                    Some(subevent) => EvtType::Le(subevent),
+                    None => {
+                        return Err(Error::UnknownEvent {
+                            code: code as _,
+                            subevent,
+                            params: Bytes::copy_from_slice(self.tail()),
+                        })
+                    }
+                }
+            }
+            Some(code) => EvtType::Hci(code),
+            None => {
+                return Err(Error::UnknownEvent {
+                    code,
+                    subevent: 0,
+                    params: Bytes::copy_from_slice(self.tail()),
+                })
+            }
+        };
+        Ok(())
+    }
+
+    /// Returns the event type.
+    fn typ(&self) -> EvtType {
+        self.typ
+    }
+
+    /// Returns any unparsed bytes.
+    fn tail(&self) -> &[u8] {
+        &self.as_ref()[self.cur.position() as usize..]
+    }
+
     /// Returns basic information from `CommandComplete` or `CommandStatus`
     /// events. Returns `None` for other event types.
     fn cmd_status(&mut self) -> Option<CmdStatus> {
@@ -121,7 +191,7 @@ impl Evt {
             EvtType::Hci(EventCode::CommandComplete) => Some(CmdStatus {
                 quota: CmdQuota(self.u8()),
                 opcode: Opcode(self.u16()),
-                status: if !self.b.is_empty() {
+                status: if self.cur.has_remaining() {
                     Status::from(self.u8())
                 } else {
                     Status::Success // Opcode 0x0000
@@ -136,58 +206,31 @@ impl Evt {
         }
     }
 
+    #[inline]
     fn u8(&mut self) -> u8 {
-        self.b.get_u8()
+        self.cur.get_u8()
     }
 
+    #[inline]
     fn u16(&mut self) -> u16 {
-        self.b.get_u16_le()
+        self.cur.get_u16_le()
     }
 }
 
-impl TryFrom<Bytes> for Evt {
-    type Error = Error;
-
-    fn try_from(mut b: Bytes) -> Result<Self> {
-        trace!("Event: {:02x?}", b.as_ref());
-        let orig = b.clone();
-        if b.len() < EVT_HDR {
-            return Err(Error::InvalidEvent(orig));
-        }
-        let (code, len) = (b.get_u8(), b.get_u8());
-        if b.len() != len as usize {
-            return Err(Error::InvalidEvent(orig));
-        }
-        let typ = match EventCode::from_repr(code) {
-            Some(code) => match code {
-                EventCode::LeMetaEvent => {
-                    if b.is_empty() {
-                        return Err(Error::InvalidEvent(orig));
-                    }
-                    let subevent = b.get_u8();
-                    match SubeventCode::from_repr(subevent) {
-                        Some(subevent) => EvtType::Le(subevent),
-                        None => {
-                            return Err(Error::UnknownEvent {
-                                code: code as _,
-                                subevent,
-                                params: b,
-                            })
-                        }
-                    }
-                }
-                _ => EvtType::Hci(code),
-            },
-            None => {
-                return Err(Error::UnknownEvent {
-                    code,
-                    subevent: 0,
-                    params: b,
-                })
-            }
-        };
-        Ok(Self { typ, orig, b })
+impl AsRef<[u8]> for Evt {
+    #[inline]
+    fn as_ref(&self) -> &[u8] {
+        self.cur.get_ref().as_ref()
     }
+}
+
+/// Combined event code.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum EvtType {
+    #[default]
+    Pending,
+    Hci(EventCode),
+    Le(SubeventCode),
 }
 
 /// Basic information contained in a `CommandComplete` or `CommandStatus`

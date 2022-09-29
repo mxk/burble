@@ -1,7 +1,6 @@
 use std::fmt::{Debug, Display, Formatter};
 use std::time::Duration;
 
-use bytes::BytesMut;
 use rusb::UsbContext;
 use tracing::{debug, trace, warn};
 
@@ -121,13 +120,8 @@ impl Transport for Controller {
         ensure_eq(r, b.len())
     }
 
-    fn read_event(&self) -> Result<Bytes> {
-        let mut b = BytesMut::zeroed(2 + 255); // [Vol 4] Part E, Section 5.4.4
-        let n = self
-            .dev
-            .read_interrupt(self.ep.hci_evt, b.as_mut(), TIMEOUT)?;
-        b.truncate(n);
-        Ok(b.freeze())
+    fn read_event(&self, b: &mut [u8]) -> Result<usize> {
+        Ok(self.dev.read_interrupt(self.ep.hci_evt, b, TIMEOUT)?)
     }
 }
 

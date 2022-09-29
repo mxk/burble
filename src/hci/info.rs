@@ -7,8 +7,10 @@ impl<T: host::Transport> Host<T> {
         let mut cmd = Cmd::new(Opcode::info(0x0001));
         self.t.write_cmd(cmd.as_bytes())?;
         loop {
-            let mut ev = Evt::try_from(self.t.read_event()?)?;
-            match ev.cmd_status() {
+            let mut evt = Evt::new();
+            let n = self.t.read_event(evt.reset())?;
+            evt.ready(n)?;
+            match evt.cmd_status() {
                 Some(st) if st.opcode == cmd.opcode => {
                     if !st.status.is_ok() {
                         return Err(st.into());
@@ -17,11 +19,11 @@ impl<T: host::Transport> Host<T> {
                 _ => continue,
             }
             return Ok(LocalVersion {
-                hci_version: ev.u8(),
-                hci_subversion: ev.u16(),
-                lmp_version: ev.u8(),
-                company_id: ev.u16(),
-                lmp_subversion: ev.u16(),
+                hci_version: evt.u8(),
+                hci_subversion: evt.u16(),
+                lmp_version: evt.u8(),
+                company_id: evt.u16(),
+                lmp_subversion: evt.u16(),
             });
         }
     }
