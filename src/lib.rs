@@ -1,4 +1,9 @@
-pub use {hci::*, host::*};
+//! Blackrock User-Mode Bluetooth LE library.
+//!
+//! A user-mode BLE stack implementation starting from USB transport layer via
+//! [libusb].
+//!
+//! [libusb]: https://github.com/libusb/libusb
 
-mod hci;
-mod host;
+pub mod hci;
+pub mod host;

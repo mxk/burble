@@ -1,3 +1,5 @@
+//! Host Controller Interface.
+
 use std::fmt::{Display, Formatter};
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
@@ -5,23 +7,20 @@ use tracing::trace;
 
 pub use {codes::*, info::*};
 
-use crate::{HostError, Transport};
+use crate::host;
 
 mod codes;
 mod info;
 
 /// Error type returned by the HCI layer.
 #[derive(Clone, Debug, thiserror::Error)]
-pub enum HciError {
-    #[error("HCI error ({status})")]
+pub enum Error {
+    #[error(transparent)]
+    Host(#[from] host::Error),
+    #[error("HCI error: {status}")]
     Hci {
         #[from]
         status: Status,
-    },
-    #[error(transparent)]
-    Host {
-        #[from]
-        source: HostError,
     },
     #[error("invalid event: {0:?}")]
     InvalidEvent(Bytes),
@@ -35,24 +34,24 @@ pub enum HciError {
     Command { opcode: Opcode, status: Status },
 }
 
-impl From<CmdStatus> for HciError {
+impl From<CmdStatus> for Error {
     fn from(s: CmdStatus) -> Self {
-        HciError::Command {
+        Error::Command {
             opcode: s.opcode,
             status: s.status,
         }
     }
 }
 
-type Result<T> = std::result::Result<T, HciError>;
+type Result<T> = std::result::Result<T, Error>;
 
-/// Host Controller Interface.
+/// Host-side of a Host Controller Interface.
 #[derive(Debug)]
-pub struct Hci<T> {
+pub struct Host<T> {
     t: T,
 }
 
-impl<T: Transport> Hci<T> {
+impl<T: host::Transport> Host<T> {
     /// Returns an HCI using transport layer `t`.
     pub fn new(t: T) -> Self {
         Self { t }
@@ -147,29 +146,29 @@ impl Evt {
 }
 
 impl TryFrom<Bytes> for Evt {
-    type Error = HciError;
+    type Error = Error;
 
     fn try_from(mut b: Bytes) -> Result<Self> {
         trace!("Event: {:02x?}", b.as_ref());
         let orig = b.clone();
         if b.len() < EVT_HDR {
-            return Err(HciError::InvalidEvent(orig));
+            return Err(Error::InvalidEvent(orig));
         }
         let (code, len) = (b.get_u8(), b.get_u8());
         if b.len() != len as usize {
-            return Err(HciError::InvalidEvent(orig));
+            return Err(Error::InvalidEvent(orig));
         }
         let typ = match EventCode::from_repr(code) {
             Some(code) => match code {
                 EventCode::LeMetaEvent => {
                     if b.is_empty() {
-                        return Err(HciError::InvalidEvent(orig));
+                        return Err(Error::InvalidEvent(orig));
                     }
                     let subevent = b.get_u8();
                     match SubeventCode::from_repr(subevent) {
                         Some(subevent) => EvtType::Le(subevent),
                         None => {
-                            return Err(HciError::UnknownEvent {
+                            return Err(Error::UnknownEvent {
                                 code: code as _,
                                 subevent,
                                 params: b,
@@ -180,7 +179,7 @@ impl TryFrom<Bytes> for Evt {
                 _ => EvtType::Hci(code),
             },
             None => {
-                return Err(HciError::UnknownEvent {
+                return Err(Error::UnknownEvent {
                     code,
                     subevent: 0,
                     params: b,

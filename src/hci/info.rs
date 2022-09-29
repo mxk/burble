@@ -1,11 +1,8 @@
-use crate::{Hci, Opcode, Transport};
-use crate::hci::{Cmd, Evt};
+use super::*;
 
-use super::Result;
-
-// Informational parameter commands ([Vol 4] Part E, Section 7.4)
-impl<T: Transport> Hci<T> {
-    /// Reads the values for the version information for the local Controller.
+/// Informational parameter commands ([Vol 4] Part E, Section 7.4)
+impl<T: host::Transport> Host<T> {
+    /// Reads version information for the local controller.
     pub fn read_local_version(&self) -> Result<LocalVersion> {
         let mut cmd = Cmd::new(Opcode::info(0x0001));
         self.t.write_cmd(cmd.as_bytes())?;
@@ -30,7 +27,7 @@ impl<T: Transport> Hci<T> {
     }
 }
 
-/// HCI_Read_Local_Version_Information return parameters.
+/// `HCI_Read_Local_Version_Information` return parameters.
 #[derive(Clone, Copy, Debug)]
 pub struct LocalVersion {
     pub hci_version: u8,
