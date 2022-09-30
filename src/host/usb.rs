@@ -20,21 +20,8 @@ pub struct Usb {
 impl Usb {
     /// Returns a new `Usb` instance for accessing USB Bluetooth controllers.
     pub fn new() -> Result<Self> {
-        Ok(Self {
-            ctx: Self::new_ctx()?,
-        })
-    }
-
-    #[cfg(windows)]
-    fn new_ctx() -> rusb::Result<rusb::Context> {
-        // UsbDk isn't required, but it's more feature-rich and simpler to use
-        // than WinUSB or other alternatives
-        rusb::Context::with_options(&[rusb::UsbOption::use_usbdk()])
-    }
-
-    #[cfg(unix)]
-    fn new_ctx() -> rusb::Result<rusb::Context> {
-        rusb::Context::new()
+        let ctx = libusb::new_ctx()?;
+        Ok(Self { ctx })
     }
 
     /// Returns information about all available controllers.
@@ -220,5 +207,67 @@ fn ensure_eq(r: rusb::Result<usize>, want: usize) -> Result<()> {
         Ok(n) if n == want => Ok(()),
         Ok(_) => Err(Error::from(rusb::Error::Interrupted)),
         Err(e) => Err(Error::from(e)),
+    }
+}
+
+mod libusb {
+    use std::ffi::{c_char, c_int, c_void, CStr};
+    use std::ptr::null_mut;
+    use std::sync::Once;
+
+    use rusb::constants::*;
+    use rusb::ffi::{libusb_context, libusb_set_log_cb, libusb_set_option};
+    use rusb::*;
+    use tracing::{debug, error, trace, warn};
+
+    #[cfg(windows)]
+    pub(super) fn new_ctx() -> Result<Context> {
+        init_logging();
+        // UsbDk isn't required, but it's more feature-rich and simpler to use
+        // than WinUSB or other alternatives
+        init_ctx(Context::with_options(&[UsbOption::use_usbdk()])?)
+    }
+
+    #[cfg(unix)]
+    pub(super) fn new_ctx() -> Result<Context> {
+        init_logging();
+        init_ctx(Context::new()?)
+    }
+
+    fn init_logging() {
+        static INIT: Once = Once::new();
+        INIT.call_once(|| unsafe {
+            libusb_set_log_cb(null_mut(), Some(log_cb), LIBUSB_LOG_CB_GLOBAL);
+            let rc = libusb_set_option(null_mut(), LIBUSB_OPTION_LOG_LEVEL, LIBUSB_LOG_LEVEL_DEBUG);
+            if rc != LIBUSB_SUCCESS {
+                warn!("Failed to enable libusb logging");
+            }
+        });
+    }
+
+    fn init_ctx(ctx: Context) -> Result<Context> {
+        unsafe {
+            libusb_set_option(
+                ctx.as_raw(),
+                LIBUSB_OPTION_LOG_LEVEL,
+                LIBUSB_LOG_LEVEL_DEBUG,
+            );
+        }
+        Ok(ctx)
+    }
+
+    extern "system" fn log_cb(_: *mut libusb_context, lvl: c_int, msg: *mut c_void) {
+        let orig = unsafe { CStr::from_ptr(msg as *const c_char).to_string_lossy() };
+        let msg = match orig.as_ref().split_once("libusb: ") {
+            Some((_, tail)) => tail.trim_end(),
+            _ => return, // Debug header (see log_v() in libusb/core.c)
+        };
+        match lvl {
+            LIBUSB_LOG_LEVEL_ERROR => error!("{}", msg.trim_start_matches("error ")),
+            LIBUSB_LOG_LEVEL_WARNING => warn!("{}", msg.trim_start_matches("warning ")),
+            LIBUSB_LOG_LEVEL_INFO => debug!("{}", msg.trim_start_matches("info ")),
+            LIBUSB_LOG_LEVEL_DEBUG => trace!("{}", msg.trim_start_matches("debug ")),
+            _ => trace!("{}", msg.trim_start_matches("unknown ")),
+        }
     }
 }
