@@ -9,7 +9,7 @@ use super::*;
 type Device = rusb::Device<rusb::Context>;
 type DeviceHandle = rusb::DeviceHandle<rusb::Context>;
 
-const TIMEOUT: Duration = Duration::from_millis(5);
+const TIMEOUT: Duration = Duration::from_millis(100);
 
 /// Provides access to Bluetooth controllers.
 #[derive(Debug)]
@@ -20,12 +20,19 @@ pub struct Usb {
 impl Usb {
     /// Returns a new `Host` instances that can enumerate available controllers.
     pub fn new() -> Result<Self> {
-        let ctx = if cfg!(windows) {
-            rusb::Context::with_options(&[rusb::UsbOption::use_usbdk()])
-        } else {
-            rusb::Context::new()
-        }?;
-        Ok(Self { ctx })
+        Ok(Self {
+            ctx: Self::new_ctx()?,
+        })
+    }
+
+    #[cfg(windows)]
+    fn new_ctx() -> rusb::Result<rusb::Context> {
+        rusb::Context::with_options(&[rusb::UsbOption::use_usbdk()])
+    }
+
+    #[cfg(unix)]
+    fn new_ctx() -> rusb::Result<rusb::Context> {
+        rusb::Context::new()
     }
 
     /// Returns information about all available controllers.
@@ -78,19 +85,18 @@ impl Controller {
     }
 
     pub fn init(&mut self) -> Result<()> {
-        self.dev
-            .set_auto_detach_kernel_driver(true)
-            .or_else(|e| match e {
-                rusb::Error::NotSupported => {
-                    warn!("Automatic kernel driver detachment not supported");
-                    Ok(())
-                }
-                _ => Err(e),
-            })?;
+        if cfg!(unix) {
+            // Not supported on Windows
+            debug!("Enabling automatic kernel driver detachment");
+            self.dev.set_auto_detach_kernel_driver(true)?;
+        }
+        debug!("Claiming main interface");
         self.dev.claim_interface(self.ep.main_iface)?;
         if let Some(isoch) = self.ep.isoch_iface {
             // Do not reserve any bandwidth for the isochronous interface.
+            debug!("Claiming isochronous interface");
             self.dev.claim_interface(isoch)?;
+            debug!("Setting isochronous interface alt setting to 0");
             self.dev.set_alternate_setting(isoch, 0)?;
         }
         Ok(())

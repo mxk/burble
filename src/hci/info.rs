@@ -3,13 +3,11 @@ use super::*;
 /// Informational parameter commands ([Vol 4] Part E, Section 7.4)
 impl<T: host::Transport> Host<T> {
     /// Reads version information for the local controller.
-    pub fn read_local_version(&self) -> Result<LocalVersion> {
+    pub async fn read_local_version(&mut self) -> Result<LocalVersion> {
         let mut cmd = Cmd::new(Opcode::info(0x0001));
         self.t.write_cmd(cmd.as_bytes())?;
         loop {
-            let mut evt = Evt::new();
-            let n = self.t.read_event(evt.reset())?;
-            evt.ready(n)?;
+            let mut evt = self.next_event().await?;
             match evt.cmd_status() {
                 Some(st) if st.opcode == cmd.opcode => {
                     if !st.status.is_ok() {

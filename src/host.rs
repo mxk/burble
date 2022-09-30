@@ -17,10 +17,22 @@ pub enum Error {
     },
 }
 
+impl Error {
+    /// Returns whether the error is a result of a timeout.
+    pub fn is_timeout(&self) -> bool {
+        matches!(
+            self,
+            Self::Usb {
+                source: rusb::Error::Timeout
+            }
+        )
+    }
+}
+
 type Result<T> = std::result::Result<T, Error>;
 
 /// HCI transport layer.
-pub trait Transport: Send + Sync {
+pub trait Transport: Send + Sync + 'static {
     fn write_cmd(&self, b: &[u8]) -> Result<()>;
     fn write_async_data(&self, b: &[u8]) -> Result<()>;
     fn read_event(&self, b: &mut [u8]) -> Result<usize>;

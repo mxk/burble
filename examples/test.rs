@@ -2,7 +2,8 @@ use tracing::{info, warn};
 
 use burble::*;
 
-fn main() {
+#[tokio::main(flavor = "current_thread")]
+async fn main() {
     tracing_subscriber::fmt::init();
     let usb = host::Usb::new().unwrap();
     let mut all = usb.controllers().unwrap();
@@ -13,6 +14,8 @@ fn main() {
     for c in all.iter() {
         info!("Controller at {c}");
     }
-    let host = hci::Host::new(all.remove(1).open().unwrap());
-    info!("Local version: {:?}", host.read_local_version());
+    let mut ctlr = all.remove(all.len() - 1).open().unwrap();
+    ctlr.init().unwrap();
+    let mut host = hci::Host::new(ctlr);
+    info!("Local version: {:?}", host.read_local_version().await);
 }

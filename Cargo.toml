@@ -14,6 +14,7 @@ bytes = "1.2.1"
 rusb = "0.9.1"
 strum = { version = "0.24.1", features = ["derive"] }
 thiserror = "1.0.36"
+tokio = { version = "1.21.2", features = ["rt", "sync", "macros"] }
 tracing = "0.1.36"
 
 [dev-dependencies]

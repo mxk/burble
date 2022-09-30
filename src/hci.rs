@@ -2,10 +2,12 @@
 
 use std::fmt::{Display, Formatter};
 use std::io::Cursor;
-use std::slice;
+use std::sync::Arc;
+use std::{slice, thread};
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
-use tracing::trace;
+use tokio::sync::mpsc;
+use tracing::{debug, trace};
 
 pub use {codes::*, info::*};
 
@@ -54,13 +56,73 @@ type Result<T> = std::result::Result<T, Error>;
 /// Host-side of a Host Controller Interface.
 #[derive(Debug)]
 pub struct Host<T> {
-    t: T,
+    t: Arc<T>,
+    evt_ch: Option<mpsc::Receiver<Result<Evt>>>,
+    evt_thr: Option<thread::JoinHandle<()>>,
 }
 
 impl<T: host::Transport> Host<T> {
     /// Returns an HCI using transport layer `t`.
     pub fn new(t: T) -> Self {
-        Self { t }
+        let (tx, rx) = mpsc::channel(1);
+        let t = Arc::new(t);
+        let evt_hdl = {
+            let t = t.clone();
+            thread::spawn(move || Self::event_thread(t, tx))
+        };
+        Self {
+            t,
+            evt_ch: Some(rx),
+            evt_thr: Some(evt_hdl),
+        }
+    }
+
+    async fn next_event(&mut self) -> Result<Evt> {
+        match self.evt_ch.as_mut().unwrap().recv().await {
+            Some(r) => r,
+            None => Err(Error::Hci {
+                status: Status::UnspecifiedError, // TODO: Closed error
+            }),
+        }
+    }
+
+    fn event_thread(t: Arc<T>, tx: mpsc::Sender<Result<Evt>>) {
+        debug!("HCI event thread started");
+        let mut evt = Some(Evt::new());
+        loop {
+            if evt.is_none() {
+                evt = Some(Evt::new());
+            }
+            let buf = evt.as_mut().unwrap();
+            let r = tx.blocking_send(match t.read_event(buf.reset()) {
+                Ok(n) => match buf.ready(n) {
+                    Ok(()) => Ok(evt.take().unwrap()),
+                    Err(e) => Err(e),
+                },
+                Err(e) => {
+                    if e.is_timeout() {
+                        if tx.is_closed() {
+                            break;
+                        }
+                        continue;
+                    }
+                    Err(Error::from(e))
+                }
+            });
+            if r.is_err() {
+                break;
+            }
+        }
+        debug!("HCI event thread terminating");
+    }
+}
+
+impl<T> Drop for Host<T> {
+    fn drop(&mut self) {
+        drop(self.evt_ch.take());
+        if let Some(h) = self.evt_thr.take() {
+            let _ = h.join();
+        }
     }
 }
 
