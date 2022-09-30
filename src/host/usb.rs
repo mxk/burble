@@ -11,14 +11,14 @@ type DeviceHandle = rusb::DeviceHandle<rusb::Context>;
 
 const TIMEOUT: Duration = Duration::from_millis(100);
 
-/// Provides access to Bluetooth controllers.
+/// Provides access to USB Bluetooth controllers.
 #[derive(Debug)]
 pub struct Usb {
     ctx: rusb::Context,
 }
 
 impl Usb {
-    /// Returns a new `Host` instances that can enumerate available controllers.
+    /// Returns a new `Usb` instance for accessing USB Bluetooth controllers.
     pub fn new() -> Result<Self> {
         Ok(Self {
             ctx: Self::new_ctx()?,
@@ -27,6 +27,8 @@ impl Usb {
 
     #[cfg(windows)]
     fn new_ctx() -> rusb::Result<rusb::Context> {
+        // UsbDk isn't required, but it's more feature-rich and simpler to use
+        // than WinUSB or other alternatives
         rusb::Context::with_options(&[rusb::UsbOption::use_usbdk()])
     }
 
@@ -36,54 +38,56 @@ impl Usb {
     }
 
     /// Returns information about all available controllers.
-    pub fn controllers(&self) -> Result<Vec<ControllerInfo>> {
+    pub fn controllers(&self) -> Result<Vec<UsbControllerInfo>> {
         Ok(self
             .ctx
             .devices()?
             .iter()
-            .filter_map(ControllerInfo::for_device)
+            .filter_map(UsbControllerInfo::for_device)
             .collect())
     }
 }
 
-/// Information about a Bluetooth controller.
+/// Information about a USB Bluetooth controller.
 #[derive(Debug)]
-pub struct ControllerInfo {
+pub struct UsbControllerInfo {
     dev: Device,
     ep: Endpoints,
 }
 
-impl ControllerInfo {
-    /// Returns `Some(ControllerInfo)` if `dev` is a valid Bluetooth controller.
+impl UsbControllerInfo {
+    /// Returns `Some(UsbControllerInfo)` if `dev` is a valid Bluetooth
+    /// controller.
     fn for_device(dev: Device) -> Option<Self> {
         Endpoints::discover(&dev).map(|ep| Self { dev, ep })
     }
 
     /// Opens the controller for HCI communication.
-    pub fn open(&self) -> Result<Controller> {
+    pub fn open(&self) -> Result<UsbController> {
         debug!("Opening {:?}", self.dev);
-        Controller::new(self.dev.open()?, self.ep)
+        UsbController::new(self.dev.open()?, self.ep)
     }
 }
 
-impl Display for ControllerInfo {
+impl Display for UsbControllerInfo {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         self.dev.fmt(f)
     }
 }
 
-/// Opened Bluetooth controller.
+/// Opened USB Bluetooth controller.
 #[derive(Debug)]
-pub struct Controller {
+pub struct UsbController {
     dev: DeviceHandle,
     ep: Endpoints,
 }
 
-impl Controller {
+impl UsbController {
     fn new(dev: DeviceHandle, ep: Endpoints) -> Result<Self> {
-        Ok(Controller { dev, ep })
+        Ok(UsbController { dev, ep })
     }
 
+    /// Configures the controller for HCI access.
     pub fn init(&mut self) -> Result<()> {
         if cfg!(unix) {
             // Not supported on Windows
@@ -103,7 +107,7 @@ impl Controller {
     }
 }
 
-impl Transport for Controller {
+impl Transport for UsbController {
     fn write_cmd(&self, b: &[u8]) -> Result<()> {
         // [Vol 4] Part B, Section 2.2.2
         let r = self.dev.write_control(
@@ -131,7 +135,8 @@ impl Transport for Controller {
     }
 }
 
-/// USB addresses for BT interfaces and endpoints ([Vol 4] Part B).
+/// USB addresses for Bluetooth interfaces and endpoints ([Vol 4] Part B,
+/// Section 2.1.1).
 #[derive(Clone, Copy, Debug, Default)]
 struct Endpoints {
     main_iface: u8,
@@ -143,6 +148,9 @@ struct Endpoints {
 }
 
 impl Endpoints {
+    /// Discovers Bluetooth interfaces and endpoints from USB descriptors.
+    /// Returns `None` if `dev` is not a single-function or composite Bluetooth
+    /// device.
     fn discover(dev: &Device) -> Option<Self> {
         let cfg = dev
             .active_config_descriptor()
