@@ -4,26 +4,20 @@ use super::*;
 impl<T: host::Transport> Host<T> {
     /// Reads version information for the local controller.
     pub async fn read_local_version(&mut self) -> Result<LocalVersion> {
-        let mut cmd = Cmd::new(Opcode::info(0x0001));
-        self.t.write_cmd(cmd.as_bytes())?;
-        loop {
-            let mut evt = self.next_event().await?;
-            match evt.cmd_status() {
-                Some(st) if st.opcode == cmd.opcode => {
-                    if !st.status.is_ok() {
-                        return Err(st.into());
-                    }
-                }
-                _ => continue,
-            }
-            return Ok(LocalVersion {
-                hci_version: evt.u8(),
-                hci_subversion: evt.u16(),
-                lmp_version: evt.u8(),
-                company_id: evt.u16(),
-                lmp_subversion: evt.u16(),
-            });
-        }
+        self.cmd(
+            Opcode::info(0x0001),
+            |_| {},
+            |mut evt| {
+                Ok(LocalVersion {
+                    hci_version: evt.u8(),
+                    hci_subversion: evt.u16(),
+                    lmp_version: evt.u8(),
+                    company_id: evt.u16(),
+                    lmp_subversion: evt.u16(),
+                })
+            },
+        )
+        .await
     }
 }
 

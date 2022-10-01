@@ -1,3 +1,4 @@
+/libusb/
 /target/
 /Cargo.lock
 **/*.rs.bk

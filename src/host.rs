@@ -1,6 +1,9 @@
 //! Controller enumeration and transport layer interface.
 
 use std::fmt::Debug;
+use std::future::Future;
+
+use bytes::BytesMut;
 
 pub use usb::*;
 
@@ -32,8 +35,26 @@ impl Error {
 type Result<T> = std::result::Result<T, Error>;
 
 /// HCI transport layer.
-pub trait Transport: Send + Sync + 'static {
-    fn write_cmd(&self, b: &[u8]) -> Result<()>;
-    fn write_async_data(&self, b: &[u8]) -> Result<()>;
-    fn read_event(&self, b: &mut [u8]) -> Result<usize>;
+pub trait Transport {
+    type Transfer: Transfer;
+
+    /// Submits an HCI command, calling `f` to fill the command buffer.
+    fn cmd(&self, f: impl FnOnce(&mut BytesMut)) -> Result<Self::Transfer>;
+
+    /// Requests the next HCI event.
+    fn evt(&self) -> Result<Self::Transfer>;
+}
+
+/// Asynchronous I/O transfer. Dropping the transfer without awaiting its result
+/// may cause the transfer to be cancelled.
+pub trait Transfer {
+    type Future: Future<Output = Result<()>>;
+
+    /// Returns a future that resolves to the transfer result.
+    fn result(&mut self) -> Self::Future;
+
+    /// Returns the transfer buffer. It panics if the transfer is still in
+    /// progress. The buffer may be allocated in a DMA region, so the caller
+    /// must not perform any operations that may result in reallocation.
+    fn buf(&mut self) -> &mut BytesMut;
 }

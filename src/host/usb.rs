@@ -1,27 +1,41 @@
 use std::fmt::{Debug, Display, Formatter};
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll};
+use std::thread;
 use std::time::Duration;
 
+use bytes::BytesMut;
 use rusb::UsbContext;
-use tracing::{debug, trace, warn};
+use tracing::{debug, error, trace, warn};
+
+use crate::hci;
 
 use super::*;
 
 type Device = rusb::Device<rusb::Context>;
 type DeviceHandle = rusb::DeviceHandle<rusb::Context>;
 
-const TIMEOUT: Duration = Duration::from_millis(100);
-
 /// Provides access to USB Bluetooth controllers.
 #[derive(Debug)]
 pub struct Usb {
     ctx: rusb::Context,
+    run: Arc<AtomicBool>,
+    thr: Option<thread::JoinHandle<()>>,
 }
 
 impl Usb {
-    /// Returns a new `Usb` instance for accessing USB Bluetooth controllers.
+    /// Returns an interface for accessing USB Bluetooth controllers.
     pub fn new() -> Result<Self> {
         let ctx = libusb::new_ctx()?;
-        Ok(Self { ctx })
+        let run = Arc::new(AtomicBool::new(true));
+        let thr = {
+            let (ctx, run) = (ctx.clone(), run.clone());
+            Some(thread::spawn(move || Self::event_thread(ctx, run)))
+        };
+        Ok(Self { ctx, run, thr })
     }
 
     /// Returns information about all available controllers.
@@ -32,6 +46,38 @@ impl Usb {
             .iter()
             .filter_map(UsbControllerInfo::for_device)
             .collect())
+    }
+
+    /// Convenience function for opening the first device with matching
+    /// Vendor/Product ID.
+    pub fn open_first(&self, vid: u16, pid: u16) -> Result<UsbController> {
+        debug!("Opening ID {:04x}:{:04x}", vid, pid);
+        let dev = self
+            .ctx
+            .open_device_with_vid_pid(vid, pid)
+            .ok_or(rusb::Error::NotFound)?;
+        let ep = Endpoints::discover(&dev.device()).ok_or(rusb::Error::NotSupported)?;
+        Ok(UsbController::new(dev, ep))
+    }
+
+    /// Dedicated thread for async transfer and hotplug events.
+    fn event_thread(ctx: rusb::Context, run: Arc<AtomicBool>) {
+        debug!("Event thread started");
+        while run.load(Ordering::Acquire) {
+            if let Err(e) = ctx.handle_events(None) {
+                error!("Event thread error: {e}");
+                break;
+            }
+        }
+        debug!("Event thread terminating");
+    }
+}
+
+impl Drop for Usb {
+    fn drop(&mut self) {
+        self.run.store(false, Ordering::Release);
+        self.ctx.interrupt_handle_events();
+        self.thr.take().map(|h| h.join());
     }
 }
 
@@ -52,7 +98,9 @@ impl UsbControllerInfo {
     /// Opens the controller for HCI communication.
     pub fn open(&self) -> Result<UsbController> {
         debug!("Opening {:?}", self.dev);
-        UsbController::new(self.dev.open()?, self.ep)
+        // BUG: This may hang for two minutes on Windows when UsbDk enters some
+        // bad state.
+        Ok(UsbController::new(self.dev.open()?, self.ep))
     }
 }
 
@@ -70,8 +118,13 @@ pub struct UsbController {
 }
 
 impl UsbController {
-    fn new(dev: DeviceHandle, ep: Endpoints) -> Result<Self> {
-        Ok(UsbController { dev, ep })
+    fn new(dev: DeviceHandle, ep: Endpoints) -> Self {
+        UsbController { dev, ep }
+    }
+
+    /// Issues a USB reset command.
+    pub fn reset(&mut self) -> Result<()> {
+        Ok(self.dev.reset()?)
     }
 
     /// Configures the controller for HCI access.
@@ -92,33 +145,65 @@ impl UsbController {
         }
         Ok(())
     }
+
+    fn submit(&self, t: libusb::Transfer) -> Result<UsbTransfer> {
+        let mut t = Arc::new(Mutex::new(t));
+        libusb::Transfer::submit(&mut t, &self.dev)?;
+        Ok(UsbTransfer(t))
+    }
 }
 
 impl Transport for UsbController {
-    fn write_cmd(&self, b: &[u8]) -> Result<()> {
+    type Transfer = UsbTransfer;
+
+    fn cmd(&self, f: impl FnOnce(&mut BytesMut)) -> Result<UsbTransfer> {
+        let mut t = libusb::Transfer::new_control(hci::CMD_BUF);
         // [Vol 4] Part B, Section 2.2.2
-        let r = self.dev.write_control(
-            rusb::request_type(
-                rusb::Direction::Out,
-                rusb::RequestType::Class,
-                rusb::Recipient::Interface,
-            ),
-            0,
-            0,
-            self.ep.main_iface as _,
-            b,
-            TIMEOUT,
-        );
-        ensure_eq(r, b.len())
+        t.control_setup(libusb::CMD_REQUEST_TYPE, 0, 0, self.ep.main_iface as _);
+        t.set_timeout(Duration::from_secs(1));
+        f(t.buf());
+        self.submit(t)
     }
 
-    fn write_async_data(&self, b: &[u8]) -> Result<()> {
-        let r = self.dev.write_bulk(self.ep.acl_out, b, TIMEOUT);
-        ensure_eq(r, b.len())
+    fn evt(&self) -> Result<UsbTransfer> {
+        let t = libusb::Transfer::new_interrupt(self.ep.hci_evt, hci::EVT_BUF);
+        self.submit(t)
+    }
+}
+
+/// Asynchronous USB transfer.
+pub struct UsbTransfer(Arc<Mutex<libusb::Transfer>>);
+
+impl Transfer for UsbTransfer {
+    type Future = UsbTransferResult;
+
+    fn result(&mut self) -> UsbTransferResult {
+        UsbTransferResult(self.0.clone())
     }
 
-    fn read_event(&self, b: &mut [u8]) -> Result<usize> {
-        Ok(self.dev.read_interrupt(self.ep.hci_evt, b, TIMEOUT)?)
+    fn buf(&mut self) -> &mut BytesMut {
+        Arc::get_mut(&mut self.0)
+            .expect("transfer is busy")
+            .get_mut()
+            .unwrap()
+            .buf()
+    }
+}
+
+/// Future that resolves to the transfer result.
+pub struct UsbTransferResult(Arc<Mutex<libusb::Transfer>>);
+
+impl Future for UsbTransferResult {
+    type Output = Result<()>;
+
+    fn poll(self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.0.lock().unwrap().poll(ctx).map_err(Error::from)
+    }
+}
+
+impl Drop for UsbTransfer {
+    fn drop(&mut self) {
+        let _ = self.0.lock().unwrap().cancel();
     }
 }
 
@@ -127,7 +212,6 @@ impl Transport for UsbController {
 #[derive(Clone, Copy, Debug, Default)]
 struct Endpoints {
     main_iface: u8,
-    hci_cmd: u8,
     hci_evt: u8,
     acl_out: u8,
     acl_in: u8,
@@ -201,42 +285,254 @@ impl Endpoints {
     }
 }
 
-#[inline]
-fn ensure_eq(r: rusb::Result<usize>, want: usize) -> Result<()> {
-    match r {
-        Ok(n) if n == want => Ok(()),
-        Ok(_) => Err(Error::from(rusb::Error::Interrupted)),
-        Err(e) => Err(Error::from(e)),
-    }
-}
-
 mod libusb {
     use std::ffi::{c_char, c_int, c_void, CStr};
-    use std::ptr::null_mut;
-    use std::sync::Once;
+    use std::mem::align_of;
+    use std::ptr::{null_mut, NonNull};
+    use std::sync::{Arc, Mutex, Once};
+    use std::task::{Poll, Waker};
+    use std::time::Duration;
 
-    use rusb::constants::*;
-    use rusb::ffi::{libusb_context, libusb_set_log_cb, libusb_set_option};
-    use rusb::*;
-    use tracing::{debug, error, trace, warn};
+    use bytes::{BufMut, BytesMut};
+    use rusb::{constants::*, ffi::*, *};
+    use tracing::{debug, error, info, trace, warn};
 
-    #[cfg(windows)]
-    pub(super) fn new_ctx() -> Result<Context> {
-        init_logging();
-        // UsbDk isn't required, but it's more feature-rich and simpler to use
-        // than WinUSB or other alternatives
-        init_ctx(Context::with_options(&[UsbOption::use_usbdk()])?)
+    macro_rules! check {
+        ($x:expr) => {
+            match unsafe { $x } {
+                LIBUSB_SUCCESS => Ok(()),
+                e => Err(api_error(e)),
+            }
+        };
     }
 
-    #[cfg(unix)]
-    pub(super) fn new_ctx() -> Result<Context> {
-        init_logging();
-        init_ctx(Context::new()?)
+    pub(super) const CMD_REQUEST_TYPE: u8 =
+        LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_CLASS | LIBUSB_RECIPIENT_INTERFACE;
+
+    /// Asynchronous transfer.
+    pub(super) struct Transfer {
+        inner: NonNull<libusb_transfer>,
+        buf: BytesMut,
+        waker: Option<Waker>,
     }
 
-    fn init_logging() {
+    impl Transfer {
+        /// Returns a new control transfer.
+        pub fn new_control(buf_size: usize) -> Self {
+            let mut this = Self::new(
+                LIBUSB_TRANSFER_TYPE_CONTROL,
+                0,
+                LIBUSB_CONTROL_SETUP_SIZE + buf_size,
+            );
+            this.inner_mut().flags = LIBUSB_TRANSFER_SHORT_NOT_OK;
+            this.buf.put_bytes(0, LIBUSB_CONTROL_SETUP_SIZE);
+            this
+        }
+
+        /// Returns a new interrupt transfer.
+        pub fn new_interrupt(endpoint: u8, buf_size: usize) -> Self {
+            Self::new(LIBUSB_TRANSFER_TYPE_INTERRUPT, endpoint, buf_size)
+        }
+
+        /// Allocates new transfer state and buffer.
+        fn new(typ: u8, endpoint: u8, buf_size: usize) -> Self {
+            let mut inner = NonNull::new(unsafe { libusb_alloc_transfer(0) })
+                .expect("failed to allocate libusb_transfer struct");
+            assert_eq!(
+                inner.as_ptr().align_offset(align_of::<libusb_transfer>()),
+                0
+            );
+            let mut t = unsafe { inner.as_mut() };
+            t.endpoint = endpoint;
+            t.transfer_type = typ;
+            t.callback = Self::callback;
+            // TODO: Use DMA buffers on Linux?
+            Self {
+                inner,
+                buf: BytesMut::with_capacity(buf_size),
+                waker: None,
+            }
+        }
+
+        /// Returns the transfer buffer.
+        #[inline]
+        pub fn buf(&mut self) -> &mut BytesMut {
+            &mut self.buf
+        }
+
+        /// Returns a reference to the `libusb_transfer` struct.
+        #[inline]
+        fn inner(&self) -> &libusb_transfer {
+            unsafe { self.inner.as_ref() }
+        }
+
+        /// Returns a mutable reference to the `libusb_transfer` struct.
+        #[inline]
+        fn inner_mut(&mut self) -> &mut libusb_transfer {
+            unsafe { self.inner.as_mut() }
+        }
+
+        /// Returns whether the transfer is idle (not yet submitted).
+        #[inline]
+        fn is_idle(&self) -> bool {
+            self.inner().buffer.is_null()
+        }
+
+        /// Sets control transfer parameters.
+        #[inline]
+        pub fn control_setup(&mut self, request_type: u8, request: u8, value: u16, index: u16) {
+            assert!(self.is_idle());
+            assert_eq!(self.inner().transfer_type, LIBUSB_TRANSFER_TYPE_CONTROL);
+            unsafe {
+                libusb_fill_control_setup(
+                    self.buf.as_mut_ptr(),
+                    request_type,
+                    request,
+                    value,
+                    index,
+                    0, // Final wLength is set in submit()
+                )
+            }
+        }
+
+        /// Sets transfer timeout.
+        #[inline]
+        pub fn set_timeout(&mut self, timeout: Duration) {
+            assert!(self.is_idle());
+            self.inner_mut().timeout = timeout.as_millis() as _;
+        }
+
+        /// Submits the transfer.
+        pub fn submit<T: UsbContext>(
+            arc: &mut Arc<Mutex<Self>>,
+            dev: &DeviceHandle<T>,
+        ) -> Result<()> {
+            let mut this = arc.lock().unwrap();
+            assert!(this.is_idle());
+
+            let (buf_ptr, buf_len, buf_cap) =
+                (this.buf.as_mut_ptr(), this.buf.len(), this.buf.capacity());
+            let t = this.inner_mut();
+            t.dev_handle = dev.as_raw();
+            t.length = if t.endpoint & LIBUSB_ENDPOINT_DIR_MASK == LIBUSB_ENDPOINT_OUT {
+                buf_len
+            } else {
+                buf_cap
+            } as _;
+            t.user_data = Arc::into_raw(arc.clone()) as _;
+            t.buffer = buf_ptr;
+            if t.transfer_type == LIBUSB_TRANSFER_TYPE_CONTROL {
+                let n = buf_len - LIBUSB_CONTROL_SETUP_SIZE;
+                assert_eq!(n as u16 as usize, n);
+                unsafe { (*libusb_control_transfer_get_setup(t)).wLength = (n as u16).to_le() };
+            }
+
+            check!(libusb_submit_transfer(this.inner.as_ptr())).map_err(|e| {
+                let t = this.inner_mut();
+                drop(unsafe { Arc::from_raw(t.user_data as *const Mutex<Self>) });
+                t.user_data = null_mut();
+                e
+            })
+        }
+
+        /// Cancels a pending transfer. This operation is not immediate and the
+        /// transfer should continue to be polled to determine the final result.
+        pub fn cancel(&mut self) -> Result<()> {
+            check!(libusb_cancel_transfer(self.inner.as_ptr()))
+        }
+
+        /// `Future::poll()` implementation.
+        pub fn poll(&mut self, ctx: &mut std::task::Context<'_>) -> Poll<Result<()>> {
+            if !self.inner().user_data.is_null() {
+                self.waker = Some(ctx.waker().clone());
+                return Poll::Pending;
+            }
+            assert!(!self.is_idle());
+            Poll::Ready(match self.inner().status {
+                LIBUSB_TRANSFER_COMPLETED => Ok(()),
+                LIBUSB_TRANSFER_TIMED_OUT => Err(Error::Timeout),
+                LIBUSB_TRANSFER_CANCELLED => Err(Error::Interrupted),
+                LIBUSB_TRANSFER_STALL => match self.inner().transfer_type {
+                    LIBUSB_TRANSFER_TYPE_CONTROL => Err(Error::NotSupported),
+                    _ => Err(Error::Pipe),
+                },
+                LIBUSB_TRANSFER_NO_DEVICE => Err(Error::NoDevice),
+                LIBUSB_TRANSFER_OVERFLOW => Err(Error::Overflow),
+                _ => Err(Error::Io),
+            })
+        }
+
+        /// Handles transfer completion callbacks.
+        extern "system" fn callback(t: *mut libusb_transfer) {
+            if t.is_null() || unsafe { (*t).user_data }.is_null() {
+                warn!("Callback for an invalid transfer");
+                unsafe { libusb_free_transfer(t) };
+                return;
+            }
+            let arc = unsafe { Arc::from_raw((*t).user_data as *const Mutex<Self>) };
+            let mut this = arc.lock().unwrap();
+            debug_assert_eq!(this.inner.as_ptr(), t);
+            let t = this.inner_mut();
+            t.user_data = null_mut();
+            let n = if t.transfer_type == LIBUSB_TRANSFER_TYPE_CONTROL {
+                LIBUSB_CONTROL_SETUP_SIZE
+            } else {
+                0
+            } + t.actual_length as usize;
+            unsafe { this.buf.set_len(n) }
+            if let Some(w) = this.waker.take() {
+                w.wake();
+            }
+        }
+    }
+
+    impl Drop for Transfer {
+        fn drop(&mut self) {
+            assert!(self.inner().user_data.is_null());
+            assert!(self.waker.is_none());
+            unsafe { libusb_free_transfer(self.inner.as_ptr()) }
+            self.inner = NonNull::dangling();
+        }
+    }
+
+    /// Returns a new libusb context.
+    pub(super) fn new_ctx() -> Result<Context> {
+        init_lib();
+        let ctx = Context::new()?;
+        if cfg!(windows) {
+            match check!(libusb_set_option(ctx.as_raw(), LIBUSB_OPTION_USE_USBDK)) {
+                Ok(()) => info!("Using UsbDk backend"),
+                Err(Error::NotFound) => info!("Using WinUSB backend"),
+                Err(e) => return Err(e),
+            }
+        }
+        check!(libusb_set_option(
+            ctx.as_raw(),
+            LIBUSB_OPTION_LOG_LEVEL,
+            LIBUSB_LOG_LEVEL_DEBUG,
+        ))?;
+        Ok(ctx)
+    }
+
+    /// Initializes libusb.
+    fn init_lib() {
         static INIT: Once = Once::new();
         INIT.call_once(|| unsafe {
+            let v = version();
+            info!(
+                "libusb version: {}.{}.{}.{}{}",
+                v.major(),
+                v.minor(),
+                v.micro(),
+                v.nano(),
+                v.rc().unwrap_or("")
+            );
+            debug!("- LIBUSB_CAP_HAS_CAPABILITY = {}", has_capability());
+            debug!("- LIBUSB_CAP_HAS_HOTPLUG = {}", has_hotplug());
+            debug!(
+                "- LIBUSB_CAP_SUPPORTS_DETACH_KERNEL_DRIVER = {}",
+                supports_detach_kernel_driver()
+            );
             libusb_set_log_cb(null_mut(), Some(log_cb), LIBUSB_LOG_CB_GLOBAL);
             let rc = libusb_set_option(null_mut(), LIBUSB_OPTION_LOG_LEVEL, LIBUSB_LOG_LEVEL_DEBUG);
             if rc != LIBUSB_SUCCESS {
@@ -245,19 +541,47 @@ mod libusb {
         });
     }
 
-    fn init_ctx(ctx: Context) -> Result<Context> {
-        unsafe {
-            libusb_set_option(
-                ctx.as_raw(),
-                LIBUSB_OPTION_LOG_LEVEL,
-                LIBUSB_LOG_LEVEL_DEBUG,
-            );
+    /// Converts libusb error code to [`rusb::Error`].
+    fn api_error(rc: c_int) -> Error {
+        match rc {
+            LIBUSB_ERROR_IO => Error::Io,
+            LIBUSB_ERROR_INVALID_PARAM => Error::InvalidParam,
+            LIBUSB_ERROR_ACCESS => Error::Access,
+            LIBUSB_ERROR_NO_DEVICE => Error::NoDevice,
+            LIBUSB_ERROR_NOT_FOUND => Error::NotFound,
+            LIBUSB_ERROR_BUSY => Error::Busy,
+            LIBUSB_ERROR_TIMEOUT => Error::Timeout,
+            LIBUSB_ERROR_OVERFLOW => Error::Overflow,
+            LIBUSB_ERROR_PIPE => Error::Pipe,
+            LIBUSB_ERROR_INTERRUPTED => Error::Interrupted,
+            LIBUSB_ERROR_NO_MEM => Error::NoMem,
+            LIBUSB_ERROR_NOT_SUPPORTED => Error::NotSupported,
+            _ => Error::Other,
         }
-        Ok(ctx)
+    }
+
+    /// Compile-time detection of new error variants.
+    fn _error_variants(e: Error) {
+        match e {
+            Error::Io => {}
+            Error::InvalidParam => {}
+            Error::Access => {}
+            Error::NoDevice => {}
+            Error::NotFound => {}
+            Error::Busy => {}
+            Error::Timeout => {}
+            Error::Overflow => {}
+            Error::Pipe => {}
+            Error::Interrupted => {}
+            Error::NoMem => {}
+            Error::NotSupported => {}
+            Error::BadDescriptor => {}
+            Error::Other => {}
+        }
     }
 
     extern "system" fn log_cb(_: *mut libusb_context, lvl: c_int, msg: *mut c_void) {
-        let orig = unsafe { CStr::from_ptr(msg as *const c_char).to_string_lossy() };
+        let orig = unsafe { CStr::from_ptr(msg as *const c_char) }.to_string_lossy();
         let msg = match orig.as_ref().split_once("libusb: ") {
             Some((_, tail)) => tail.trim_end(),
             _ => return, // Debug header (see log_v() in libusb/core.c)
