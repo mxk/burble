@@ -5,5 +5,7 @@
 //!
 //! [libusb]: https://github.com/libusb/libusb
 
+extern crate core;
+
 pub mod hci;
 pub mod host;

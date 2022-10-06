@@ -161,7 +161,7 @@ impl Transport for UsbController {
         // [Vol 4] Part B, Section 2.2.2
         t.control_setup(libusb::CMD_REQUEST_TYPE, 0, 0, self.ep.main_iface as _);
         t.set_timeout(Duration::from_secs(1));
-        f(t.buf());
+        f(t.buf_mut());
         self.submit(t)
     }
 
@@ -171,8 +171,12 @@ impl Transport for UsbController {
     }
 }
 
+// TODO: Switch to RwLock for map?
+type ArcTransfer = Arc<Mutex<libusb::Transfer>>;
+
 /// Asynchronous USB transfer.
-pub struct UsbTransfer(Arc<Mutex<libusb::Transfer>>);
+#[derive(Debug)]
+pub struct UsbTransfer(ArcTransfer);
 
 impl Transfer for UsbTransfer {
     type Future = UsbTransferResult;
@@ -186,12 +190,20 @@ impl Transfer for UsbTransfer {
             .expect("transfer is busy")
             .get_mut()
             .unwrap()
-            .buf()
+            .buf_mut()
+    }
+
+    fn map<T>(&self, f: impl FnOnce(Result<()>, &[u8]) -> T) -> T {
+        let t = self.0.lock().unwrap();
+        f(
+            t.result().expect("transfer not done").map_err(Error::from),
+            t.buf(),
+        )
     }
 }
 
 /// Future that resolves to the transfer result.
-pub struct UsbTransferResult(Arc<Mutex<libusb::Transfer>>);
+pub struct UsbTransferResult(ArcTransfer);
 
 impl Future for UsbTransferResult {
     type Output = Result<()>;
@@ -310,11 +322,14 @@ mod libusb {
         LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_CLASS | LIBUSB_RECIPIENT_INTERFACE;
 
     /// Asynchronous transfer.
+    #[derive(Debug)]
     pub(super) struct Transfer {
         inner: NonNull<libusb_transfer>,
         buf: BytesMut,
         waker: Option<Waker>,
     }
+
+    unsafe impl Send for Transfer {}
 
     impl Transfer {
         /// Returns a new control transfer.
@@ -354,9 +369,15 @@ mod libusb {
             }
         }
 
-        /// Returns the transfer buffer.
+        /// Returns a shared transfer buffer.
         #[inline]
-        pub fn buf(&mut self) -> &mut BytesMut {
+        pub fn buf(&self) -> &[u8] {
+            self.buf.as_ref()
+        }
+
+        /// Returns a mutable transfer buffer.
+        #[inline]
+        pub fn buf_mut(&mut self) -> &mut BytesMut {
             &mut self.buf
         }
 
@@ -376,6 +397,12 @@ mod libusb {
         #[inline]
         fn is_idle(&self) -> bool {
             self.inner().buffer.is_null()
+        }
+
+        /// Returns whether the transfer is in flight.
+        #[inline]
+        fn in_flight(&self) -> bool {
+            !self.inner().user_data.is_null()
         }
 
         /// Sets control transfer parameters.
@@ -443,12 +470,21 @@ mod libusb {
 
         /// `Future::poll()` implementation.
         pub fn poll(&mut self, ctx: &mut std::task::Context<'_>) -> Poll<Result<()>> {
-            if !self.inner().user_data.is_null() {
+            if self.in_flight() {
                 self.waker = Some(ctx.waker().clone());
-                return Poll::Pending;
+                Poll::Pending
+            } else {
+                Poll::Ready(self.result().expect("poll of an idle transfer"))
             }
-            assert!(!self.is_idle());
-            Poll::Ready(match self.inner().status {
+        }
+
+        /// Returns the transfer result or [`None`] if the transfer is not
+        /// finished.
+        pub fn result(&self) -> Option<Result<()>> {
+            if self.is_idle() || self.in_flight() {
+                return None;
+            }
+            Some(match self.inner().status {
                 LIBUSB_TRANSFER_COMPLETED => Ok(()),
                 LIBUSB_TRANSFER_TIMED_OUT => Err(Error::Timeout),
                 LIBUSB_TRANSFER_CANCELLED => Err(Error::Interrupted),
@@ -488,7 +524,7 @@ mod libusb {
 
     impl Drop for Transfer {
         fn drop(&mut self) {
-            assert!(self.inner().user_data.is_null());
+            assert!(!self.in_flight());
             assert!(self.waker.is_none());
             unsafe { libusb_free_transfer(self.inner.as_ptr()) }
             self.inner = NonNull::dangling();

@@ -3,8 +3,8 @@ use super::*;
 #[test]
 fn event() {
     let pkt = [1, 2, 3, 4];
-    let mut e = Evt::try_from(pkt.as_ref()).unwrap();
-    assert_eq!(e.typ(), EvtType::Hci(EventCode::InquiryComplete));
+    let mut e = Event::try_from(pkt.as_ref()).unwrap();
+    assert_eq!(e.typ(), EventType::Hci(EventCode::InquiryComplete));
     assert_eq!(e.tail(), &pkt[2..]);
     assert_eq!(e.cmd_status(), None);
     assert_eq!(e.u8(), pkt[2]);
@@ -15,8 +15,11 @@ fn event() {
 #[test]
 fn event_le() {
     let pkt = [EventCode::LeMetaEvent as u8, 2, 3, 4];
-    let mut e = Evt::try_from(pkt.as_ref()).unwrap();
-    assert_eq!(e.typ(), EvtType::Le(SubeventCode::ConnectionUpdateComplete));
+    let mut e = Event::try_from(pkt.as_ref()).unwrap();
+    assert_eq!(
+        e.typ(),
+        EventType::Le(SubeventCode::ConnectionUpdateComplete)
+    );
     assert_eq!(e.tail(), &pkt[3..]);
     assert_eq!(e.u8(), pkt[3]);
 }
@@ -24,7 +27,7 @@ fn event_le() {
 #[test]
 fn event_cmd_complete() {
     let mut pkt = vec![EventCode::CommandComplete as u8, 3, 3, 4, 5];
-    let mut e = Evt::try_from(pkt.as_ref()).unwrap();
+    let e = Event::try_from(pkt.as_ref()).unwrap();
     let mut want = CmdStatus {
         quota: CmdQuota(3),
         opcode: Opcode(u16::from_le_bytes([4, 5])),
@@ -34,20 +37,20 @@ fn event_cmd_complete() {
 
     pkt[1] += 1;
     pkt.push(Status::UnknownCommand as _);
-    let mut e = Evt::try_from(pkt.as_ref()).unwrap();
+    let e = Event::try_from(pkt.as_ref()).unwrap();
     want.status = Status::UnknownCommand;
     assert_eq!(e.cmd_status(), Some(want));
 
     pkt[1] += 1;
     pkt.push(6);
-    let mut e = Evt::try_from(pkt.as_ref()).unwrap();
+    let e = Event::try_from(pkt.as_ref()).unwrap();
     assert_eq!(e.cmd_status(), Some(want));
 }
 
 #[test]
 fn event_cmd_status() {
     let pkt = [EventCode::CommandStatus as u8, 4, 0xff, 3, 4, 5];
-    let mut e = Evt::try_from(pkt.as_ref()).unwrap();
+    let e = Event::try_from(pkt.as_ref()).unwrap();
     let want = CmdStatus {
         quota: CmdQuota(3),
         opcode: Opcode(u16::from_le_bytes([4, 5])),
@@ -58,7 +61,7 @@ fn event_cmd_status() {
 
 #[test]
 fn event_error() {
-    let event = |b: &[u8]| Evt::try_from(b).unwrap_err();
+    let event = |b: &[u8]| Event::try_from(b).unwrap_err();
     assert!(matches!(event(&[]), Error::InvalidEvent(_)));
     assert!(matches!(
         event(&[EventCode::InquiryComplete as u8, 1]),
