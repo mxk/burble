@@ -6,14 +6,14 @@ use std::sync::Arc;
 use bytes::{BufMut, Bytes, BytesMut};
 use tracing::warn;
 
-pub use {codes::*, event::*, info::*};
+pub use {codes::*, event::*, info_params::*};
 
 use crate::host;
 use crate::host::Transfer;
 
 mod codes;
 mod event;
-mod info;
+mod info_params;
 
 #[cfg(test)]
 mod tests;
