@@ -1,6 +1,6 @@
 //! Host Controller Interface.
 
-use std::fmt::{Debug, Display, Formatter};
+use std::fmt::Debug;
 use std::sync::Arc;
 
 use bytes::{BufMut, Bytes, BytesMut};
@@ -37,15 +37,17 @@ pub enum Error {
         subevent: u8,
         params: Bytes,
     },
-    #[error("command error [opcode={opcode}, status={status}]")]
-    Command { opcode: Opcode, status: Status },
+    #[error("{opcode} command failed: {status}")]
+    CommandFailed { opcode: Opcode, status: Status },
+    #[error("{opcode} command aborted")]
+    CommandAborted { opcode: Opcode },
 }
 
-impl From<CmdStatus> for Error {
-    fn from(s: CmdStatus) -> Self {
-        Error::Command {
-            opcode: s.opcode,
-            status: s.status,
+impl From<CommandStatus> for Error {
+    fn from(st: CommandStatus) -> Self {
+        Error::CommandFailed {
+            opcode: st.opcode,
+            status: st.status,
         }
     }
 }
@@ -53,38 +55,39 @@ impl From<CmdStatus> for Error {
 type Result<T> = std::result::Result<T, Error>;
 
 /// Host-side of a Host Controller Interface.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Host<T: host::Transport> {
     transport: Arc<T>,
     router: Arc<EventRouter<T>>,
 }
 
 impl<T: host::Transport> Host<T> {
-    /// Returns an HCI using transport layer `t`.
+    /// Returns an HCI host using transport layer `t`.
     pub fn new(t: T) -> Self {
         let transport = Arc::new(t);
         let router = EventRouter::new(transport.clone());
         Self { transport, router }
     }
 
-    /// Receives and routes HCI events to registered callbacks. The returned
-    /// future must be polled in order for commands to finish executing.
-    pub async fn next_event(&self) -> Result<EventGuard<T>> {
-        Ok(self.router.recv_event().await?)
+    /// Receives the next HCI event, routes it to registered waiters, and
+    /// returns it to the caller. No events, including command completion, are
+    /// received unless the returned future is polled, and no new events can be
+    /// received until the returned guard is dropped. If there are multiple
+    /// concurrent calls to this method, only one will resolve to the received
+    /// event and the others will continue waiting.
+    pub async fn event(&self) -> Result<EventGuard<T>> {
+        self.router.recv_event().await
     }
 
     /// Executes an HCI command.
-    async fn cmd(&self, opcode: Opcode, enc: impl FnOnce(Cmd)) -> Result<EventWaiterGuard<T>> {
-        let w = self.router.clone().register(Filter::Command(opcode));
-        self.transport
-            .cmd(|b| enc(Cmd::new(opcode, b)))?
-            .result()
-            .await
-            .map_err(|e| {
-                warn!("Command {opcode} failed: {e}");
-                e
-            })?;
-        Ok(w)
+    async fn cmd(&self, opcode: Opcode, enc: impl FnOnce(Command)) -> Result<EventGuard<T>> {
+        let mut waiter = self.router.clone().register(EventFilter::Command(opcode));
+        let mut cmd = self.transport.cmd(|b| enc(Command::new(opcode, b)))?;
+        cmd.result().await.map_err(|e| {
+            warn!("{opcode:?} failed: {e}");
+            e
+        })?;
+        waiter.next().await.ok_or(Error::CommandAborted { opcode })
     }
 }
 
@@ -94,14 +97,14 @@ pub(crate) const CMD_BUF: usize = CMD_HDR + u8::MAX as usize;
 
 /// HCI command encoder.
 #[derive(Debug)]
-struct Cmd<'a> {
+struct Command<'a> {
     b: &'a mut BytesMut,
 }
 
-impl<'a> Cmd<'a> {
+impl<'a> Command<'a> {
     fn new(opcode: Opcode, b: &'a mut BytesMut) -> Self {
         let mut cmd = Self { b };
-        cmd.u16(opcode.0).u8(0);
+        cmd.u16(opcode as _).u8(0);
         cmd
     }
 
@@ -119,29 +122,4 @@ impl<'a> Cmd<'a> {
 /// Number of HCI command packets the host can send to the controller.
 #[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
 #[repr(transparent)]
-pub struct CmdQuota(u8);
-
-/// Command opcode.
-#[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
-#[repr(transparent)]
-pub struct Opcode(pub u16);
-
-impl Opcode {
-    /// Returns an opcode from Opcode Group Field and Opcode Command Field.
-    #[inline]
-    pub fn new(ogf: u16, ocf: u16) -> Self {
-        Self(ogf << 10 | ocf)
-    }
-
-    /// Returns an informational parameter command opcode.
-    #[inline]
-    pub fn info(ocf: u16) -> Self {
-        Self::new(0x04, ocf)
-    }
-}
-
-impl Display for Opcode {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "0x{:04x}", self.0)
-    }
-}
+pub struct CommandQuota(u8);

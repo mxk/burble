@@ -10,9 +10,7 @@ async fn main() -> Result<()> {
     let mut ctlr = usb.open_first(0x7392, 0xC611)?;
     ctlr.init()?;
     let host = hci::Host::new(ctlr);
-    tokio::select! {
-        r = host.next_event() => { r?; }
-        v = host.read_local_version() => info!("Local version: {:?}", v?),
-    }
+    let (_, ver) = tokio::try_join!(host.event(), host.read_local_version())?;
+    info!("Local version: {:?}", ver);
     Ok(())
 }

@@ -26,11 +26,11 @@ fn event_le() {
 
 #[test]
 fn event_cmd_complete() {
-    let mut pkt = vec![EventCode::CommandComplete as u8, 3, 3, 4, 5];
+    let mut pkt = vec![EventCode::CommandComplete as u8, 3, 3, 0x01, 0x10];
     let e = Event::try_from(pkt.as_ref()).unwrap();
-    let mut want = CmdStatus {
-        quota: CmdQuota(3),
-        opcode: Opcode(u16::from_le_bytes([4, 5])),
+    let mut want = CommandStatus {
+        quota: CommandQuota(3),
+        opcode: Opcode::ReadLocalVersionInformation,
         status: Status::Success,
     };
     assert_eq!(e.cmd_status(), Some(want));
@@ -49,11 +49,11 @@ fn event_cmd_complete() {
 
 #[test]
 fn event_cmd_status() {
-    let pkt = [EventCode::CommandStatus as u8, 4, 0xff, 3, 4, 5];
+    let pkt = [EventCode::CommandStatus as u8, 4, 0xff, 3, 0x01, 0x10];
     let e = Event::try_from(pkt.as_ref()).unwrap();
-    let want = CmdStatus {
-        quota: CmdQuota(3),
-        opcode: Opcode(u16::from_le_bytes([4, 5])),
+    let want = CommandStatus {
+        quota: CommandQuota(3),
+        opcode: Opcode::ReadLocalVersionInformation,
         status: Status::UnspecifiedError,
     };
     assert_eq!(e.cmd_status(), Some(want));

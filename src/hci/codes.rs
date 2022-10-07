@@ -1,3 +1,47 @@
+#![allow(dead_code)] // TODO: Remove
+
+use OpcodeGroup::*;
+
+/// HCI command opcodes (Vol 4, Part E, Section 7).
+#[derive(
+    Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd, strum::Display, strum::FromRepr,
+)]
+#[non_exhaustive]
+#[repr(u16)]
+pub enum Opcode {
+    #[default]
+    Unknown = 0x0000,
+
+    // Informational Parameters commands (Vol 4, Part E, Section 7.4)
+    ReadLocalVersionInformation = InfoParams.ocf(0x0001),
+}
+
+impl From<u16> for Opcode {
+    fn from(v: u16) -> Self {
+        Opcode::from_repr(v).unwrap_or(Opcode::Unknown)
+    }
+}
+
+// Opcode group field definitions.
+#[derive(Clone, Copy)]
+#[repr(u16)]
+enum OpcodeGroup {
+    LinkControl = 0x01,
+    LinkPolicy = 0x02,
+    HciControl = 0x03,
+    InfoParams = 0x04,
+    StatusParams = 0x05,
+    Testing = 0x06,
+    Le = 0x08,
+}
+
+impl OpcodeGroup {
+    /// Combines OGF with OCF to create a full opcode.
+    const fn ocf(self, ocf: u16) -> u16 {
+        (self as u16) << 10 | ocf
+    }
+}
+
 /// HCI event codes ([Vol 4] Part E, Section 7.7).
 #[derive(Clone, Copy, Debug, Eq, PartialEq, strum::FromRepr)]
 #[non_exhaustive]
