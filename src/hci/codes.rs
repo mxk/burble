@@ -2,23 +2,25 @@
 
 use OpcodeGroup::*;
 
-/// HCI command opcodes (Vol 4, Part E, Section 7).
+/// HCI command opcodes ([Vol 4] Part E, Section 7).
 #[derive(
     Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd, strum::Display, strum::FromRepr,
 )]
 #[non_exhaustive]
 #[repr(u16)]
 pub enum Opcode {
+    // Opcode 0x0000 is used to update Num_HCI_Command_Packets ([Vol 4] Part E,
+    // Section 7.7.14)
     #[default]
-    Unknown = 0x0000,
+    None = 0x0000,
 
-    // Informational Parameters commands (Vol 4, Part E, Section 7.4)
+    // Informational Parameters commands ([Vol 4] Part E, Section 7.4)
     ReadLocalVersionInformation = InfoParams.ocf(0x0001),
 }
 
 impl From<u16> for Opcode {
     fn from(v: u16) -> Self {
-        Opcode::from_repr(v).unwrap_or(Opcode::Unknown)
+        Opcode::from_repr(v).unwrap_or(Opcode::None)
     }
 }
 
