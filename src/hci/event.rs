@@ -168,8 +168,11 @@ impl<T: host::Transport> EventRouter<T> {
     }
 
     /// Register a new event waiter with filter `f`.
-    pub fn register(self: Arc<Self>, f: EventFilter) -> EventWaiterGuard<T> {
+    pub fn register(self: Arc<Self>, f: EventFilter) -> Result<EventWaiterGuard<T>> {
         let mut ws = self.waiters.lock();
+        if ws.queue.iter().any(|w| f.conflicts_with(&w.filter)) {
+            return Err(Error::FilterConflict);
+        }
         let id = ws.next_id;
         ws.next_id = ws.next_id.checked_add(1).unwrap();
         ws.queue.push_back(Waiter {
@@ -178,7 +181,7 @@ impl<T: host::Transport> EventRouter<T> {
             ready: None,
         });
         drop(ws);
-        EventWaiterGuard { id, router: self }
+        Ok(EventWaiterGuard { id, router: self })
     }
 
     /// Receives the next event, notifies registered waiters, and returns the
@@ -228,11 +231,22 @@ pub(crate) enum EventFilter {
 }
 
 impl EventFilter {
+    /// Returns whether two filters would create an ambiguity in event delivery
+    /// if both were registered.
+    fn conflicts_with(&self, other: &Self) -> bool {
+        use EventFilter::*;
+        match (self, other) {
+            (&Command(lhs), &Command(rhs)) => lhs == rhs,
+            _ => false,
+        }
+    }
+
     /// Returns whether `evt` matches the filter.
     fn matches(&self, evt: &Event) -> bool {
+        use EventFilter::*;
         match self {
-            Self::Any => true,
-            &Self::Command(opcode) => matches!(evt.cmd_status, Some(st) if st.opcode == opcode),
+            Any => true,
+            &Command(opcode) => matches!(evt.cmd_status, Some(st) if st.opcode == opcode),
         }
     }
 }

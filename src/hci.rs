@@ -37,6 +37,8 @@ pub enum Error {
         subevent: u8,
         params: Bytes,
     },
+    #[error("event filter conflict (duplicate commands issued?)")]
+    FilterConflict,
     #[error("{opcode} command failed: {status}")]
     CommandFailed { opcode: Opcode, status: Status },
     #[error("{opcode} command aborted")]
@@ -81,7 +83,7 @@ impl<T: host::Transport> Host<T> {
 
     /// Executes an HCI command.
     async fn cmd(&self, opcode: Opcode, enc: impl FnOnce(Command)) -> Result<EventGuard<T>> {
-        let mut waiter = self.router.clone().register(EventFilter::Command(opcode));
+        let mut waiter = self.router.clone().register(EventFilter::Command(opcode))?;
         let mut cmd = self.transport.cmd(|b| enc(Command::new(opcode, b)))?;
         cmd.result().await.map_err(|e| {
             warn!("{opcode:?} failed: {e}");
