@@ -2,7 +2,7 @@ use std::fmt::{Debug, Display, Formatter};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::thread;
 use std::time::Duration;
@@ -147,7 +147,7 @@ impl UsbController {
     }
 
     fn submit(&self, t: libusb::Transfer) -> Result<UsbTransfer> {
-        let mut t = Arc::new(Mutex::new(t));
+        let mut t = Arc::new(parking_lot::Mutex::new(t));
         libusb::Transfer::submit(&mut t, &self.dev)?;
         Ok(UsbTransfer(t))
     }
@@ -171,8 +171,7 @@ impl Transport for UsbController {
     }
 }
 
-// TODO: Switch to RwLock for map?
-type ArcTransfer = Arc<Mutex<libusb::Transfer>>;
+type ArcTransfer = Arc<parking_lot::Mutex<libusb::Transfer>>;
 
 /// Asynchronous USB transfer.
 #[derive(Debug)]
@@ -189,16 +188,25 @@ impl Transfer for UsbTransfer {
         Arc::get_mut(&mut self.0)
             .expect("transfer is busy")
             .get_mut()
-            .unwrap()
             .buf_mut()
     }
 
     fn map<T>(&self, f: impl FnOnce(Result<()>, &[u8]) -> T) -> T {
-        let t = self.0.lock().unwrap();
+        // Could use an RwLock for this, but the most common case is one caller
+        let t = self.0.lock();
         f(
             t.result().expect("transfer not done").map_err(Error::from),
             t.buf(),
         )
+    }
+}
+
+impl Drop for UsbTransfer {
+    fn drop(&mut self) {
+        let mut t = self.0.lock();
+        if t.in_flight() {
+            let _ = t.cancel();
+        }
     }
 }
 
@@ -209,13 +217,7 @@ impl Future for UsbTransferResult {
     type Output = Result<()>;
 
     fn poll(self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.0.lock().unwrap().poll(ctx).map_err(Error::from)
-    }
-}
-
-impl Drop for UsbTransfer {
-    fn drop(&mut self) {
-        let _ = self.0.lock().unwrap().cancel();
+        self.0.lock().poll(ctx).map_err(Error::from)
     }
 }
 
@@ -301,7 +303,7 @@ mod libusb {
     use std::ffi::{c_char, c_int, c_void, CStr};
     use std::mem::align_of;
     use std::ptr::{null_mut, NonNull};
-    use std::sync::{Arc, Mutex, Once};
+    use std::sync::{Arc, Once};
     use std::task::{Poll, Waker};
     use std::time::Duration;
 
@@ -401,7 +403,7 @@ mod libusb {
 
         /// Returns whether the transfer is in flight.
         #[inline]
-        fn in_flight(&self) -> bool {
+        pub(super) fn in_flight(&self) -> bool {
             !self.inner().user_data.is_null()
         }
 
@@ -431,10 +433,10 @@ mod libusb {
 
         /// Submits the transfer.
         pub fn submit<T: UsbContext>(
-            arc: &mut Arc<Mutex<Self>>,
+            arc: &mut Arc<parking_lot::Mutex<Self>>,
             dev: &DeviceHandle<T>,
         ) -> Result<()> {
-            let mut this = arc.lock().unwrap();
+            let mut this = arc.lock();
             assert!(this.is_idle());
 
             let (buf_ptr, buf_len, buf_cap) =
@@ -456,7 +458,7 @@ mod libusb {
 
             check!(libusb_submit_transfer(this.inner.as_ptr())).map_err(|e| {
                 let t = this.inner_mut();
-                drop(unsafe { Arc::from_raw(t.user_data as *const Mutex<Self>) });
+                drop(unsafe { Arc::from_raw(t.user_data as *const parking_lot::Mutex<Self>) });
                 t.user_data = null_mut();
                 e
             })
@@ -505,8 +507,8 @@ mod libusb {
                 unsafe { libusb_free_transfer(t) };
                 return;
             }
-            let arc = unsafe { Arc::from_raw((*t).user_data as *const Mutex<Self>) };
-            let mut this = arc.lock().unwrap();
+            let arc = unsafe { Arc::from_raw((*t).user_data as *const parking_lot::Mutex<Self>) };
+            let mut this = arc.lock();
             debug_assert_eq!(this.inner.as_ptr(), t);
             let t = this.inner_mut();
             t.user_data = null_mut();

@@ -2,7 +2,6 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use bytes::Buf;
-use parking_lot::Mutex;
 use tracing::trace;
 
 use crate::host;
@@ -143,7 +142,7 @@ type SharedTransfer<T> = Arc<tokio::sync::RwLock<EventTransfer<T>>>;
 /// the event asynchronously before the next receive operation can happen.
 #[derive(Debug)]
 pub(super) struct EventRouter<T: host::Transport> {
-    waiters: Mutex<Waiters<T>>,
+    waiters: parking_lot::Mutex<Waiters<T>>,
     xfer: tokio::sync::Mutex<SharedTransfer<T>>,
 
     // Notification should ideally be limited to each waiter, but we need
@@ -158,7 +157,7 @@ impl<T: host::Transport> EventRouter<T> {
     /// Returns a new event router using transport `t`.
     pub fn new(t: Arc<T>) -> Arc<Self> {
         Arc::new(Self {
-            waiters: Mutex::new(Waiters {
+            waiters: parking_lot::Mutex::new(Waiters {
                 queue: VecDeque::with_capacity(4),
                 next_id: 0,
             }),
