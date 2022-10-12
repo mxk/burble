@@ -34,17 +34,19 @@ impl Error {
 
 type Result<T> = std::result::Result<T, Error>;
 
-// TODO: Explicit submit() step?
-
 /// HCI transport layer.
 pub trait Transport {
     type Transfer: Transfer + Debug;
 
-    /// Submits an HCI command, calling `f` to fill the command buffer.
-    fn cmd(&self, f: impl FnOnce(&mut BytesMut)) -> Result<Self::Transfer>;
+    /// Returns a new transfer for an HCI command, calling `f` to fill the
+    /// command buffer.
+    fn cmd(&self, f: impl FnOnce(&mut BytesMut)) -> Self::Transfer;
 
-    /// Requests the next HCI event.
-    fn evt(&self) -> Result<Self::Transfer>;
+    /// Returns a new transfer for an HCI event.
+    fn evt(&self) -> Self::Transfer;
+
+    /// Submits a transfer for execution.
+    fn submit(&self, xfer: &mut Self::Transfer) -> Result<()>;
 }
 
 /// Asynchronous I/O transfer.

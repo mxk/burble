@@ -354,7 +354,9 @@ impl<T: host::Transport> EventTransfer<T> {
     /// Receives and validates the next event.
     async fn next(&mut self) -> Result<()> {
         if self.restart {
-            self.xfer = Some(self.t.evt()?);
+            let mut evt = self.t.evt();
+            self.t.submit(&mut evt)?;
+            self.xfer = Some(evt);
             self.restart = false;
         }
         let xfer = self.xfer.as_mut().unwrap();

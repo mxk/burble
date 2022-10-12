@@ -145,37 +145,44 @@ impl UsbController {
         }
         Ok(())
     }
-
-    fn submit(&self, t: libusb::Transfer) -> Result<UsbTransfer> {
-        let mut t = Arc::new(parking_lot::Mutex::new(t));
-        libusb::Transfer::submit(&mut t, &self.dev)?;
-        Ok(UsbTransfer(t))
-    }
 }
 
 impl Transport for UsbController {
     type Transfer = UsbTransfer;
 
-    fn cmd(&self, f: impl FnOnce(&mut BytesMut)) -> Result<UsbTransfer> {
+    fn cmd(&self, f: impl FnOnce(&mut BytesMut)) -> UsbTransfer {
         let mut t = libusb::Transfer::new_control(hci::CMD_BUF);
         // [Vol 4] Part B, Section 2.2.2
         t.control_setup(libusb::CMD_REQUEST_TYPE, 0, 0, self.ep.main_iface as _);
         t.set_timeout(Duration::from_secs(1));
         f(t.buf_mut());
-        self.submit(t)
+        UsbTransfer::from_raw(t)
     }
 
-    fn evt(&self) -> Result<UsbTransfer> {
+    fn evt(&self) -> UsbTransfer {
         let t = libusb::Transfer::new_interrupt(self.ep.hci_evt, hci::EVT_BUF);
-        self.submit(t)
+        UsbTransfer::from_raw(t)
+    }
+
+    fn submit(&self, t: &mut UsbTransfer) -> Result<()> {
+        Ok(libusb::Transfer::submit(&mut t.0, &self.dev)?)
     }
 }
+
+// TODO: Transfer caching and reuse.
 
 type ArcTransfer = Arc<parking_lot::Mutex<libusb::Transfer>>;
 
 /// Asynchronous USB transfer.
 #[derive(Debug)]
 pub struct UsbTransfer(ArcTransfer);
+
+impl UsbTransfer {
+    #[inline]
+    fn from_raw(t: libusb::Transfer) -> Self {
+        Self(Arc::new(parking_lot::Mutex::new(t)))
+    }
+}
 
 impl Transfer for UsbTransfer {
     type Future = UsbTransferResult;
@@ -521,6 +528,7 @@ mod libusb {
             if let Some(w) = this.waker.take() {
                 w.wake();
             }
+            drop(this);
         }
     }
 

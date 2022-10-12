@@ -84,7 +84,8 @@ impl<T: host::Transport> Host<T> {
     /// Executes an HCI command.
     async fn cmd(&self, opcode: Opcode, enc: impl FnOnce(Command)) -> Result<EventGuard<T>> {
         let mut waiter = self.router.clone().register(EventFilter::Command(opcode))?;
-        let mut cmd = self.transport.cmd(|b| enc(Command::new(opcode, b)))?;
+        let mut cmd = self.transport.cmd(|b| enc(Command::new(opcode, b)));
+        self.transport.submit(&mut cmd)?;
         cmd.result().await.map_err(|e| {
             warn!("{opcode:?} failed: {e}");
             e
