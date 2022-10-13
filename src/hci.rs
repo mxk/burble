@@ -6,14 +6,15 @@ use std::sync::Arc;
 use bytes::{BufMut, Bytes, BytesMut};
 use tracing::warn;
 
-pub use {codes::*, event::*, info_params::*};
+pub use {cmd_hci_control::*, cmd_info_params::*, codes::*, event::*};
 
 use crate::host;
 use crate::host::Transfer;
 
+mod cmd_hci_control;
+mod cmd_info_params;
 mod codes;
 mod event;
-mod info_params;
 
 #[cfg(test)]
 mod tests;

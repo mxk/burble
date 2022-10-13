@@ -14,7 +14,10 @@ pub enum Opcode {
     #[default]
     None = 0x0000,
 
-    // Informational Parameters commands ([Vol 4] Part E, Section 7.4)
+    // HCI Control and Baseband commands ([Vol 4] Part E, Section 7.3)
+    Reset = HciControl.ocf(0x0003),
+
+    // Informational parameters commands ([Vol 4] Part E, Section 7.4)
     ReadLocalVersionInformation = InfoParams.ocf(0x0001),
 }
 
@@ -243,6 +246,7 @@ impl Status {
 
 impl From<u8> for Status {
     fn from(v: u8) -> Self {
+        // [Vol 4] Part E, Section 1.2
         Self::from_repr(v).unwrap_or(Status::UnspecifiedError)
     }
 }

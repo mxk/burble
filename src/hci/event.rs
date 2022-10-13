@@ -178,11 +178,15 @@ impl<T: host::Transport> EventRouter<T> {
         if ws.queue.iter().any(|w| f.conflicts_with(&w.filter)) {
             return Err(Error::FilterConflict);
         }
-        if matches!(f, EventFilter::Command(_)) {
+        if let EventFilter::Command(opcode) = f {
             if ws.cmd_quota == 0 {
                 return Err(Error::CommandQuotaExceeded);
             }
-            ws.cmd_quota -= 1;
+            if opcode == Opcode::Reset {
+                ws.cmd_quota = 0; // [Vol 4] Part E, Section 7.3.2
+            } else {
+                ws.cmd_quota -= 1;
+            }
         }
         let id = ws.next_id;
         ws.next_id = ws.next_id.checked_add(1).unwrap();
