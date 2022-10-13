@@ -57,7 +57,8 @@ impl From<CommandStatus> for Error {
     }
 }
 
-type Result<T> = std::result::Result<T, Error>;
+/// Common HCI result type.
+pub type Result<T> = std::result::Result<T, Error>;
 
 /// Host-side of a Host Controller Interface.
 #[derive(Clone, Debug)]

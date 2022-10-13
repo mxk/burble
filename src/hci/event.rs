@@ -373,7 +373,7 @@ impl<T: host::Transport> EventTransfer<T> {
         }))
     }
 
-    /// Receives and validates the next event.
+    /// Receives and validates the next event. This method is cancellation safe.
     async fn next(&mut self) -> Result<()> {
         if self.restart {
             let mut evt = self.t.evt();
