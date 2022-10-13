@@ -11,11 +11,11 @@ publish = false
 [dependencies]
 bitvec = "1.0.1"
 bytes = "1.2.1"
-parking_lot = {version = "0.12.1", features = ["hardware-lock-elision"]}
+parking_lot = { version = "0.12.1", features = ["hardware-lock-elision"] }
 rusb = "0.9.1"
 strum = { version = "0.24.1", features = ["derive"] }
 thiserror = "1.0.36"
-tokio = { version = "1.21.2", features = ["rt", "sync", "macros"] }
+tokio = { version = "1.21.2", features = ["macros", "parking_lot", "rt", "sync"] }
 tracing = "0.1.36"
 
 [dev-dependencies]

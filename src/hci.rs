@@ -39,6 +39,8 @@ pub enum Error {
     },
     #[error("event filter conflict (duplicate commands issued?)")]
     FilterConflict,
+    #[error("command quota exceeded")]
+    CommandQuotaExceeded,
     #[error("{opcode} command failed: {status}")]
     CommandFailed { opcode: Opcode, status: Status },
     #[error("{opcode} command aborted")]
@@ -83,8 +85,8 @@ impl<T: host::Transport> Host<T> {
 
     /// Executes an HCI command.
     async fn cmd(&self, opcode: Opcode, enc: impl FnOnce(Command)) -> Result<EventGuard<T>> {
-        let mut waiter = self.router.clone().register(EventFilter::Command(opcode))?;
         let mut cmd = self.transport.cmd(|b| enc(Command::new(opcode, b)));
+        let mut waiter = self.router.clone().register(EventFilter::Command(opcode))?;
         self.transport.submit(&mut cmd)?;
         cmd.result().await.map_err(|e| {
             warn!("{opcode:?} failed: {e}");
@@ -121,8 +123,3 @@ impl<'a> Command<'a> {
         self
     }
 }
-
-/// Number of HCI command packets the host can send to the controller.
-#[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
-#[repr(transparent)]
-pub struct CommandQuota(u8);

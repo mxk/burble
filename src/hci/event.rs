@@ -135,6 +135,11 @@ pub struct CommandStatus {
     pub status: Status,
 }
 
+/// Number of HCI command packets the host can send to the controller.
+#[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
+#[repr(transparent)]
+pub struct CommandQuota(u8);
+
 type SharedTransfer<T> = Arc<tokio::sync::RwLock<EventTransfer<T>>>;
 
 /// Received event router. When an event is received, all registered waiters
@@ -160,6 +165,7 @@ impl<T: host::Transport> EventRouter<T> {
             waiters: parking_lot::Mutex::new(Waiters {
                 queue: VecDeque::with_capacity(4),
                 next_id: 0,
+                cmd_quota: 1, // [Vol 4] Part E, Section 4.4
             }),
             xfer: tokio::sync::Mutex::new(EventTransfer::new(t)),
             notify: tokio::sync::Notify::new(),
@@ -171,6 +177,12 @@ impl<T: host::Transport> EventRouter<T> {
         let mut ws = self.waiters.lock();
         if ws.queue.iter().any(|w| f.conflicts_with(&w.filter)) {
             return Err(Error::FilterConflict);
+        }
+        if matches!(f, EventFilter::Command(_)) {
+            if ws.cmd_quota == 0 {
+                return Err(Error::CommandQuotaExceeded);
+            }
+            ws.cmd_quota -= 1;
         }
         let id = ws.next_id;
         ws.next_id = ws.next_id.checked_add(1).unwrap();
@@ -199,6 +211,8 @@ impl<T: host::Transport> EventRouter<T> {
         // TODO: Remove and notify receivers for certain fatal errors, like lost
         // device.
 
+        // TODO: One second command timeout ([Vol 4] Part E, Section 4.4)
+
         // Lock router before downgrading to a read lock
         let mut ws = self.waiters.lock();
         let evt = EventGuard(recv.downgrade());
@@ -206,6 +220,9 @@ impl<T: host::Transport> EventRouter<T> {
         // Provide EventGuards to registered waiters and notify them
         let mut notify = false;
         evt.map(|evt| {
+            if let Some(CommandStatus { quota: q, .. }) = evt.cmd_status {
+                ws.cmd_quota = q.0;
+            }
             for w in ws.queue.iter_mut().filter(|w| w.filter.matches(&evt)) {
                 // try_read_owned() is guaranteed to succeed since we are
                 // holding our own read lock and there are no writers waiting.
@@ -257,6 +274,7 @@ impl EventFilter {
 struct Waiters<T: host::Transport> {
     queue: VecDeque<Waiter<T>>,
     next_id: u64,
+    cmd_quota: u8,
 }
 
 /// Registered event waiter.
@@ -363,7 +381,7 @@ impl<T: host::Transport> EventTransfer<T> {
         let r = xfer.result().await;
         self.restart = true;
         r?;
-        let b = xfer.buf();
+        let b = xfer.buf_mut();
         let evt = Event::try_from(b.as_ref());
         trace!("{evt:?}");
         evt.map(|_evt| ())

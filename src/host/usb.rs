@@ -154,6 +154,8 @@ impl Transport for UsbController {
         let mut t = libusb::Transfer::new_control(hci::CMD_BUF);
         // [Vol 4] Part B, Section 2.2.2
         t.control_setup(libusb::CMD_REQUEST_TYPE, 0, 0, self.ep.main_iface as _);
+        // A one-second timer is recommended for command completion, so we use
+        // the same for submission ([Vol 4] Part E, Section 4.4)
         t.set_timeout(Duration::from_secs(1));
         f(t.buf_mut());
         UsbTransfer::from_raw(t)
@@ -191,7 +193,7 @@ impl Transfer for UsbTransfer {
         UsbTransferResult(self.0.clone())
     }
 
-    fn buf(&mut self) -> &mut BytesMut {
+    fn buf_mut(&mut self) -> &mut BytesMut {
         Arc::get_mut(&mut self.0)
             .expect("transfer is busy")
             .get_mut()

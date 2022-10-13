@@ -60,7 +60,7 @@ pub trait Transfer {
     /// Returns the transfer buffer. It panics if the transfer is still in
     /// progress. The buffer may be allocated in a DMA region, so the caller
     /// must not perform any operations that may result in reallocation.
-    fn buf(&mut self) -> &mut BytesMut;
+    fn buf_mut(&mut self) -> &mut BytesMut;
 
     /// Passes the transfer result and buffer to `f` in a shared context.
     fn map<T>(&self, f: impl FnOnce(<Self::Future as Future>::Output, &[u8]) -> T) -> T;
