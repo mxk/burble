@@ -113,35 +113,38 @@ impl Display for UsbControllerInfo {
 /// Opened USB Bluetooth controller.
 #[derive(Debug)]
 pub struct UsbController {
-    dev: DeviceHandle,
+    dev: Arc<DeviceHandle>,
     ep: Endpoints,
 }
 
 impl UsbController {
     fn new(dev: DeviceHandle, ep: Endpoints) -> Self {
+        let dev = Arc::new(dev);
         UsbController { dev, ep }
     }
 
     /// Issues a USB reset command.
-    pub fn reset(&mut self) -> Result<()> {
-        Ok(self.dev.reset()?)
+    pub fn reset(&self) -> Result<()> {
+        let dev = unsafe { &mut *(Arc::as_ptr(&self.dev) as *mut DeviceHandle) };
+        Ok(dev.reset()?)
     }
 
     /// Configures the controller for HCI access.
     pub fn init(&mut self) -> Result<()> {
+        let dev = Arc::get_mut(&mut self.dev).unwrap();
         if cfg!(unix) {
             // Not supported on Windows
             debug!("Enabling automatic kernel driver detachment");
-            self.dev.set_auto_detach_kernel_driver(true)?;
+            dev.set_auto_detach_kernel_driver(true)?;
         }
         debug!("Claiming main interface");
-        self.dev.claim_interface(self.ep.main_iface)?;
+        dev.claim_interface(self.ep.main_iface)?;
         if let Some(isoch) = self.ep.isoch_iface {
             // Do not reserve any bandwidth for the isochronous interface.
             debug!("Claiming isochronous interface");
-            self.dev.claim_interface(isoch)?;
+            dev.claim_interface(isoch)?;
             debug!("Setting isochronous interface alt setting to 0");
-            self.dev.set_alternate_setting(isoch, 0)?;
+            dev.set_alternate_setting(isoch, 0)?;
         }
         Ok(())
     }
@@ -167,13 +170,13 @@ impl Transport for UsbController {
     }
 
     fn submit(&self, t: &mut UsbTransfer) -> Result<()> {
-        Ok(libusb::Transfer::submit(&mut t.0, &self.dev)?)
+        Ok(libusb::Transfer::submit(&mut t.0, self.dev.clone())?)
     }
 }
 
 // TODO: Transfer caching and reuse.
 
-type ArcTransfer = Arc<parking_lot::Mutex<libusb::Transfer>>;
+type ArcTransfer = Arc<parking_lot::Mutex<libusb::Transfer<rusb::Context>>>;
 
 /// Asynchronous USB transfer.
 #[derive(Debug)]
@@ -181,7 +184,7 @@ pub struct UsbTransfer(ArcTransfer);
 
 impl UsbTransfer {
     #[inline]
-    fn from_raw(t: libusb::Transfer) -> Self {
+    fn from_raw(t: libusb::Transfer<rusb::Context>) -> Self {
         Self(Arc::new(parking_lot::Mutex::new(t)))
     }
 }
@@ -334,15 +337,27 @@ mod libusb {
 
     /// Asynchronous transfer.
     #[derive(Debug)]
-    pub(super) struct Transfer {
+    pub(super) struct Transfer<T: UsbContext> {
         inner: NonNull<libusb_transfer>,
         buf: BytesMut,
         waker: Option<Waker>,
+
+        // The context must remain referenced after the first call to
+        // libusb_submit_transfer, which stores a permanent device reference,
+        // which is used to get the context when libusb_free_transfer calls
+        // libusb_unref_device followed by <os>_destroy_device functions. If
+        // libusb_exit is called before libusb_free_transfer, the device
+        // contexts are set to NULL, leading to a crash.
+        ctx: Option<T>,
+
+        // The DeviceHandle must stay alive while the transfer is in flight to
+        // avoid a crash on Windows: https://github.com/libusb/libusb/issues/1206
+        dev: Option<Arc<DeviceHandle<T>>>,
     }
 
-    unsafe impl Send for Transfer {}
+    unsafe impl<T: UsbContext> Send for Transfer<T> {}
 
-    impl Transfer {
+    impl<T: UsbContext> Transfer<T> {
         /// Returns a new control transfer.
         pub fn new_control(buf_size: usize) -> Self {
             let mut this = Self::new(
@@ -377,6 +392,8 @@ mod libusb {
                 inner,
                 buf: BytesMut::with_capacity(buf_size),
                 waker: None,
+                ctx: None,
+                dev: None,
             }
         }
 
@@ -441,9 +458,9 @@ mod libusb {
         }
 
         /// Submits the transfer.
-        pub fn submit<T: UsbContext>(
+        pub fn submit(
             arc: &mut Arc<parking_lot::Mutex<Self>>,
-            dev: &DeviceHandle<T>,
+            dev: Arc<DeviceHandle<T>>,
         ) -> Result<()> {
             let mut this = arc.lock();
             assert!(this.is_idle());
@@ -465,7 +482,11 @@ mod libusb {
                 unsafe { (*libusb_control_transfer_get_setup(t)).wLength = (n as u16).to_le() };
             }
 
+            this.ctx = Some(dev.context().clone());
+            this.dev = Some(dev);
+
             check!(libusb_submit_transfer(this.inner.as_ptr())).map_err(|e| {
+                this.dev = None;
                 let t = this.inner_mut();
                 drop(unsafe { Arc::from_raw(t.user_data as *const parking_lot::Mutex<Self>) });
                 t.user_data = null_mut();
@@ -476,6 +497,10 @@ mod libusb {
         /// Cancels a pending transfer. This operation is not immediate and the
         /// transfer should continue to be polled to determine the final result.
         pub fn cancel(&mut self) -> Result<()> {
+            if self.inner().dev_handle.is_null() {
+                // TODO: Remove when fixed: https://github.com/libusb/libusb/issues/1206
+                return Err(Error::NotFound);
+            }
             check!(libusb_cancel_transfer(self.inner.as_ptr()))
         }
 
@@ -519,7 +544,9 @@ mod libusb {
             let arc = unsafe { Arc::from_raw((*t).user_data as *const parking_lot::Mutex<Self>) };
             let mut this = arc.lock();
             debug_assert_eq!(this.inner.as_ptr(), t);
+            this.dev = None;
             let t = this.inner_mut();
+            t.dev_handle = null_mut();
             t.user_data = null_mut();
             let n = if t.transfer_type == LIBUSB_TRANSFER_TYPE_CONTROL {
                 LIBUSB_CONTROL_SETUP_SIZE
@@ -534,7 +561,7 @@ mod libusb {
         }
     }
 
-    impl Drop for Transfer {
+    impl<T: UsbContext> Drop for Transfer<T> {
         fn drop(&mut self) {
             assert!(!self.in_flight());
             assert!(self.waker.is_none());
