@@ -1,4 +1,4 @@
-/libusb/
+/extern/
 /target/
 /Cargo.lock
 **/*.rs.bk

@@ -1,16 +1,21 @@
 //! Host Controller Interface.
 
 use std::fmt::Debug;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{ready, Context, Poll};
 
-use bytes::{BufMut, Bytes, BytesMut};
-use tracing::warn;
+use bytes::Bytes;
+use tokio_util::sync::CancellationToken;
+use tracing::{debug, trace, warn};
 
+pub(crate) use cmd::*;
 pub use {cmd_hci_control::*, cmd_info_params::*, codes::*, event::*};
 
 use crate::host;
 use crate::host::Transfer;
 
+mod cmd;
 mod cmd_hci_control;
 mod cmd_info_params;
 mod codes;
@@ -44,8 +49,21 @@ pub enum Error {
     CommandQuotaExceeded,
     #[error("{opcode} command failed: {status}")]
     CommandFailed { opcode: Opcode, status: Status },
-    #[error("{opcode} command aborted")]
-    CommandAborted { opcode: Opcode },
+    #[error("{opcode} command aborted: {status}")]
+    CommandAborted { opcode: Opcode, status: Status },
+}
+
+impl Error {
+    /// Returns the HCI status code, if any.
+    pub fn status(&self) -> Option<Status> {
+        use Error::*;
+        match self {
+            Hci { status } => Some(*status),
+            CommandFailed { status, .. } => Some(*status),
+            CommandAborted { status, .. } => Some(*status),
+            _ => None,
+        }
+    }
 }
 
 impl From<CommandStatus> for Error {
@@ -76,52 +94,58 @@ impl<T: host::Transport> Host<T> {
     }
 
     /// Receives the next HCI event, routes it to registered waiters, and
-    /// returns it to the caller. No events, including command completion, are
-    /// received unless the returned future is polled, and no new events can be
-    /// received until the returned guard is dropped. If there are multiple
-    /// concurrent calls to this method, only one will resolve to the received
-    /// event and the others will continue waiting.
+    /// returns it to the caller. This is a low-level method. In most cases,
+    /// `enable_events` is a better choice.
+    ///
+    /// No events are received, including command completion, unless the
+    /// returned future is polled, and no new events can be received until the
+    /// returned guard is dropped. If there are multiple concurrent calls to
+    /// this method, only one will resolve to the received event and the others
+    /// will continue to wait.
     pub async fn event(&self) -> Result<EventGuard<T>> {
         self.router.recv_event().await
     }
 
-    /// Executes an HCI command.
+    /// Spawns a task that continuously receives HCI events until an error is
+    /// encountered. The task is canceled when the returned future is dropped.
+    pub fn enable_events(&self) -> EventTask {
+        EventTask::new(self.router.clone())
+    }
+
+    /// Executes an HCI command and returns the command completion event. The
+    /// caller must check the completion status to determine whether the command
+    /// was successful.
     async fn cmd(&self, opcode: Opcode, enc: impl FnOnce(Command)) -> Result<EventGuard<T>> {
         let mut cmd = self.transport.cmd(|b| enc(Command::new(opcode, b)));
         let mut waiter = self.router.clone().register(EventFilter::Command(opcode))?;
+        trace!(
+            "Command: {:02x?}",
+            &cmd.buf_mut()[rusb::constants::LIBUSB_CONTROL_SETUP_SIZE..]
+        );
         self.transport.submit(&mut cmd)?;
         cmd.result().await.map_err(|e| {
             warn!("{opcode:?} failed: {e}");
             e
         })?;
-        waiter.next().await.ok_or(Error::CommandAborted { opcode })
-    }
-}
-
-/// HCI command header and buffer sizes ([Vol 4] Part E, Section 5.4.1).
-const CMD_HDR: usize = 3;
-pub(crate) const CMD_BUF: usize = CMD_HDR + u8::MAX as usize;
-
-/// HCI command encoder.
-#[derive(Debug)]
-struct Command<'a> {
-    b: &'a mut BytesMut,
-}
-
-impl<'a> Command<'a> {
-    fn new(opcode: Opcode, b: &'a mut BytesMut) -> Self {
-        let mut cmd = Self { b };
-        cmd.u16(opcode as _).u8(0);
-        cmd
+        waiter.next().await.ok_or(Error::CommandAborted {
+            opcode,
+            status: Status::UnspecifiedError,
+        })
     }
 
-    fn u8(&mut self, v: u8) -> &mut Self {
-        self.b.put_u8(v);
-        self
-    }
-
-    fn u16(&mut self, v: u16) -> &mut Self {
-        self.b.put_u16_le(v);
-        self
+    /// Performs a reset and basic Controller initialization.
+    pub async fn init(&self) -> Result<()> {
+        self.reset().await?;
+        let r = self
+            .cmd(Opcode::WriteLeHostSupport, |mut cmd| {
+                cmd.u8(0x01).u8(0);
+            })
+            .await?;
+        r.map_ok(|_| ()).or_else(|e| match e.status() {
+            // TODO: Why InvalidCommandParameters?
+            Some(Status::UnknownCommand | Status::InvalidCommandParameters) => Ok(()),
+            _ => Err(e),
+        })?;
+        Ok(())
     }
 }

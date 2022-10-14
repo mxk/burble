@@ -2,9 +2,9 @@ use super::*;
 
 /// Informational parameters commands ([Vol 4] Part E, Section 7.4).
 impl<T: host::Transport> Host<T> {
-    /// Reads version information for the local controller.
+    /// Returns version information for the local controller.
     pub async fn read_local_version(&self) -> Result<LocalVersion> {
-        let mut evt = self
+        let evt = self
             .cmd(Opcode::ReadLocalVersionInformation, |_| {})
             .await?;
         evt.map_ok(|mut evt| LocalVersion {

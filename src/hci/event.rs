@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::future::Future;
 use std::sync::Arc;
 
 use bytes::Buf;
@@ -15,8 +16,7 @@ pub(crate) const EVT_BUF: usize = EVT_HDR + u8::MAX as usize;
 /// HCI event decoder.
 #[derive(Clone, Debug)]
 pub struct Event<'a> {
-    #[allow(dead_code)] // TODO: Remove
-    typ: EventType,
+    _typ: EventType,
     cmd_status: Option<CommandStatus>,
     tail: &'a [u8],
 }
@@ -113,7 +113,7 @@ impl<'a> TryFrom<&'a [u8]> for Event<'a> {
             _ => None,
         };
         Ok(Self {
-            typ,
+            _typ: typ,
             cmd_status,
             tail,
         })
@@ -242,11 +242,65 @@ impl<T: host::Transport> EventRouter<T> {
     }
 }
 
+/// Future that continuously receives HCI events.
+pub struct EventTask {
+    h: tokio::task::JoinHandle<Result<()>>,
+    c: CancellationToken,
+    _g: tokio_util::sync::DropGuard,
+}
+
+impl EventTask {
+    /// Returns a new event monitor.
+    pub(super) fn new<T: host::Transport>(router: Arc<EventRouter<T>>) -> Self {
+        let c = CancellationToken::new();
+        Self {
+            h: tokio::spawn(Self::run(router, c.clone())),
+            c: c.clone(),
+            _g: c.drop_guard(),
+        }
+    }
+
+    /// Stops event processing.
+    pub async fn disable(self) -> Result<()> {
+        self.c.cancel();
+        self.h.await.unwrap()
+    }
+
+    /// Receives HCI events until cancellation.
+    async fn run<T: host::Transport>(
+        router: Arc<EventRouter<T>>,
+        c: CancellationToken,
+    ) -> Result<()> {
+        debug!("Event monitor started");
+        loop {
+            tokio::select! {
+                r = router.recv_event() => {
+                    if let Err(e) = r {
+                        debug!("Event monitor error: {e}");
+                        return Err(e);
+                    }
+                }
+                _ = c.cancelled() => {
+                    debug!("Event monitor stopped");
+                    return Ok(());
+                }
+            }
+        }
+    }
+}
+
+impl Future for EventTask {
+    type Output = Result<()>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        Poll::Ready(ready!(Pin::new(&mut self.h).poll(cx)).unwrap())
+    }
+}
+
 /// Defines event matching criteria.
 #[derive(Clone, Debug)]
 pub(crate) enum EventFilter {
-    #[allow(dead_code)] // TODO: Remove
-    Any,
+    _Any,
     Command(Opcode),
 }
 
@@ -265,7 +319,7 @@ impl EventFilter {
     fn matches(&self, evt: &Event) -> bool {
         use EventFilter::*;
         match self {
-            Any => true,
+            _Any => true,
             &Command(opcode) => matches!(evt.cmd_status, Some(st) if st.opcode == opcode),
         }
     }
@@ -342,7 +396,7 @@ impl<T: host::Transport> EventGuard<T> {
 
     /// Calls `f` on the received event if the event represents successful
     /// command completion.
-    pub fn map_ok<R>(&mut self, f: impl FnOnce(Event) -> R) -> Result<R> {
+    pub fn map_ok<R>(&self, f: impl FnOnce(Event) -> R) -> Result<R> {
         self.map(|evt| match evt.cmd_status() {
             Some(CommandStatus {
                 status: Status::Success,
@@ -359,15 +413,15 @@ impl<T: host::Transport> EventGuard<T> {
 /// HCI event transfer.
 #[derive(Debug)]
 struct EventTransfer<T: host::Transport> {
-    t: Arc<T>,
+    transport: Arc<T>,
     xfer: Option<T::Transfer>,
     restart: bool,
 }
 
 impl<T: host::Transport> EventTransfer<T> {
-    fn new(t: Arc<T>) -> SharedTransfer<T> {
+    fn new(transport: Arc<T>) -> SharedTransfer<T> {
         Arc::new(tokio::sync::RwLock::new(EventTransfer {
-            t,
+            transport,
             xfer: None,
             restart: true,
         }))
@@ -376,8 +430,8 @@ impl<T: host::Transport> EventTransfer<T> {
     /// Receives and validates the next event. This method is cancellation safe.
     async fn next(&mut self) -> Result<()> {
         if self.restart {
-            let mut evt = self.t.evt();
-            self.t.submit(&mut evt)?;
+            let mut evt = self.transport.evt();
+            self.transport.submit(&mut evt)?;
             self.xfer = Some(evt);
             self.restart = false;
         }

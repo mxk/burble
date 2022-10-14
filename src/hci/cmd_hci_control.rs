@@ -4,7 +4,6 @@ use super::*;
 impl<T: host::Transport> Host<T> {
     /// Reset the Controller's link manager, baseband, and link layer.
     pub async fn reset(&self) -> Result<()> {
-        let mut evt = self.cmd(Opcode::Reset, |_| {}).await?;
-        evt.map_ok(|_| ())
+        self.cmd(Opcode::Reset, |_| ()).await?.map_ok(|_| ())
     }
 }

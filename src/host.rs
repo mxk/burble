@@ -36,7 +36,7 @@ impl Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// HCI transport layer.
-pub trait Transport {
+pub trait Transport: Send + Sync + 'static {
     type Transfer: Transfer + Debug;
 
     /// Returns a new transfer for an HCI command, calling `f` to fill the
@@ -51,8 +51,8 @@ pub trait Transport {
 }
 
 /// Asynchronous I/O transfer.
-pub trait Transfer {
-    type Future: Future<Output = Result<()>>;
+pub trait Transfer: Send + Sync {
+    type Future: Future<Output = Result<()>> + Send;
 
     /// Returns a future that resolves to the transfer result. The transfer is
     /// cancelled if it is dropped without awaiting the result.

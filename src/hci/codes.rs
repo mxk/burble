@@ -1,5 +1,3 @@
-#![allow(dead_code)] // TODO: Remove
-
 use OpcodeGroup::*;
 
 /// HCI command opcodes ([Vol 4] Part E, Section 7).
@@ -16,9 +14,11 @@ pub enum Opcode {
 
     // HCI Control and Baseband commands ([Vol 4] Part E, Section 7.3)
     Reset = HciControl.ocf(0x0003),
+    WriteLeHostSupport = HciControl.ocf(0x006D),
 
     // Informational parameters commands ([Vol 4] Part E, Section 7.4)
     ReadLocalVersionInformation = InfoParams.ocf(0x0001),
+    ReadLocalSupportedCommands = InfoParams.ocf(0x0002),
 }
 
 impl From<u16> for Opcode {
@@ -31,13 +31,13 @@ impl From<u16> for Opcode {
 #[derive(Clone, Copy)]
 #[repr(u16)]
 enum OpcodeGroup {
-    LinkControl = 0x01,
-    LinkPolicy = 0x02,
+    _LinkControl = 0x01,
+    _LinkPolicy = 0x02,
     HciControl = 0x03,
     InfoParams = 0x04,
-    StatusParams = 0x05,
-    Testing = 0x06,
-    Le = 0x08,
+    _StatusParams = 0x05,
+    _Testing = 0x06,
+    _Le = 0x08,
 }
 
 impl OpcodeGroup {
