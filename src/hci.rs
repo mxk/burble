@@ -9,15 +9,12 @@ use bytes::Bytes;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, trace, warn};
 
-pub(crate) use cmd::*;
-pub use {cmd_hci_control::*, cmd_info_params::*, codes::*, event::*};
+pub use {cmd::*, codes::*, event::*};
 
 use crate::host;
 use crate::host::Transfer;
 
 mod cmd;
-mod cmd_hci_control;
-mod cmd_info_params;
 mod codes;
 mod event;
 

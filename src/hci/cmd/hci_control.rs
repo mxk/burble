@@ -1,4 +1,4 @@
-use super::*;
+use crate::hci::*;
 
 /// HCI Control and Baseband commands ([Vol 4] Part E, Section 7.3).
 impl<T: host::Transport> Host<T> {

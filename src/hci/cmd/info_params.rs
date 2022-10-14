@@ -1,4 +1,4 @@
-use super::*;
+use crate::hci::*;
 
 /// Informational parameters commands ([Vol 4] Part E, Section 7.4).
 impl<T: host::Transport> Host<T> {

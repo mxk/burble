@@ -1,6 +1,11 @@
 use bytes::{BufMut, BytesMut};
 
+pub use {hci_control::*, info_params::*};
+
 use super::*;
+
+mod hci_control;
+mod info_params;
 
 /// HCI command header and buffer sizes ([Vol 4] Part E, Section 5.4.1).
 const CMD_HDR: usize = 3;
