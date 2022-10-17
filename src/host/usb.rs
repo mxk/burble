@@ -132,7 +132,7 @@ impl UsbController {
     /// Configures the controller for HCI access.
     pub fn init(&mut self) -> Result<()> {
         let dev = Arc::get_mut(&mut self.dev).unwrap();
-        if cfg!(unix) {
+        if rusb::supports_detach_kernel_driver() {
             // Not supported on Windows
             debug!("Enabling automatic kernel driver detachment");
             dev.set_auto_detach_kernel_driver(true)?;
@@ -160,7 +160,7 @@ impl Transport for UsbController {
         // A one-second timer is recommended for command completion, so we use
         // the same for submission ([Vol 4] Part E, Section 4.4)
         t.set_timeout(Duration::from_secs(1));
-        f(t.buf_mut());
+        f(unsafe { t.buf_mut() });
         UsbTransfer::from_raw(t)
     }
 
@@ -197,28 +197,23 @@ impl Transfer for UsbTransfer {
     }
 
     fn buf_mut(&mut self) -> &mut BytesMut {
-        Arc::get_mut(&mut self.0)
+        let t = Arc::get_mut(&mut self.0)
             .expect("transfer is busy")
-            .get_mut()
-            .buf_mut()
+            .get_mut();
+        unsafe { t.buf_mut() }
     }
 
     fn map<T>(&self, f: impl FnOnce(Result<()>, &[u8]) -> T) -> T {
         // Could use an RwLock for this, but the most common case is one caller
         let t = self.0.lock();
-        f(
-            t.result().expect("transfer not done").map_err(Error::from),
-            t.buf(),
-        )
+        let r = t.result().expect("transfer not done").map_err(Error::from);
+        f(r, unsafe { t.buf() })
     }
 }
 
 impl Drop for UsbTransfer {
     fn drop(&mut self) {
-        let mut t = self.0.lock();
-        if t.in_flight() {
-            let _ = t.cancel();
-        }
+        let _ = self.0.lock().cancel();
     }
 }
 
@@ -312,7 +307,7 @@ impl Endpoints {
 }
 
 mod libusb {
-    use std::ffi::{c_char, c_int, c_void, CStr};
+    use std::ffi::{c_char, c_int, c_uint, c_void, CStr};
     use std::mem::align_of;
     use std::ptr::{null_mut, NonNull};
     use std::sync::{Arc, Once};
@@ -341,21 +336,23 @@ mod libusb {
         inner: NonNull<libusb_transfer>,
         buf: BytesMut,
         waker: Option<Waker>,
+        result: Option<Result<()>>,
 
         // The context must remain referenced after the first call to
-        // libusb_submit_transfer, which stores a permanent device reference,
-        // which is used to get the context when libusb_free_transfer calls
-        // libusb_unref_device followed by <os>_destroy_device functions. If
+        // libusb_submit_transfer. It stores a permanent device reference, which
+        // is used to get the context when libusb_free_transfer calls
+        // libusb_unref_device, followed by <os>_destroy_device functions. If
         // libusb_exit is called before libusb_free_transfer, the device
         // contexts are set to NULL, leading to a crash.
         ctx: Option<T>,
 
-        // The DeviceHandle must stay alive while the transfer is in flight to
-        // avoid a crash on Windows: https://github.com/libusb/libusb/issues/1206
+        // The DeviceHandle must stay open while the transfer is in flight to
+        // avoid a crash: https://github.com/libusb/libusb/issues/1206
         dev: Option<Arc<DeviceHandle<T>>>,
     }
 
     unsafe impl<T: UsbContext> Send for Transfer<T> {}
+    unsafe impl<T: UsbContext> Sync for Transfer<T> {}
 
     impl<T: UsbContext> Transfer<T> {
         /// Returns a new control transfer.
@@ -383,33 +380,46 @@ mod libusb {
                 inner.as_ptr().align_offset(align_of::<libusb_transfer>()),
                 0
             );
-            let mut t = unsafe { inner.as_mut() };
-            t.endpoint = endpoint;
-            t.transfer_type = typ;
-            t.callback = Self::callback;
+            let mut ct = unsafe { inner.as_mut() };
+            ct.endpoint = endpoint;
+            ct.transfer_type = typ;
+            ct.callback = Self::callback;
             // TODO: Use DMA buffers on Linux?
             Self {
                 inner,
                 buf: BytesMut::with_capacity(buf_size),
                 waker: None,
+                result: None,
                 ctx: None,
                 dev: None,
             }
         }
 
-        /// Returns a shared transfer buffer.
+        /// Returns a shared reference to the transfer buffer. The caller must
+        /// ensure that the transfer is not in flight.
         #[inline]
-        pub fn buf(&self) -> &[u8] {
+        pub unsafe fn buf(&self) -> &[u8] {
             self.buf.as_ref()
         }
 
-        /// Returns a mutable transfer buffer.
+        /// Returns a mutable reference to the transfer buffer. The caller must
+        /// ensure that the transfer is not in flight.
         #[inline]
-        pub fn buf_mut(&mut self) -> &mut BytesMut {
+        pub unsafe fn buf_mut(&mut self) -> &mut BytesMut {
             &mut self.buf
         }
 
-        /// Returns a reference to the `libusb_transfer` struct.
+        /// Returns the transfer result or [`None`] if the transfer is not
+        /// finished.
+        #[inline]
+        pub fn result(&self) -> Option<Result<()>> {
+            // The result is cached to ensure that the future resolves only at
+            // an await point and not randomly by the callback from the event
+            // thread.
+            self.result
+        }
+
+        /// Returns a shared reference to the `libusb_transfer` struct.
         #[inline]
         fn inner(&self) -> &libusb_transfer {
             unsafe { self.inner.as_ref() }
@@ -421,22 +431,16 @@ mod libusb {
             unsafe { self.inner.as_mut() }
         }
 
-        /// Returns whether the transfer is idle (not yet submitted).
+        /// Returns whether the transfer has not been submitted yet.
         #[inline]
-        fn is_idle(&self) -> bool {
+        fn is_pre_submit(&self) -> bool {
             self.inner().buffer.is_null()
-        }
-
-        /// Returns whether the transfer is in flight.
-        #[inline]
-        pub(super) fn in_flight(&self) -> bool {
-            !self.inner().user_data.is_null()
         }
 
         /// Sets control transfer parameters.
         #[inline]
         pub fn control_setup(&mut self, request_type: u8, request: u8, value: u16, index: u16) {
-            assert!(self.is_idle());
+            assert!(self.is_pre_submit());
             assert_eq!(self.inner().transfer_type, LIBUSB_TRANSFER_TYPE_CONTROL);
             unsafe {
                 libusb_fill_control_setup(
@@ -453,8 +457,8 @@ mod libusb {
         /// Sets transfer timeout.
         #[inline]
         pub fn set_timeout(&mut self, timeout: Duration) {
-            assert!(self.is_idle());
-            self.inner_mut().timeout = timeout.as_millis() as _;
+            assert!(self.is_pre_submit());
+            self.inner_mut().timeout = c_uint::try_from(timeout.as_millis()).unwrap();
         }
 
         /// Submits the transfer.
@@ -463,33 +467,37 @@ mod libusb {
             dev: Arc<DeviceHandle<T>>,
         ) -> Result<()> {
             let mut this = arc.lock();
-            assert!(this.is_idle());
+            assert!(this.is_pre_submit());
 
             let (buf_ptr, buf_len, buf_cap) =
                 (this.buf.as_mut_ptr(), this.buf.len(), this.buf.capacity());
-            let t = this.inner_mut();
-            t.dev_handle = dev.as_raw();
-            t.length = if t.endpoint & LIBUSB_ENDPOINT_DIR_MASK == LIBUSB_ENDPOINT_OUT {
-                buf_len
-            } else {
-                buf_cap
-            } as _;
-            t.user_data = Arc::into_raw(arc.clone()) as _;
-            t.buffer = buf_ptr;
-            if t.transfer_type == LIBUSB_TRANSFER_TYPE_CONTROL {
-                let n = buf_len - LIBUSB_CONTROL_SETUP_SIZE;
-                assert_eq!(n as u16 as usize, n);
-                unsafe { (*libusb_control_transfer_get_setup(t)).wLength = (n as u16).to_le() };
+            let ct = this.inner_mut();
+            ct.length = c_int::try_from(
+                if ct.endpoint & LIBUSB_ENDPOINT_DIR_MASK == LIBUSB_ENDPOINT_OUT {
+                    buf_len
+                } else {
+                    buf_cap
+                },
+            )
+            .unwrap();
+            ct.buffer = buf_ptr;
+            if ct.transfer_type == LIBUSB_TRANSFER_TYPE_CONTROL {
+                let n =
+                    u16::try_from(buf_len.checked_sub(LIBUSB_CONTROL_SETUP_SIZE).unwrap()).unwrap();
+                unsafe { (*libusb_control_transfer_get_setup(ct)).wLength = n.to_le() };
             }
 
+            ct.dev_handle = dev.as_raw();
+            ct.user_data = Arc::into_raw(arc.clone()) as _;
             this.ctx = Some(dev.context().clone());
             this.dev = Some(dev);
 
-            check!(libusb_submit_transfer(this.inner.as_ptr())).map_err(|e| {
-                this.dev = None;
-                let t = this.inner_mut();
-                drop(unsafe { Arc::from_raw(t.user_data as *const parking_lot::Mutex<Self>) });
-                t.user_data = null_mut();
+            let inner = this.inner.as_ptr();
+            drop(this);
+
+            check!(libusb_submit_transfer(inner)).map_err(|e| {
+                arc.lock().result = Some(Err(e));
+                Self::callback(inner);
                 e
             })
         }
@@ -497,8 +505,11 @@ mod libusb {
         /// Cancels a pending transfer. This operation is not immediate and the
         /// transfer should continue to be polled to determine the final result.
         pub fn cancel(&mut self) -> Result<()> {
+            // dev_handle is set to NULL when the device handle is closed. We
+            // ensure this doesn't happen while the transfer is in flight by
+            // keeping a reference to the device handle. See:
+            // https://github.com/libusb/libusb/issues/1206
             if self.inner().dev_handle.is_null() {
-                // TODO: Remove when fixed: https://github.com/libusb/libusb/issues/1206
                 return Err(Error::NotFound);
             }
             check!(libusb_cancel_transfer(self.inner.as_ptr()))
@@ -506,65 +517,64 @@ mod libusb {
 
         /// `Future::poll()` implementation.
         pub fn poll(&mut self, ctx: &mut std::task::Context<'_>) -> Poll<Result<()>> {
-            if self.in_flight() {
+            if !self.inner().user_data.is_null() {
                 self.waker = Some(ctx.waker().clone());
-                Poll::Pending
-            } else {
-                Poll::Ready(self.result().expect("poll of an idle transfer"))
+                return Poll::Pending;
             }
+            if self.result.is_none() {
+                assert!(!self.is_pre_submit());
+                self.result = Some(match self.inner().status {
+                    LIBUSB_TRANSFER_COMPLETED => Ok(()),
+                    LIBUSB_TRANSFER_ERROR => Err(Error::Io),
+                    LIBUSB_TRANSFER_TIMED_OUT => Err(Error::Timeout),
+                    LIBUSB_TRANSFER_CANCELLED => Err(Error::Interrupted),
+                    LIBUSB_TRANSFER_STALL => match self.inner().transfer_type {
+                        LIBUSB_TRANSFER_TYPE_CONTROL => Err(Error::NotSupported),
+                        _ => Err(Error::Pipe),
+                    },
+                    LIBUSB_TRANSFER_NO_DEVICE => Err(Error::NoDevice),
+                    LIBUSB_TRANSFER_OVERFLOW => Err(Error::Overflow),
+                    _ => Err(Error::Other),
+                });
+            }
+            Poll::Ready(self.result.unwrap())
         }
 
-        /// Returns the transfer result or [`None`] if the transfer is not
-        /// finished.
-        pub fn result(&self) -> Option<Result<()>> {
-            if self.is_idle() || self.in_flight() {
-                return None;
+        /// Handles transfer completion callback.
+        extern "system" fn callback(ct: *mut libusb_transfer) {
+            let r = std::panic::catch_unwind(|| {
+                if ct.is_null() || unsafe { (*ct).user_data }.is_null() {
+                    warn!("Callback for an invalid transfer");
+                    unsafe { libusb_free_transfer(ct) };
+                    return;
+                }
+                let arc =
+                    unsafe { Arc::from_raw((*ct).user_data as *const parking_lot::Mutex<Self>) };
+                let mut this = arc.lock();
+                let ct = this.inner_mut();
+                ct.dev_handle = null_mut();
+                ct.user_data = null_mut();
+                let len = if ct.transfer_type == LIBUSB_TRANSFER_TYPE_CONTROL {
+                    LIBUSB_CONTROL_SETUP_SIZE
+                } else {
+                    0
+                } + ct.actual_length as usize;
+                this.dev = None;
+                unsafe { this.buf.set_len(len) }
+                if let Some(w) = this.waker.take() {
+                    w.wake();
+                }
+            });
+            if let Err(e) = r {
+                eprintln!("libusb_transfer callback panic: {e:?}");
+                std::process::abort();
             }
-            Some(match self.inner().status {
-                LIBUSB_TRANSFER_COMPLETED => Ok(()),
-                LIBUSB_TRANSFER_TIMED_OUT => Err(Error::Timeout),
-                LIBUSB_TRANSFER_CANCELLED => Err(Error::Interrupted),
-                LIBUSB_TRANSFER_STALL => match self.inner().transfer_type {
-                    LIBUSB_TRANSFER_TYPE_CONTROL => Err(Error::NotSupported),
-                    _ => Err(Error::Pipe),
-                },
-                LIBUSB_TRANSFER_NO_DEVICE => Err(Error::NoDevice),
-                LIBUSB_TRANSFER_OVERFLOW => Err(Error::Overflow),
-                _ => Err(Error::Io),
-            })
-        }
-
-        /// Handles transfer completion callbacks.
-        extern "system" fn callback(t: *mut libusb_transfer) {
-            if t.is_null() || unsafe { (*t).user_data }.is_null() {
-                warn!("Callback for an invalid transfer");
-                unsafe { libusb_free_transfer(t) };
-                return;
-            }
-            let arc = unsafe { Arc::from_raw((*t).user_data as *const parking_lot::Mutex<Self>) };
-            let mut this = arc.lock();
-            debug_assert_eq!(this.inner.as_ptr(), t);
-            this.dev = None;
-            let t = this.inner_mut();
-            t.dev_handle = null_mut();
-            t.user_data = null_mut();
-            let n = if t.transfer_type == LIBUSB_TRANSFER_TYPE_CONTROL {
-                LIBUSB_CONTROL_SETUP_SIZE
-            } else {
-                0
-            } + t.actual_length as usize;
-            unsafe { this.buf.set_len(n) }
-            if let Some(w) = this.waker.take() {
-                w.wake();
-            }
-            drop(this);
         }
     }
 
     impl<T: UsbContext> Drop for Transfer<T> {
         fn drop(&mut self) {
-            assert!(!self.in_flight());
-            assert!(self.waker.is_none());
+            assert!(self.inner().user_data.is_null());
             unsafe { libusb_free_transfer(self.inner.as_ptr()) }
             self.inner = NonNull::dangling();
         }
@@ -656,17 +666,23 @@ mod libusb {
     }
 
     extern "system" fn log_cb(_: *mut libusb_context, lvl: c_int, msg: *mut c_void) {
-        let orig = unsafe { CStr::from_ptr(msg as *const c_char) }.to_string_lossy();
-        let msg = match orig.as_ref().split_once("libusb: ") {
-            Some((_, tail)) => tail.trim_end(),
-            _ => return, // Debug header (see log_v() in libusb/core.c)
-        };
-        match lvl {
-            LIBUSB_LOG_LEVEL_ERROR => error!("{}", msg.trim_start_matches("error ")),
-            LIBUSB_LOG_LEVEL_WARNING => warn!("{}", msg.trim_start_matches("warning ")),
-            LIBUSB_LOG_LEVEL_INFO => debug!("{}", msg.trim_start_matches("info ")),
-            LIBUSB_LOG_LEVEL_DEBUG => trace!("{}", msg.trim_start_matches("debug ")),
-            _ => trace!("{}", msg.trim_start_matches("unknown ")),
+        let r = std::panic::catch_unwind(|| {
+            let orig = unsafe { CStr::from_ptr(msg as *const c_char) }.to_string_lossy();
+            let msg = match orig.as_ref().split_once("libusb: ") {
+                Some((_, tail)) => tail.trim_end(),
+                _ => return, // Debug header (see log_v() in libusb/core.c)
+            };
+            match lvl {
+                LIBUSB_LOG_LEVEL_ERROR => error!("{}", msg.trim_start_matches("error ")),
+                LIBUSB_LOG_LEVEL_WARNING => warn!("{}", msg.trim_start_matches("warning ")),
+                LIBUSB_LOG_LEVEL_INFO => debug!("{}", msg.trim_start_matches("info ")),
+                LIBUSB_LOG_LEVEL_DEBUG => trace!("{}", msg.trim_start_matches("debug ")),
+                _ => trace!("{}", msg.trim_start_matches("unknown ")),
+            }
+        });
+        if let Err(e) = r {
+            eprintln!("libusb log callback panic: {e:?}");
+            std::process::abort();
         }
     }
 }
