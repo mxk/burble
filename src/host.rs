@@ -12,7 +12,7 @@ mod usb;
 /// Local host errors.
 #[derive(Clone, Copy, Debug, thiserror::Error)]
 pub enum Error {
-    #[error("USB error: {source}")]
+    #[error("usb error: {source}")]
     Usb {
         #[from]
         source: rusb::Error,
@@ -36,26 +36,25 @@ impl Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// HCI transport layer.
-pub trait Transport: Send + Sync {
-    type Transfer: Transfer + Debug;
-    type Future: Future<Output = Self::Transfer> + Send + Unpin;
+pub trait Transport: Debug + Send + Sync {
+    type Transfer: Transfer;
 
-    /// Returns a new transfer for an HCI command, calling `f` to fill the
-    /// command buffer.
-    fn cmd(&self, f: impl FnOnce(&mut BytesMut)) -> Self::Transfer;
+    /// Returns an outbound command transfer.
+    fn command(&self) -> Self::Transfer;
 
-    /// Returns a new transfer for an HCI event.
-    fn evt(&self) -> Self::Transfer;
+    /// Returns an inbound event transfer.
+    fn event(&self) -> Self::Transfer;
 
-    /// Submits a transfer for execution. The transfer may be cancelled if the
-    /// returned future is dropped before completion.
-    fn submit(&self, xfer: Self::Transfer) -> Result<Self::Future>;
+    /// Returns an inbound Asynchronous Connection-Oriented transfer.
+    fn acl_in(&self, buf_cap: usize) -> Self::Transfer;
+
+    /// Returns an outbound Asynchronous Connection-Oriented transfer.
+    fn acl_out(&self, buf_cap: usize) -> Self::Transfer;
 }
 
 /// Asynchronous I/O transfer.
-pub trait Transfer: Send + Sync {
-    /// Returns a shared reference to the transfer buffer.
-    fn buf(&self) -> &[u8];
+pub trait Transfer: AsRef<[u8]> + Debug + Send + Sync {
+    type Future: Future<Output = Self> + Debug + Send + Unpin;
 
     /// Returns a mutable reference to the transfer buffer. A newly allocated
     /// transfer may start with a non-empty buffer. The header, if any, must not
@@ -63,7 +62,14 @@ pub trait Transfer: Send + Sync {
     /// must not perform any operations that result in reallocation.
     fn buf_mut(&mut self) -> &mut BytesMut;
 
-    /// Returns the transfer result or [`None`] if the transfer is not yet
+    /// Submits a transfer for execution. The transfer may be cancelled by
+    /// dropping the returned future.
+    fn submit(self) -> Result<Self::Future>;
+
+    /// Returns the transfer result or [`None`] if the transfer was not yet
     /// submitted.
     fn result(&self) -> Option<Result<()>>;
+
+    /// Resets the transfer to its original state, allowing it to be reused.
+    fn reset(&mut self);
 }

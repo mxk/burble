@@ -273,17 +273,17 @@ impl EventTask {
     ) -> Result<()> {
         debug!("Event monitor started");
         loop {
-            tokio::select! {
-                r = router.recv_event() => {
-                    if let Err(e) = r {
-                        debug!("Event monitor error: {e}");
-                        return Err(e);
-                    }
-                }
+            let r: Result<EventGuard<T>> = tokio::select! {
+                r = router.recv_event() => r,
                 _ = c.cancelled() => {
                     debug!("Event monitor stopped");
                     return Ok(());
                 }
+            };
+            if let Err(e) = r {
+                // TODO: Ignore certain errors, like short write
+                debug!("Event monitor error: {e}");
+                return Err(e);
             }
         }
     }
@@ -391,7 +391,7 @@ impl<T: host::Transport> EventGuard<T> {
     #[inline]
     pub fn map<R>(&self, f: impl FnOnce(Event) -> R) -> R {
         let xfer = self.0.xfer.as_ref().unwrap();
-        f(Event::try_from(xfer.buf()).unwrap())
+        f(Event::try_from(xfer.as_ref()).unwrap())
     }
 
     /// Calls `f` on the received event if the event represents successful
@@ -427,10 +427,14 @@ impl<T: host::Transport> EventTransfer<T> {
 
     /// Receives and validates the next event.
     async fn next(&mut self) -> Result<()> {
-        self.xfer = Some(self.transport.submit(self.transport.evt())?.await);
-        let xfer = self.xfer.as_ref().unwrap();
+        let xfer = {
+            let mut xfer = self.xfer.take().unwrap_or_else(|| self.transport.event());
+            xfer.reset();
+            self.xfer = Some(xfer.submit()?.await);
+            unsafe { self.xfer.as_ref().unwrap_unchecked() }
+        };
         xfer.result().unwrap()?;
-        let r = Event::try_from(xfer.buf());
+        let r = Event::try_from(xfer.as_ref());
         trace!("{r:?}");
         r.map(|_| ())
     }

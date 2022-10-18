@@ -65,6 +65,7 @@ impl Usb {
         debug!("Event thread started");
         while run.load(Ordering::Acquire) {
             if let Err(e) = ctx.handle_events(None) {
+                // TODO: Stop all transfers
                 error!("Event thread error: {e}");
                 break;
             }
@@ -125,8 +126,7 @@ impl UsbController {
 
     /// Issues a USB reset command.
     pub fn reset(&self) -> Result<()> {
-        // TODO: Why does libusb_reset_device require exclusive access? libusb
-        // API is generally thread-safe.
+        // TODO: https://github.com/a1ien/rusb/issues/148
         let dev = unsafe { &mut *(Arc::as_ptr(&self.dev) as *mut DeviceHandle) };
         Ok(dev.reset()?)
     }
@@ -142,7 +142,7 @@ impl UsbController {
         debug!("Claiming main interface");
         dev.claim_interface(self.ep.main_iface)?;
         if let Some(isoch) = self.ep.isoch_iface {
-            // Do not reserve any bandwidth for the isochronous interface.
+            // Do not reserve any bandwidth for the isochronous interface
             debug!("Claiming isochronous interface");
             dev.claim_interface(isoch)?;
             debug!("Setting isochronous interface alt setting to 0");
@@ -154,61 +154,96 @@ impl UsbController {
 
 impl Transport for UsbController {
     type Transfer = UsbTransfer;
-    type Future = UsbTransferFuture;
 
-    fn cmd(&self, f: impl FnOnce(&mut BytesMut)) -> UsbTransfer {
+    fn command(&self) -> Self::Transfer {
         let mut t = libusb::Transfer::new_control(hci::CMD_BUF);
         // [Vol 4] Part B, Section 2.2.2
         t.control_setup(libusb::CMD_REQUEST_TYPE, 0, 0, self.ep.main_iface as _);
         // A one-second timer is recommended for command completion, so we use
         // the same for submission ([Vol 4] Part E, Section 4.4)
         t.set_timeout(Duration::from_secs(1));
-        f(t.buf_mut());
-        UsbTransfer(t)
+        Self::Transfer {
+            t,
+            dev: self.dev.clone(),
+        }
     }
 
-    fn evt(&self) -> UsbTransfer {
-        let t = libusb::Transfer::new_interrupt(self.ep.hci_evt, hci::EVT_BUF);
-        UsbTransfer(t)
+    fn event(&self) -> Self::Transfer {
+        Self::Transfer {
+            t: libusb::Transfer::new_interrupt(self.ep.event, hci::EVT_BUF),
+            dev: self.dev.clone(),
+        }
     }
 
-    fn submit(&self, t: UsbTransfer) -> Result<UsbTransferFuture> {
-        t.0.submit(self.dev.clone())
-            .map_or_else(|e| Err(Error::from(e)), |f| Ok(UsbTransferFuture(f)))
+    fn acl_in(&self, buf_cap: usize) -> Self::Transfer {
+        Self::Transfer {
+            t: libusb::Transfer::new_bulk(self.ep.acl_in, buf_cap),
+            dev: self.dev.clone(),
+        }
+    }
+
+    fn acl_out(&self, buf_cap: usize) -> Self::Transfer {
+        Self::Transfer {
+            t: libusb::Transfer::new_bulk(self.ep.acl_out, buf_cap),
+            dev: self.dev.clone(),
+        }
     }
 }
 
-// TODO: Transfer caching and reuse.
-
 /// Asynchronous USB transfer.
 #[derive(Debug)]
-pub struct UsbTransfer(Box<libusb::Transfer<rusb::Context>>);
+pub struct UsbTransfer {
+    t: Box<libusb::Transfer<rusb::Context>>,
+    dev: Arc<DeviceHandle>,
+}
 
 impl Transfer for UsbTransfer {
-    #[inline]
-    fn buf(&self) -> &[u8] {
-        self.0.buf()
-    }
+    type Future = UsbTransferFuture;
 
     #[inline]
     fn buf_mut(&mut self) -> &mut BytesMut {
-        self.0.buf_mut()
+        self.t.buf_mut()
+    }
+
+    fn submit(self) -> Result<Self::Future> {
+        let dev = self.dev.clone();
+        self.t
+            .submit(dev.clone())
+            .map_or_else(|e| Err(Error::from(e)), |fut| Ok(Self::Future { fut, dev }))
     }
 
     #[inline]
     fn result(&self) -> Option<Result<()>> {
-        self.0.result().map(|r| r.map_err(Error::from))
+        self.t.result().map(|r| r.map_err(Error::from))
+    }
+
+    fn reset(&mut self) {
+        self.t.reset();
     }
 }
 
-/// Future that resolves to the transfer result.
-pub struct UsbTransferFuture(libusb::TransferFuture<rusb::Context>);
+impl AsRef<[u8]> for UsbTransfer {
+    #[inline]
+    fn as_ref(&self) -> &[u8] {
+        (*self.t).as_ref()
+    }
+}
+
+/// Future that resolves to the finished transfer.
+#[derive(Debug)]
+pub struct UsbTransferFuture {
+    fut: libusb::TransferFuture<rusb::Context>,
+    dev: Arc<DeviceHandle>,
+}
 
 impl Future for UsbTransferFuture {
     type Output = UsbTransfer;
 
     fn poll(mut self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.0.poll(ctx).map(UsbTransfer)
+        self.fut.poll(ctx).map(|t| Self::Output {
+            t,
+            dev: self.dev.clone(),
+        })
     }
 }
 
@@ -217,7 +252,7 @@ impl Future for UsbTransferFuture {
 #[derive(Clone, Copy, Debug, Default)]
 struct Endpoints {
     main_iface: u8,
-    hci_evt: u8,
+    event: u8,
     acl_out: u8,
     acl_in: u8,
     isoch_iface: Option<u8>,
@@ -261,7 +296,7 @@ impl Endpoints {
                     trace!("        |__ {epd:?}");
                     use rusb::{Direction::*, TransferType::*};
                     match (epd.transfer_type(), epd.direction()) {
-                        (Interrupt, In) => ep.hci_evt = epd.address(),
+                        (Interrupt, In) => ep.event = epd.address(),
                         (Bulk, In) => ep.acl_in = epd.address(),
                         (Bulk, Out) => ep.acl_out = epd.address(),
                         _ => {
@@ -327,15 +362,16 @@ mod libusb {
         result: Option<Result<()>>,
 
         // The context must remain referenced after the first call to
-        // libusb_submit_transfer. It stores a permanent device reference, which
-        // is used to get the context when libusb_free_transfer calls
-        // libusb_unref_device, followed by <os>_destroy_device functions. If
-        // libusb_exit is called before libusb_free_transfer, the device
-        // contexts are set to NULL, leading to a crash.
+        // libusb_submit_transfer, which stores a permanent device reference,
+        // which is used to get the context in <os>_destroy_device when
+        // libusb_free_transfer calls libusb_unref_device. If libusb_exit is
+        // called before libusb_free_transfer, the device contexts are set to
+        // NULL, leading to a crash.
         ctx: Option<T>,
 
         // The DeviceHandle must stay open while the transfer is in flight to
-        // avoid a crash: https://github.com/libusb/libusb/issues/1206
+        // avoid a crash if libusb_cancel_transfer is called:
+        // https://github.com/libusb/libusb/issues/1206
         dev: Option<Arc<DeviceHandle<T>>>,
     }
 
@@ -344,46 +380,46 @@ mod libusb {
 
     impl<T: UsbContext> Transfer<T> {
         /// Returns a new control transfer.
-        pub fn new_control(buf_size: usize) -> Box<Self> {
-            let mut t = Self::new(
-                LIBUSB_TRANSFER_TYPE_CONTROL,
-                0,
-                LIBUSB_CONTROL_SETUP_SIZE + buf_size,
-            );
-            t.inner_mut().flags = LIBUSB_TRANSFER_SHORT_NOT_OK;
+        pub fn new_control(buf_cap: usize) -> Box<Self> {
+            let buf_cap = LIBUSB_CONTROL_SETUP_SIZE + buf_cap;
+            let mut t = Self::new(LIBUSB_TRANSFER_TYPE_CONTROL, 0, buf_cap);
             t.buf.put_bytes(0, LIBUSB_CONTROL_SETUP_SIZE);
             t
         }
 
         /// Returns a new interrupt transfer.
-        pub fn new_interrupt(endpoint: u8, buf_size: usize) -> Box<Self> {
-            Self::new(LIBUSB_TRANSFER_TYPE_INTERRUPT, endpoint, buf_size)
+        pub fn new_interrupt(endpoint: u8, buf_cap: usize) -> Box<Self> {
+            assert_eq!(endpoint & LIBUSB_ENDPOINT_DIR_MASK, LIBUSB_ENDPOINT_IN);
+            Self::new(LIBUSB_TRANSFER_TYPE_INTERRUPT, endpoint, buf_cap)
+        }
+
+        /// Returns a new bulk transfer.
+        pub fn new_bulk(endpoint: u8, buf_cap: usize) -> Box<Self> {
+            Self::new(LIBUSB_TRANSFER_TYPE_BULK, endpoint, buf_cap)
         }
 
         /// Allocates new transfer state and buffer.
-        fn new(typ: u8, endpoint: u8, buf_size: usize) -> Box<Self> {
-            let mut inner = NonNull::new(unsafe { libusb_alloc_transfer(0) })
+        fn new(typ: u8, endpoint: u8, buf_cap: usize) -> Box<Self> {
+            let inner = NonNull::new(unsafe { libusb_alloc_transfer(0) })
                 .expect("failed to allocate libusb_transfer struct");
             assert_eq!(inner.as_ptr() as usize % align_of::<libusb_transfer>(), 0);
-            let mut t = unsafe { inner.as_mut() };
-            t.endpoint = endpoint;
-            t.transfer_type = typ;
-            t.callback = Self::callback;
             // TODO: Use DMA buffers on Linux?
-            Box::new(Self {
+            let mut t = Box::new(Self {
                 inner,
-                buf: BytesMut::with_capacity(buf_size),
+                buf: BytesMut::with_capacity(buf_cap),
                 waker: parking_lot::Mutex::new(None),
                 result: None,
                 ctx: None,
                 dev: None,
-            })
-        }
-
-        /// Returns a shared reference to the transfer buffer.
-        #[inline]
-        pub fn buf(&self) -> &[u8] {
-            self.buf.as_ref()
+            });
+            let mut inner = t.inner_mut();
+            if endpoint & LIBUSB_ENDPOINT_DIR_MASK == LIBUSB_ENDPOINT_OUT {
+                inner.flags = LIBUSB_TRANSFER_SHORT_NOT_OK;
+            }
+            inner.endpoint = endpoint;
+            inner.transfer_type = typ;
+            inner.callback = Self::callback;
+            t
         }
 
         /// Returns a mutable reference to the transfer buffer.
@@ -392,18 +428,17 @@ mod libusb {
             &mut self.buf
         }
 
-        /// Returns the transfer result or [`None`] if the transfer is not
-        /// finished.
+        /// Returns the transfer result or [`None`] if the transfer was not yet
+        /// submitted.
         #[inline]
         pub fn result(&self) -> Option<Result<()>> {
             self.result
         }
 
-        /// Returns whether the callback function is expected to be called
-        /// eventually.
+        /// Returns whether a callback is expected.
         #[inline]
         fn callback_pending(&self) -> bool {
-            self.dev.is_some()
+            !self.inner().user_data.is_null()
         }
 
         /// Returns a shared reference to the `libusb_transfer` struct.
@@ -443,19 +478,16 @@ mod libusb {
         /// Submits the transfer.
         pub fn submit(mut self: Box<Self>, dev: Arc<DeviceHandle<T>>) -> Result<TransferFuture<T>> {
             assert!(self.result.is_none());
-            let (buf_ptr, buf_len, buf_cap) =
-                (self.buf.as_mut_ptr(), self.buf.len(), self.buf.capacity());
 
+            let buf_ptr = self.buf.as_mut_ptr();
+            let buf_len = match self.inner().endpoint & LIBUSB_ENDPOINT_DIR_MASK {
+                LIBUSB_ENDPOINT_OUT => self.buf.len(),
+                LIBUSB_ENDPOINT_IN => self.buf.capacity(),
+                _ => unreachable!(),
+            };
             let inner = self.inner_mut();
             inner.buffer = buf_ptr;
-            inner.length = c_int::try_from(
-                if inner.endpoint & LIBUSB_ENDPOINT_DIR_MASK == LIBUSB_ENDPOINT_OUT {
-                    buf_len
-                } else {
-                    buf_cap
-                },
-            )
-            .unwrap();
+            inner.length = c_int::try_from(buf_len).unwrap();
             if inner.transfer_type == LIBUSB_TRANSFER_TYPE_CONTROL {
                 let n =
                     u16::try_from(buf_len.checked_sub(LIBUSB_CONTROL_SETUP_SIZE).unwrap()).unwrap();
@@ -477,7 +509,25 @@ mod libusb {
             Ok(TransferFuture(raw))
         }
 
-        // Ensures mutual exclusion between the callback and TransferFuture.
+        /// Resets the transfer to its pre-submit state.
+        pub fn reset(&mut self) {
+            let mut inner = self.inner_mut();
+            inner.status = 0;
+            inner.length = 0;
+            inner.actual_length = 0;
+            inner.buffer = null_mut();
+            let n = if inner.transfer_type == LIBUSB_TRANSFER_TYPE_CONTROL {
+                LIBUSB_CONTROL_SETUP_SIZE
+            } else {
+                0
+            };
+            unsafe { self.buf.set_len(n) };
+            self.result = None;
+        }
+
+        /// Ensures mutual exclusion between the callback and TransferFuture.
+        /// Returns [`None`] if `raw` is null.
+        #[inline]
         fn lock<'a>(
             raw: *mut Self,
         ) -> Option<(parking_lot::MutexGuard<'a, Option<Waker>>, &'a mut Self)> {
@@ -517,6 +567,13 @@ mod libusb {
         }
     }
 
+    impl<T: UsbContext> AsRef<[u8]> for Transfer<T> {
+        #[inline]
+        fn as_ref(&self) -> &[u8] {
+            self.buf.as_ref()
+        }
+    }
+
     impl<T: UsbContext> Drop for Transfer<T> {
         fn drop(&mut self) {
             unsafe { libusb_free_transfer(self.inner.as_ptr()) }
@@ -525,6 +582,7 @@ mod libusb {
 
     /// An in-flight transfer that will resolve to the original transfer once
     /// finished.
+    #[derive(Debug)]
     pub(super) struct TransferFuture<T: UsbContext>(*mut Transfer<T>);
 
     unsafe impl<T: UsbContext> Send for TransferFuture<T> {}
@@ -537,7 +595,7 @@ mod libusb {
                 *waker = Some(ctx.waker().clone());
                 return Poll::Pending;
             }
-            let mut t = unsafe { Box::from_raw(replace(&mut self.0, null_mut())) };
+            let mut t = self.take();
             t.result = Some(match t.inner().status {
                 LIBUSB_TRANSFER_COMPLETED => Ok(()),
                 LIBUSB_TRANSFER_ERROR => Err(Error::Io),
@@ -555,17 +613,22 @@ mod libusb {
         }
 
         /// Cancels a pending transfer. Cancellation is asynchronous and the
-        /// transfer should continue to be polled to determine the final result.
+        /// future should continue to be polled to determine the final result.
         pub fn cancel(&self) -> Result<()> {
-            if let Some(t) = unsafe { self.0.as_ref() } {
-                // This is not safe to call if t.inner.dev_handle is NULL, which
-                // can happen if the device handle is closed. We prevent this by
-                // keeping a reference to the device handle. See:
+            if let Some((_waker, t)) = Transfer::lock(self.0) {
+                // We need to hold the waker lock to ensure that dev_handle is
+                // not cleared by the callback. See:
                 // https://github.com/libusb/libusb/issues/1206
-                check!(libusb_cancel_transfer(t.inner.as_ptr()))
-            } else {
-                Err(Error::NotFound)
+                if !t.inner().dev_handle.is_null() {
+                    return check!(libusb_cancel_transfer(t.inner.as_ptr()));
+                }
             }
+            Err(Error::NotFound)
+        }
+
+        /// Takes ownership of a finished transfer.
+        fn take(&mut self) -> Box<Transfer<T>> {
+            unsafe { Box::from_raw(replace(&mut self.0, null_mut())) }
         }
     }
 
@@ -576,8 +639,7 @@ mod libusb {
                 waker.take();
                 t.result = Some(r);
                 if !t.callback_pending() {
-                    drop((waker, t));
-                    drop(unsafe { Box::from_raw(self.0) });
+                    self.take();
                 }
             }
         }

@@ -84,8 +84,8 @@ pub struct Host<T: host::Transport> {
 
 impl<T: host::Transport> Host<T> {
     /// Returns an HCI host using transport layer `t`.
-    pub fn new(t: T) -> Self {
-        let transport = Arc::new(t);
+    pub fn new(transport: T) -> Self {
+        let transport = Arc::new(transport);
         let router = EventRouter::new(transport.clone());
         Self { transport, router }
     }
@@ -107,14 +107,12 @@ impl<T: host::Transport> Host<T> {
     /// caller must check the completion status to determine whether the command
     /// was successful.
     async fn cmd(&self, opcode: Opcode, enc: impl FnOnce(Command)) -> Result<EventGuard<T>> {
-        let mut cmd = self.transport.cmd(|b| enc(Command::new(opcode, b)));
+        let mut cmd = self.transport.command();
+        let off = cmd.buf_mut().len();
+        enc(Command::new(opcode, cmd.buf_mut()));
+        trace!("Command: {:02x?}", &cmd.buf_mut()[off..]);
         let mut waiter = self.router.clone().register(EventFilter::Command(opcode))?;
-        trace!(
-            "Command: {:02x?}",
-            &cmd.buf_mut()[rusb::constants::LIBUSB_CONTROL_SETUP_SIZE..]
-        );
-        let cmd = self.transport.submit(cmd)?.await;
-        cmd.result().unwrap().map_err(|e| {
+        cmd.submit()?.await.result().unwrap().map_err(|e| {
             warn!("{opcode:?} failed: {e}");
             e
         })?;
