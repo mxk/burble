@@ -251,7 +251,7 @@ pub struct EventTask {
 
 impl EventTask {
     /// Returns a new event monitor.
-    pub(super) fn new<T: host::Transport>(router: Arc<EventRouter<T>>) -> Self {
+    pub(super) fn new<T: host::Transport + 'static>(router: Arc<EventRouter<T>>) -> Self {
         let c = CancellationToken::new();
         Self {
             h: tokio::spawn(Self::run(router, c.clone())),
@@ -391,7 +391,7 @@ impl<T: host::Transport> EventGuard<T> {
     #[inline]
     pub fn map<R>(&self, f: impl FnOnce(Event) -> R) -> R {
         let xfer = self.0.xfer.as_ref().unwrap();
-        xfer.map(|_, b| f(Event::try_from(b).unwrap()))
+        f(Event::try_from(xfer.buf()).unwrap())
     }
 
     /// Calls `f` on the received event if the event represents successful
@@ -415,7 +415,6 @@ impl<T: host::Transport> EventGuard<T> {
 struct EventTransfer<T: host::Transport> {
     transport: Arc<T>,
     xfer: Option<T::Transfer>,
-    restart: bool,
 }
 
 impl<T: host::Transport> EventTransfer<T> {
@@ -423,25 +422,16 @@ impl<T: host::Transport> EventTransfer<T> {
         Arc::new(tokio::sync::RwLock::new(EventTransfer {
             transport,
             xfer: None,
-            restart: true,
         }))
     }
 
-    /// Receives and validates the next event. This method is cancellation safe.
+    /// Receives and validates the next event.
     async fn next(&mut self) -> Result<()> {
-        if self.restart {
-            let mut evt = self.transport.evt();
-            self.transport.submit(&mut evt)?;
-            self.xfer = Some(evt);
-            self.restart = false;
-        }
-        let xfer = self.xfer.as_mut().unwrap();
-        let r = xfer.result().await;
-        self.restart = true;
-        r?;
-        let b = xfer.buf_mut();
-        let evt = Event::try_from(b.as_ref());
-        trace!("{evt:?}");
-        evt.map(|_evt| ())
+        self.xfer = Some(self.transport.submit(self.transport.evt())?.await);
+        let xfer = self.xfer.as_ref().unwrap();
+        xfer.result().unwrap()?;
+        let r = Event::try_from(xfer.buf());
+        trace!("{r:?}");
+        r.map(|_| ())
     }
 }

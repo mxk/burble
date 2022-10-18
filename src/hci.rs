@@ -103,12 +103,6 @@ impl<T: host::Transport> Host<T> {
         self.router.recv_event().await
     }
 
-    /// Spawns a task that continuously receives HCI events until an error is
-    /// encountered. The task is canceled when the returned future is dropped.
-    pub fn enable_events(&self) -> EventTask {
-        EventTask::new(self.router.clone())
-    }
-
     /// Executes an HCI command and returns the command completion event. The
     /// caller must check the completion status to determine whether the command
     /// was successful.
@@ -119,8 +113,8 @@ impl<T: host::Transport> Host<T> {
             "Command: {:02x?}",
             &cmd.buf_mut()[rusb::constants::LIBUSB_CONTROL_SETUP_SIZE..]
         );
-        self.transport.submit(&mut cmd)?;
-        cmd.result().await.map_err(|e| {
+        let cmd = self.transport.submit(cmd)?.await;
+        cmd.result().unwrap().map_err(|e| {
             warn!("{opcode:?} failed: {e}");
             e
         })?;
@@ -144,5 +138,13 @@ impl<T: host::Transport> Host<T> {
             _ => Err(e),
         })?;
         Ok(())
+    }
+}
+
+impl<T: host::Transport + 'static> Host<T> {
+    /// Spawns a task that continuously receives HCI events until an error is
+    /// encountered. The task is canceled when the returned future is dropped.
+    pub fn enable_events(&self) -> EventTask {
+        EventTask::new(self.router.clone())
     }
 }

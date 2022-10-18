@@ -36,8 +36,9 @@ impl Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// HCI transport layer.
-pub trait Transport: Send + Sync + 'static {
+pub trait Transport: Send + Sync {
     type Transfer: Transfer + Debug;
+    type Future: Future<Output = Self::Transfer> + Send + Unpin;
 
     /// Returns a new transfer for an HCI command, calling `f` to fill the
     /// command buffer.
@@ -46,23 +47,23 @@ pub trait Transport: Send + Sync + 'static {
     /// Returns a new transfer for an HCI event.
     fn evt(&self) -> Self::Transfer;
 
-    /// Submits a transfer for execution.
-    fn submit(&self, xfer: &mut Self::Transfer) -> Result<()>;
+    /// Submits a transfer for execution. The transfer may be cancelled if the
+    /// returned future is dropped before completion.
+    fn submit(&self, xfer: Self::Transfer) -> Result<Self::Future>;
 }
 
 /// Asynchronous I/O transfer.
 pub trait Transfer: Send + Sync {
-    type Future: Future<Output = Result<()>> + Send;
+    /// Returns a shared reference to the transfer buffer.
+    fn buf(&self) -> &[u8];
 
-    /// Returns a future that resolves to the transfer result. The transfer is
-    /// cancelled if it is dropped without awaiting the result.
-    fn result(&mut self) -> Self::Future;
-
-    /// Returns the transfer buffer. It panics if the transfer is still in
-    /// progress. The buffer may be allocated in a DMA region, so the caller
-    /// must not perform any operations that may result in reallocation.
+    /// Returns a mutable reference to the transfer buffer. A newly allocated
+    /// transfer may start with a non-empty buffer. The header, if any, must not
+    /// be modified. The buffer may be allocated in a DMA region, so the caller
+    /// must not perform any operations that result in reallocation.
     fn buf_mut(&mut self) -> &mut BytesMut;
 
-    /// Passes the transfer result and buffer to `f` in a shared context.
-    fn map<T>(&self, f: impl FnOnce(<Self::Future as Future>::Output, &[u8]) -> T) -> T;
+    /// Returns the transfer result or [`None`] if the transfer is not yet
+    /// submitted.
+    fn result(&self) -> Option<Result<()>>;
 }
