@@ -1,3 +1,5 @@
+#![allow(clippy::use_self)]
+
 use OpcodeGroup::*;
 
 /// HCI command opcodes ([Vol 4] Part E, Section 7).
@@ -22,8 +24,9 @@ pub enum Opcode {
 }
 
 impl From<u16> for Opcode {
+    #[inline]
     fn from(v: u16) -> Self {
-        Opcode::from_repr(v).unwrap_or(Opcode::None)
+        Self::from_repr(v).unwrap_or(Self::None)
     }
 }
 
@@ -42,6 +45,7 @@ enum OpcodeGroup {
 
 impl OpcodeGroup {
     /// Combines OGF with OCF to create a full opcode.
+    #[inline]
     const fn ocf(self, ocf: u16) -> u16 {
         (self as u16) << 10 | ocf
     }
@@ -237,16 +241,10 @@ pub enum Status {
     PacketTooLong = 0x45,
 }
 
-impl Status {
-    /// Returns whether the operation was successful.
-    pub fn is_ok(self) -> bool {
-        self == Status::Success
-    }
-}
-
 impl From<u8> for Status {
+    #[inline]
     fn from(v: u8) -> Self {
         // [Vol 4] Part E, Section 1.2
-        Self::from_repr(v).unwrap_or(Status::UnspecifiedError)
+        Self::from_repr(v).unwrap_or(Self::UnspecifiedError)
     }
 }

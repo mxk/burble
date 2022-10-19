@@ -23,6 +23,7 @@ mod tests;
 
 /// Error type returned by the HCI layer.
 #[derive(Clone, Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum Error {
     #[error(transparent)]
     Host(#[from] host::Error),
@@ -54,20 +55,26 @@ pub enum Error {
 
 impl Error {
     /// Returns the HCI status code, if any.
-    pub fn status(&self) -> Option<Status> {
+    pub const fn status(&self) -> Option<Status> {
         use Error::*;
-        match self {
-            Hci { status } => Some(*status),
-            CommandFailed { status, .. } => Some(*status),
-            CommandAborted { status, .. } => Some(*status),
-            _ => None,
+        match *self {
+            Hci { status } | CommandFailed { status, .. } | CommandAborted { status, .. } => {
+                Some(status)
+            }
+            Host(_)
+            | InvalidEvent(_)
+            | UnknownEvent { .. }
+            | FilterConflict
+            | CommandQuotaExceeded
+            | NonCommandEvent { .. } => None,
         }
     }
 }
 
 impl From<CommandStatus> for Error {
+    #[inline]
     fn from(st: CommandStatus) -> Self {
-        Error::CommandFailed {
+        Self::CommandFailed {
             opcode: st.opcode,
             status: st.status,
         }
@@ -88,7 +95,7 @@ impl<T: host::Transport> Host<T> {
     /// Returns an HCI host using transport layer `t`.
     pub fn new(transport: T) -> Self {
         let transport = Arc::new(transport);
-        let router = EventRouter::new(transport.clone());
+        let router = EventRouter::new(Arc::clone(&transport));
         Self { transport, router }
     }
 
@@ -101,6 +108,7 @@ impl<T: host::Transport> Host<T> {
     /// returned guard is dropped. If there are multiple concurrent calls to
     /// this method, only one will resolve to the received event and the others
     /// will continue to wait.
+    #[inline]
     pub async fn event(&self) -> Result<EventGuard<T>> {
         self.router.recv_event().await
     }
@@ -108,12 +116,12 @@ impl<T: host::Transport> Host<T> {
     /// Executes an HCI command and returns the command completion event. The
     /// caller must check the completion status to determine whether the command
     /// was successful.
-    async fn cmd(&self, opcode: Opcode, enc: impl FnOnce(Command)) -> Result<EventGuard<T>> {
+    async fn cmd(&self, opcode: Opcode, enc: impl FnOnce(Command) + Send) -> Result<EventGuard<T>> {
         let mut cmd = self.transport.command();
         let off = cmd.buf_mut().len();
         enc(Command::new(opcode, cmd.buf_mut()));
         trace!("Command: {:02x?}", &cmd.buf_mut()[off..]);
-        let mut waiter = self.router.clone().register(EventFilter::Command(opcode))?;
+        let mut waiter = Arc::clone(&self.router).register(EventFilter::Command(opcode))?;
         cmd.submit()?.await.result().unwrap().map_err(|e| {
             warn!("{opcode:?} failed: {e}");
             e
@@ -144,7 +152,9 @@ impl<T: host::Transport> Host<T> {
 impl<T: host::Transport + 'static> Host<T> {
     /// Spawns a task that continuously receives HCI events until an error is
     /// encountered. The task is canceled when the returned future is dropped.
+    #[inline]
+    #[must_use]
     pub fn enable_events(&self) -> EventReceiverTask {
-        EventReceiverTask::new(self.router.clone())
+        EventReceiverTask::new(Arc::clone(&self.router))
     }
 }

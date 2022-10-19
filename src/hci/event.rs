@@ -39,7 +39,8 @@ impl Event<'_> {
     /// Returns basic information from `CommandComplete` or `CommandStatus`
     /// events. Returns [`None`] for other event types.
     #[inline]
-    pub fn cmd_status(&self) -> Option<CommandStatus> {
+    #[must_use]
+    pub const fn cmd_status(&self) -> Option<CommandStatus> {
         self.cmd_status
     }
 
@@ -99,10 +100,10 @@ impl<'a> TryFrom<&'a [u8]> for Event<'a> {
             EventType::Hci(EventCode::CommandComplete) => Some(CommandStatus {
                 quota: CommandQuota(tail.get_u8()),
                 opcode: Opcode::from(tail.get_u16_le()),
-                status: if !tail.is_empty() {
-                    Status::from(tail.get_u8())
-                } else {
+                status: if tail.is_empty() {
                     Status::Success
+                } else {
+                    Status::from(tail.get_u8())
                 },
             }),
             EventType::Hci(EventCode::CommandStatus) => Some(CommandStatus {
@@ -122,6 +123,7 @@ impl<'a> TryFrom<&'a [u8]> for Event<'a> {
 
 /// HCI event or LE subevent code.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, strum::Display)]
+#[allow(clippy::exhaustive_enums)]
 pub enum EventType {
     Hci(EventCode),
     Le(SubeventCode),
@@ -314,16 +316,16 @@ impl EventFilter {
     /// Returns whether `evt` matches the filter.
     fn matches(&self, evt: &Event) -> bool {
         use EventFilter::*;
-        match self {
+        match *self {
             _Any => true,
-            &Command(opcode) => matches!(evt.cmd_status, Some(st) if st.opcode == opcode),
+            Command(opcode) => matches!(evt.cmd_status, Some(st) if st.opcode == opcode),
         }
     }
 }
 
-/// Queue of event waiters. VecDeque is used because there are likely to be
+/// Queue of event waiters. `VecDeque` is used because there are likely to be
 /// only a few waiters with frequent insertion and removal for commands, so it
-/// is likely to outperform HashMap and BTreeMap.
+/// is likely to outperform `HashMap` and `BTreeMap`.
 #[derive(Debug)]
 struct Waiters<T: host::Transport> {
     queue: VecDeque<Waiter<T>>,
@@ -385,6 +387,7 @@ pub struct EventGuard<T: host::Transport>(tokio::sync::OwnedRwLockReadGuard<Even
 impl<T: host::Transport> EventGuard<T> {
     /// Returns the received event.
     #[inline]
+    #[must_use]
     pub fn get(&self) -> Event {
         // SAFETY: EventGuard can only contain a valid Event
         unsafe { self.0.event().unwrap_unchecked() }

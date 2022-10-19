@@ -32,7 +32,7 @@ impl Usb {
         let ctx = libusb::new_ctx()?;
         let run = Arc::new(AtomicBool::new(true));
         let thr = {
-            let (ctx, run) = (ctx.clone(), run.clone());
+            let (ctx, run) = (ctx.clone(), Arc::clone(&run));
             Some(thread::spawn(move || Self::event_thread(ctx, run)))
         };
         Ok(Self { ctx, run, thr })
@@ -50,6 +50,7 @@ impl Usb {
 
     /// Convenience function for opening the first device with matching
     /// Vendor/Product ID.
+    #[allow(clippy::similar_names)]
     pub fn open_first(&self, vid: u16, pid: u16) -> Result<UsbController> {
         debug!("Opening ID {:04x}:{:04x}", vid, pid);
         let dev = self
@@ -61,6 +62,7 @@ impl Usb {
     }
 
     /// Dedicated thread for async transfer and hotplug events.
+    #[allow(clippy::needless_pass_by_value)]
     fn event_thread(ctx: rusb::Context, run: Arc<AtomicBool>) {
         debug!("Event thread started");
         while run.load(Ordering::Acquire) {
@@ -78,7 +80,7 @@ impl Drop for Usb {
     fn drop(&mut self) {
         self.run.store(false, Ordering::Release);
         self.ctx.interrupt_handle_events();
-        self.thr.take().map(|h| h.join());
+        self.thr.take().map(thread::JoinHandle::join);
     }
 }
 
@@ -121,14 +123,13 @@ pub struct UsbController {
 impl UsbController {
     fn new(dev: DeviceHandle, ep: Endpoints) -> Self {
         let dev = Arc::new(dev);
-        UsbController { dev, ep }
+        Self { dev, ep }
     }
 
     /// Issues a USB reset command.
-    pub fn reset(&self) -> Result<()> {
-        // TODO: https://github.com/a1ien/rusb/issues/148
-        let dev = unsafe { &mut *(Arc::as_ptr(&self.dev) as *mut DeviceHandle) };
-        Ok(dev.reset()?)
+    pub fn reset(&mut self) -> Result<()> {
+        // TODO: Take shared reference: https://github.com/a1ien/rusb/issues/148
+        Ok(Arc::get_mut(&mut self.dev).unwrap().reset()?)
     }
 
     /// Configures the controller for HCI access.
@@ -158,34 +159,39 @@ impl Transport for UsbController {
     fn command(&self) -> Self::Transfer {
         let mut t = libusb::Transfer::new_control(hci::CMD_BUF);
         // [Vol 4] Part B, Section 2.2.2
-        t.control_setup(libusb::CMD_REQUEST_TYPE, 0, 0, self.ep.main_iface as _);
+        t.control_setup(
+            libusb::CMD_REQUEST_TYPE,      // bmRequestType
+            0x00,                          // bRequest
+            0x00,                          // wValue
+            u16::from(self.ep.main_iface), // wIndex
+        );
         // A one-second timer is recommended for command completion, so we use
         // the same for submission ([Vol 4] Part E, Section 4.4)
         t.set_timeout(Duration::from_secs(1));
         Self::Transfer {
             t,
-            dev: self.dev.clone(),
+            dev: Arc::clone(&self.dev),
         }
     }
 
     fn event(&self) -> Self::Transfer {
         Self::Transfer {
             t: libusb::Transfer::new_interrupt(self.ep.event, hci::EVT_BUF),
-            dev: self.dev.clone(),
+            dev: Arc::clone(&self.dev),
         }
     }
 
     fn acl_in(&self, buf_cap: usize) -> Self::Transfer {
         Self::Transfer {
             t: libusb::Transfer::new_bulk(self.ep.acl_in, buf_cap),
-            dev: self.dev.clone(),
+            dev: Arc::clone(&self.dev),
         }
     }
 
     fn acl_out(&self, buf_cap: usize) -> Self::Transfer {
         Self::Transfer {
             t: libusb::Transfer::new_bulk(self.ep.acl_out, buf_cap),
-            dev: self.dev.clone(),
+            dev: Arc::clone(&self.dev),
         }
     }
 }
@@ -205,10 +211,11 @@ impl Transfer for UsbTransfer {
         self.t.buf_mut()
     }
 
+    #[inline]
     fn submit(self) -> Result<Self::Future> {
-        let dev = self.dev.clone();
+        let dev = Arc::clone(&self.dev);
         self.t
-            .submit(dev.clone())
+            .submit(Arc::clone(&dev))
             .map_or_else(|e| Err(Error::from(e)), |fut| Ok(Self::Future { fut, dev }))
     }
 
@@ -217,6 +224,7 @@ impl Transfer for UsbTransfer {
         self.t.result().map(|r| r.map_err(Error::from))
     }
 
+    #[inline]
     fn reset(&mut self) {
         self.t.reset();
     }
@@ -242,7 +250,7 @@ impl Future for UsbTransferFuture {
     fn poll(mut self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Self::Output> {
         self.fut.poll(ctx).map(|t| Self::Output {
             t,
-            dev: self.dev.clone(),
+            dev: Arc::clone(&self.dev),
         })
     }
 }
@@ -293,8 +301,8 @@ impl Endpoints {
             if ifd.num_endpoints() == 3 && ifc.descriptors().count() == 1 {
                 ep.main_iface = ifd.interface_number();
                 for epd in ifd.endpoint_descriptors() {
-                    trace!("        |__ {epd:?}");
                     use rusb::{Direction::*, TransferType::*};
+                    trace!("        |__ {epd:?}");
                     match (epd.transfer_type(), epd.direction()) {
                         (Interrupt, In) => ep.event = epd.address(),
                         (Bulk, In) => ep.acl_in = epd.address(),
@@ -340,6 +348,7 @@ mod libusb {
 
     macro_rules! check {
         ($x:expr) => {
+            // SAFETY: C API call
             match unsafe { $x } {
                 LIBUSB_SUCCESS => Ok(()),
                 e => Err(api_error(e)),
@@ -375,7 +384,10 @@ mod libusb {
         dev: Option<Arc<DeviceHandle<T>>>,
     }
 
+    // SAFETY: libusb_transfer is not aliased
     unsafe impl<T: UsbContext> Send for Transfer<T> {}
+
+    // SAFETY: libusb_transfer is not aliased
     unsafe impl<T: UsbContext> Sync for Transfer<T> {}
 
     impl<T: UsbContext> Transfer<T> {
@@ -400,6 +412,7 @@ mod libusb {
 
         /// Allocates new transfer state and buffer.
         fn new(typ: u8, endpoint: u8, buf_cap: usize) -> Box<Self> {
+            // SAFETY: C API call
             let inner = NonNull::new(unsafe { libusb_alloc_transfer(0) })
                 .expect("failed to allocate libusb_transfer struct");
             assert_eq!(inner.as_ptr() as usize % align_of::<libusb_transfer>(), 0);
@@ -431,32 +444,38 @@ mod libusb {
         /// Returns the transfer result or [`None`] if the transfer was not yet
         /// submitted.
         #[inline]
-        pub fn result(&self) -> Option<Result<()>> {
+        pub const fn result(&self) -> Option<Result<()>> {
             self.result
         }
 
         /// Returns whether a callback is expected.
         #[inline]
         fn callback_pending(&self) -> bool {
+            // This must be based on user_data to ensure that the callback will
+            // panic even if it does get called.
             !self.inner().user_data.is_null()
         }
 
         /// Returns a shared reference to the `libusb_transfer` struct.
         #[inline]
         fn inner(&self) -> &libusb_transfer {
+            // SAFETY: new() ensures that inner can be converted to a reference
             unsafe { self.inner.as_ref() }
         }
 
         /// Returns a mutable reference to the `libusb_transfer` struct.
         #[inline]
         fn inner_mut(&mut self) -> &mut libusb_transfer {
+            // SAFETY: new() ensures that inner can be converted to a reference
             unsafe { self.inner.as_mut() }
         }
 
         /// Sets control transfer parameters.
         #[inline]
         pub fn control_setup(&mut self, request_type: u8, request: u8, value: u16, index: u16) {
-            assert_eq!(self.inner().transfer_type, LIBUSB_TRANSFER_TYPE_CONTROL);
+            debug_assert_eq!(self.inner().transfer_type, LIBUSB_TRANSFER_TYPE_CONTROL);
+            debug_assert!(self.buf.len() >= LIBUSB_CONTROL_SETUP_SIZE);
+            // SAFETY: Buffer length is at least LIBUSB_CONTROL_SETUP_SIZE
             unsafe {
                 libusb_fill_control_setup(
                     self.buf.as_mut_ptr(),
@@ -465,7 +484,7 @@ mod libusb {
                     value,
                     index,
                     0, // Final wLength is set in submit()
-                )
+                );
             }
         }
 
@@ -477,7 +496,7 @@ mod libusb {
 
         /// Submits the transfer.
         pub fn submit(mut self: Box<Self>, dev: Arc<DeviceHandle<T>>) -> Result<TransferFuture<T>> {
-            assert!(self.result.is_none());
+            assert!(self.result.is_none(), "tried to resubmit a finished transfer");
 
             let buf_ptr = self.buf.as_mut_ptr();
             let buf_len = match self.inner().endpoint & LIBUSB_ENDPOINT_DIR_MASK {
@@ -486,22 +505,26 @@ mod libusb {
                 _ => unreachable!(),
             };
             let inner = self.inner_mut();
-            inner.buffer = buf_ptr;
-            inner.length = c_int::try_from(buf_len).unwrap();
             if inner.transfer_type == LIBUSB_TRANSFER_TYPE_CONTROL {
                 let n =
                     u16::try_from(buf_len.checked_sub(LIBUSB_CONTROL_SETUP_SIZE).unwrap()).unwrap();
-                unsafe { (*libusb_control_transfer_get_setup(inner)).wLength = n.to_le() };
+                // SAFETY: buf_ptr is not null and buf_len is at least
+                // LIBUSB_CONTROL_SETUP_SIZE
+                unsafe { (*buf_ptr.cast::<libusb_control_setup>()).wLength = n.to_le() };
             }
             inner.dev_handle = dev.as_raw();
+            inner.length = c_int::try_from(buf_len).unwrap();
+            inner.buffer = buf_ptr;
             self.ctx = Some(dev.context().clone());
             self.dev = Some(dev);
 
             let inner = self.inner.as_ptr();
             let raw = Box::into_raw(self);
-            unsafe { (*inner).user_data = raw as *mut _ };
+            // SAFETY: inner is a valid pointer
+            unsafe { (*inner).user_data = raw.cast() };
 
             if let Err(e) = check!(libusb_submit_transfer(inner)) {
+                // SAFETY: raw is a valid pointer
                 unsafe { (*raw).result = Some(Err(e)) };
                 Self::callback(inner);
                 return Err(e);
@@ -521,24 +544,29 @@ mod libusb {
             } else {
                 0
             };
+            // SAFETY: buf capacity is at least n and control setup is always
+            // initialized.
             unsafe { self.buf.set_len(n) };
             self.result = None;
         }
 
-        /// Ensures mutual exclusion between the callback and TransferFuture.
-        /// Returns [`None`] if `raw` is null.
+        /// Ensures mutual exclusion between the callback and
+        /// [`TransferFuture`]. Returns [`None`] if `raw` is null.
         #[inline]
         fn lock<'a>(
             raw: *mut Self,
         ) -> Option<(parking_lot::MutexGuard<'a, Option<Waker>>, &'a mut Self)> {
+            // SAFETY: raw is either null or a valid shared reference
             let waker = unsafe { raw.as_ref() }?.waker.lock();
+            // SAFETY: raw is a valid reference, and we have exclusive access
             Some((waker, unsafe { &mut *raw }))
         }
 
         /// Handles transfer completion callback.
         extern "system" fn callback(inner: *mut libusb_transfer) {
             let r = std::panic::catch_unwind(|| {
-                let raw = unsafe { (*inner).user_data as *mut Self };
+                // SAFETY: user_data was set in submit()
+                let raw = unsafe { (*inner).user_data }.cast();
                 let (mut waker, t) = Self::lock(raw).unwrap();
 
                 // Update state while holding the waker lock
@@ -550,11 +578,13 @@ mod libusb {
                     LIBUSB_CONTROL_SETUP_SIZE
                 } else {
                     0
-                } + inner.actual_length as usize;
+                } + inner.actual_length.unsigned_abs() as usize;
+                // SAFETY: buf contains n valid bytes
                 unsafe { t.buf.set_len(n) }
 
                 if t.result.is_some() {
                     // TransferFuture was dropped or submit failed
+                    // SAFETY: We have the only pointer to the original Transfer
                     drop(unsafe { Box::from_raw(raw) });
                 } else if let Some(w) = waker.take() {
                     w.wake();
@@ -576,6 +606,7 @@ mod libusb {
 
     impl<T: UsbContext> Drop for Transfer<T> {
         fn drop(&mut self) {
+            // SAFETY: C API call, inner can be null
             unsafe { libusb_free_transfer(self.inner.as_ptr()) }
         }
     }
@@ -585,6 +616,7 @@ mod libusb {
     #[derive(Debug)]
     pub(super) struct TransferFuture<T: UsbContext>(*mut Transfer<T>);
 
+    // SAFETY: Transfer pointer is Send
     unsafe impl<T: UsbContext> Send for TransferFuture<T> {}
 
     impl<T: UsbContext> TransferFuture<T> {
@@ -595,7 +627,8 @@ mod libusb {
                 *waker = Some(ctx.waker().clone());
                 return Poll::Pending;
             }
-            let mut t = self.take();
+            // SAFETY: We have the only valid pointer
+            let mut t = unsafe { self.take() };
             t.result = Some(match t.inner().status {
                 LIBUSB_TRANSFER_COMPLETED => Ok(()),
                 LIBUSB_TRANSFER_ERROR => Err(Error::Io),
@@ -627,8 +660,10 @@ mod libusb {
         }
 
         /// Takes ownership of a finished transfer.
-        fn take(&mut self) -> Box<Transfer<T>> {
-            unsafe { Box::from_raw(replace(&mut self.0, null_mut())) }
+        #[inline]
+        unsafe fn take(&mut self) -> Box<Transfer<T>> {
+            debug_assert_ne!(self.0, null_mut());
+            Box::from_raw(replace(&mut self.0, null_mut()))
         }
     }
 
@@ -639,7 +674,8 @@ mod libusb {
                 waker.take();
                 t.result = Some(r);
                 if !t.callback_pending() {
-                    self.take();
+                    // SAFETY: We have the only valid pointer
+                    drop(unsafe { self.take() });
                 }
             }
         }
@@ -667,6 +703,7 @@ mod libusb {
     /// Initializes libusb.
     fn init_lib() {
         static INIT: Once = Once::new();
+        // SAFETY: C API calls
         INIT.call_once(|| unsafe {
             let v = version();
             info!(
@@ -692,7 +729,7 @@ mod libusb {
     }
 
     /// Converts libusb error code to [`rusb::Error`].
-    fn api_error(rc: c_int) -> Error {
+    const fn api_error(rc: c_int) -> Error {
         match rc {
             LIBUSB_ERROR_IO => Error::Io,
             LIBUSB_ERROR_INVALID_PARAM => Error::InvalidParam,
@@ -711,27 +748,28 @@ mod libusb {
     }
 
     /// Compile-time detection of new error variants.
-    fn _error_variants(e: Error) {
+    const fn _error_variants(e: Error) {
         match e {
-            Error::Io => {}
-            Error::InvalidParam => {}
-            Error::Access => {}
-            Error::NoDevice => {}
-            Error::NotFound => {}
-            Error::Busy => {}
-            Error::Timeout => {}
-            Error::Overflow => {}
-            Error::Pipe => {}
-            Error::Interrupted => {}
-            Error::NoMem => {}
-            Error::NotSupported => {}
-            Error::BadDescriptor => {}
-            Error::Other => {}
+            Error::Io
+            | Error::InvalidParam
+            | Error::Access
+            | Error::NoDevice
+            | Error::NotFound
+            | Error::Busy
+            | Error::Timeout
+            | Error::Overflow
+            | Error::Pipe
+            | Error::Interrupted
+            | Error::NoMem
+            | Error::NotSupported
+            | Error::BadDescriptor
+            | Error::Other => {}
         }
     }
 
     extern "system" fn log_cb(_: *mut libusb_context, lvl: c_int, msg: *mut c_void) {
         let r = std::panic::catch_unwind(|| {
+            // SAFETY: msg is a valid C string
             let orig = unsafe { CStr::from_ptr(msg as *const c_char) }.to_string_lossy();
             let msg = match orig.as_ref().split_once("libusb: ") {
                 Some((_, tail)) => tail.trim_end(),

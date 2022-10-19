@@ -11,6 +11,7 @@ mod usb;
 
 /// Local host errors.
 #[derive(Clone, Copy, Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum Error {
     #[error("usb error: {source}")]
     Usb {
@@ -22,10 +23,12 @@ pub enum Error {
 
 impl Error {
     /// Returns whether the error is a result of a timeout.
-    pub fn is_timeout(&self) -> bool {
+    #[inline]
+    #[must_use]
+    pub const fn is_timeout(&self) -> bool {
         matches!(
             self,
-            Self::Usb {
+            &Self::Usb {
                 source: rusb::Error::Timeout
             }
         )
