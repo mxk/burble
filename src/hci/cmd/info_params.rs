@@ -4,16 +4,9 @@ use crate::hci::*;
 impl<T: host::Transport> Host<T> {
     /// Returns version information for the local controller.
     pub async fn read_local_version(&self) -> Result<LocalVersion> {
-        let evt = self
-            .cmd(Opcode::ReadLocalVersionInformation, |_| {})
-            .await?;
-        evt.map_ok(|mut evt| LocalVersion {
-            hci_version: evt.u8(),
-            hci_subversion: evt.u16(),
-            lmp_version: evt.u8(),
-            company_id: evt.u16(),
-            lmp_subversion: evt.u16(),
-        })
+        self.cmd(Opcode::ReadLocalVersionInformation, |_| {})
+            .await?
+            .map(LocalVersion::from)
     }
 }
 
@@ -25,4 +18,16 @@ pub struct LocalVersion {
     pub lmp_version: u8,
     pub company_id: u16,
     pub lmp_subversion: u16,
+}
+
+impl From<Event<'_>> for LocalVersion {
+    fn from(mut e: Event) -> Self {
+        Self {
+            hci_version: e.u8(),
+            hci_subversion: e.u16(),
+            lmp_version: e.u8(),
+            company_id: e.u16(),
+            lmp_subversion: e.u16(),
+        }
+    }
 }

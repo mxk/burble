@@ -16,7 +16,7 @@ pub(crate) const EVT_BUF: usize = EVT_HDR + u8::MAX as usize;
 /// HCI event decoder.
 #[derive(Clone, Debug)]
 pub struct Event<'a> {
-    _typ: EventType,
+    typ: EventType,
     cmd_status: Option<CommandStatus>,
     tail: &'a [u8],
 }
@@ -113,7 +113,7 @@ impl<'a> TryFrom<&'a [u8]> for Event<'a> {
             _ => None,
         };
         Ok(Self {
-            _typ: typ,
+            typ,
             cmd_status,
             tail,
         })
@@ -121,7 +121,7 @@ impl<'a> TryFrom<&'a [u8]> for Event<'a> {
 }
 
 /// HCI event or LE subevent code.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, strum::Display)]
 pub enum EventType {
     Hci(EventCode),
     Le(SubeventCode),
@@ -140,15 +140,13 @@ pub struct CommandStatus {
 #[repr(transparent)]
 pub struct CommandQuota(u8);
 
-type SharedTransfer<T> = Arc<tokio::sync::RwLock<EventTransfer<T>>>;
-
 /// Received event router. When an event is received, all registered waiters
 /// with matching filters are notified in a broadcast fashion, and must process
 /// the event asynchronously before the next receive operation can happen.
 #[derive(Debug)]
 pub(super) struct EventRouter<T: host::Transport> {
     waiters: parking_lot::Mutex<Waiters<T>>,
-    xfer: tokio::sync::Mutex<SharedTransfer<T>>,
+    recv: tokio::sync::Mutex<SharedEventReceiver<T>>,
 
     // Notification should ideally be limited to each waiter, but we need
     // condvar-like functionality where we register for notification while
@@ -167,7 +165,7 @@ impl<T: host::Transport> EventRouter<T> {
                 next_id: 0,
                 cmd_quota: 1, // [Vol 4] Part E, Section 4.4
             }),
-            xfer: tokio::sync::Mutex::new(EventTransfer::new(t)),
+            recv: tokio::sync::Mutex::new(EventReceiver::new(t)),
             notify: tokio::sync::Notify::new(),
         })
     }
@@ -202,14 +200,14 @@ impl<T: host::Transport> EventRouter<T> {
     /// Receives the next event, notifies registered waiters, and returns the
     /// event to the caller.
     pub async fn recv_event(&self) -> Result<EventGuard<T>> {
-        // This mutex ensures there are no calls to RwLock::write_owned() after
-        // an event is received and RwLock::try_read_owned() is being called.
-        // Since Tokio's RwLock is write-preferring, acquiring read locks would
-        // fail if there is a writer waiting.
-        let xfer = self.xfer.lock().await;
+        // Ensure that there are no calls to RwLock::write_owned() when
+        // RwLock::try_read_owned() is called. Since Tokio's RwLock is
+        // write-preferring, acquiring read locks would fail if there is a
+        // writer waiting.
+        let shared = self.recv.lock().await;
 
         // Wait for all read locks to be released and receive the next event
-        let mut recv = xfer.clone().write_owned().await;
+        let mut recv = shared.clone().write_owned().await;
         recv.next().await?;
 
         // TODO: Remove and notify receivers for certain fatal errors, like lost
@@ -218,38 +216,36 @@ impl<T: host::Transport> EventRouter<T> {
         // TODO: One second command timeout ([Vol 4] Part E, Section 4.4)
 
         // Lock router before downgrading to a read lock
-        let mut ws = self.waiters.lock();
-        let evt = EventGuard(recv.downgrade());
+        let mut waiters = self.waiters.lock();
+        let guard = EventGuard(recv.downgrade());
 
         // Provide EventGuards to registered waiters and notify them
+        let evt = guard.get();
+        if let Some(CommandStatus { quota: q, .. }) = evt.cmd_status {
+            waiters.cmd_quota = q.0;
+        }
         let mut notify = false;
-        evt.map(|evt| {
-            if let Some(CommandStatus { quota: q, .. }) = evt.cmd_status {
-                ws.cmd_quota = q.0;
-            }
-            for w in ws.queue.iter_mut().filter(|w| w.filter.matches(&evt)) {
-                // try_read_owned() is guaranteed to succeed since we are
-                // holding our own read lock and there are no writers waiting.
-                w.ready = Some(EventGuard(xfer.clone().try_read_owned().unwrap()));
-                notify = true;
-            }
-        });
+        for w in waiters.queue.iter_mut().filter(|w| w.filter.matches(&evt)) {
+            // try_read_owned() is guaranteed to succeed since we are
+            // holding our own read lock and there are no writers waiting.
+            w.ready = Some(EventGuard(shared.clone().try_read_owned().unwrap()));
+            notify = true;
+        }
         if notify {
             self.notify.notify_waiters();
         }
-        drop(ws);
-        Ok(evt)
+        Ok(guard)
     }
 }
 
 /// Future that continuously receives HCI events.
-pub struct EventTask {
+pub struct EventReceiverTask {
     h: tokio::task::JoinHandle<Result<()>>,
     c: CancellationToken,
     _g: tokio_util::sync::DropGuard,
 }
 
-impl EventTask {
+impl EventReceiverTask {
     /// Returns a new event monitor.
     pub(super) fn new<T: host::Transport + 'static>(router: Arc<EventRouter<T>>) -> Self {
         let c = CancellationToken::new();
@@ -271,25 +267,25 @@ impl EventTask {
         router: Arc<EventRouter<T>>,
         c: CancellationToken,
     ) -> Result<()> {
-        debug!("Event monitor started");
+        debug!("Event receiver task started");
         loop {
             let r: Result<EventGuard<T>> = tokio::select! {
                 r = router.recv_event() => r,
                 _ = c.cancelled() => {
-                    debug!("Event monitor stopped");
+                    debug!("Event receiver task stopped");
                     return Ok(());
                 }
             };
             if let Err(e) = r {
                 // TODO: Ignore certain errors, like short write
-                debug!("Event monitor error: {e}");
+                debug!("Event receiver task error: {e}");
                 return Err(e);
             }
         }
     }
 }
 
-impl Future for EventTask {
+impl Future for EventReceiverTask {
     type Output = Result<()>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -382,60 +378,90 @@ impl<T: host::Transport> Drop for EventWaiterGuard<T> {
 }
 
 /// Guard providing access to a received event. The next event cannot be
-/// received until all existing guards are dropped.
+/// received until all guards are dropped.
 #[derive(Debug)]
-pub struct EventGuard<T: host::Transport>(tokio::sync::OwnedRwLockReadGuard<EventTransfer<T>>);
+pub struct EventGuard<T: host::Transport>(tokio::sync::OwnedRwLockReadGuard<EventReceiver<T>>);
 
 impl<T: host::Transport> EventGuard<T> {
-    /// Calls `f` on the received event.
+    /// Returns the received event.
     #[inline]
-    pub fn map<R>(&self, f: impl FnOnce(Event) -> R) -> R {
-        let xfer = self.0.xfer.as_ref().unwrap();
-        f(Event::try_from(xfer.as_ref()).unwrap())
+    pub fn get(&self) -> Event {
+        // SAFETY: EventGuard can only contain a valid Event
+        unsafe { self.0.event().unwrap_unchecked() }
     }
 
     /// Calls `f` on the received event if the event represents successful
     /// command completion.
-    pub fn map_ok<R>(&self, f: impl FnOnce(Event) -> R) -> Result<R> {
-        self.map(|evt| match evt.cmd_status() {
+    pub fn map<'a, R>(&'a self, f: impl FnOnce(Event<'a>) -> R) -> Result<R> {
+        let evt = self.get();
+        match evt.cmd_status {
             Some(CommandStatus {
                 status: Status::Success,
                 ..
             }) => Ok(f(evt)),
             Some(st) => Err(Error::from(st)),
-            // This shouldn't happen since our filter should only match command
-            // completion or status events.
-            None => Err(Error::from(Status::UnsupportedFeatureOrParameterValue)),
-        })
+            None => Err(Error::NonCommandEvent { typ: evt.typ }),
+        }
     }
 }
 
-/// HCI event transfer.
+type SharedEventReceiver<T> = Arc<tokio::sync::RwLock<EventReceiver<T>>>;
+
+/// HCI event receiver.
 #[derive(Debug)]
-struct EventTransfer<T: host::Transport> {
+struct EventReceiver<T: host::Transport> {
     transport: Arc<T>,
     xfer: Option<T::Transfer>,
+    evt: Event<'static>,
+    tail: usize,
 }
 
-impl<T: host::Transport> EventTransfer<T> {
-    fn new(transport: Arc<T>) -> SharedTransfer<T> {
-        Arc::new(tokio::sync::RwLock::new(EventTransfer {
+impl<T: host::Transport> EventReceiver<T> {
+    fn new(transport: Arc<T>) -> SharedEventReceiver<T> {
+        Arc::new(tokio::sync::RwLock::new(Self {
             transport,
             xfer: None,
+            evt: Event {
+                typ: EventType::Hci(EventCode::LeMetaEvent),
+                cmd_status: None,
+                tail: &[],
+            },
+            tail: 0,
         }))
     }
 
     /// Receives and validates the next event.
     async fn next(&mut self) -> Result<()> {
+        self.tail = 0;
         let xfer = {
             let mut xfer = self.xfer.take().unwrap_or_else(|| self.transport.event());
             xfer.reset();
             self.xfer = Some(xfer.submit()?.await);
+            // SAFETY: xfer can't be None
             unsafe { self.xfer.as_ref().unwrap_unchecked() }
         };
         xfer.result().unwrap()?;
-        let r = Event::try_from(xfer.as_ref());
+        let buf = xfer.as_ref();
+        let r = Event::try_from(buf);
         trace!("{r:?}");
-        r.map(|_| ())
+        r.map(|evt| {
+            self.evt = Event { tail: &[], ..evt };
+            self.tail = buf.len() - evt.tail.len();
+        })
+    }
+
+    /// Returns the received event or [`None`] if the most recent call to
+    /// `next()` failed.
+    #[inline]
+    fn event(&self) -> Option<Event> {
+        if self.tail == 0 {
+            return None;
+        }
+        Some(Event {
+            typ: self.evt.typ,
+            cmd_status: self.evt.cmd_status,
+            // SAFETY: A valid Event must exist if self.tail != 0
+            tail: &unsafe { self.xfer.as_ref().unwrap_unchecked() }.as_ref()[self.tail..],
+        })
     }
 }

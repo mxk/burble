@@ -48,6 +48,8 @@ pub enum Error {
     CommandFailed { opcode: Opcode, status: Status },
     #[error("{opcode} command aborted: {status}")]
     CommandAborted { opcode: Opcode, status: Status },
+    #[error("non-command event: {typ}")]
+    NonCommandEvent { typ: EventType },
 }
 
 impl Error {
@@ -130,7 +132,7 @@ impl<T: host::Transport> Host<T> {
                 cmd.u8(0x01).u8(0);
             })
             .await?;
-        r.map_ok(|_| ()).or_else(|e| match e.status() {
+        r.map(|_| ()).or_else(|e| match e.status() {
             // TODO: Why InvalidCommandParameters?
             Some(Status::UnknownCommand | Status::InvalidCommandParameters) => Ok(()),
             _ => Err(e),
@@ -142,7 +144,7 @@ impl<T: host::Transport> Host<T> {
 impl<T: host::Transport + 'static> Host<T> {
     /// Spawns a task that continuously receives HCI events until an error is
     /// encountered. The task is canceled when the returned future is dropped.
-    pub fn enable_events(&self) -> EventTask {
-        EventTask::new(self.router.clone())
+    pub fn enable_events(&self) -> EventReceiverTask {
+        EventReceiverTask::new(self.router.clone())
     }
 }
