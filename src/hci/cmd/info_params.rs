@@ -1,12 +1,20 @@
+use crate::dev::Addr;
 use crate::hci::*;
 
 /// Informational parameters commands ([Vol 4] Part E, Section 7.4).
 impl<T: host::Transport> Host<T> {
-    /// Returns version information for the local controller.
+    /// Returns the controller's version information.
     pub async fn read_local_version(&self) -> Result<LocalVersion> {
         self.cmd(Opcode::ReadLocalVersionInformation, |_| {})
             .await?
             .map(LocalVersion::from)
+    }
+
+    /// Returns the controller's public address.
+    pub async fn read_bd_addr(&self) -> Result<Addr> {
+        self.cmd(Opcode::ReadBdAddr, |_| {})
+            .await?
+            .map(|mut e| Addr::Public(e.addr()))
     }
 }
 

@@ -132,7 +132,7 @@ impl<T: host::Transport> Host<T> {
         })
     }
 
-    /// Performs a reset and basic Controller initialization.
+    /// Performs a reset and basic controller initialization.
     pub async fn init(&self) -> Result<()> {
         self.reset().await?;
         let r = self

@@ -5,6 +5,7 @@ use std::sync::Arc;
 use bytes::Buf;
 use tracing::trace;
 
+use crate::dev::RawAddr;
 use crate::host;
 
 use super::*;
@@ -56,6 +57,22 @@ impl Event<'_> {
     #[inline]
     pub fn u16(&mut self) -> u16 {
         self.tail.get_u16_le()
+    }
+
+    /// Returns the next `BD_ADDR`.
+    #[inline]
+    pub fn addr(&mut self) -> RawAddr {
+        RawAddr::from(*self.array())
+    }
+
+    /// Returns a reference to the next array of length `N`.
+    #[inline]
+    pub fn array<const N: usize>(&mut self) -> &[u8; N] {
+        // TODO: Use split_array_ref when stabilized
+        let (head, tail) = self.tail.split_at(N);
+        self.tail = tail;
+        // SAFETY: head is &[u8; N] (checked by split_at)
+        unsafe { &*head.as_ptr().cast() }
     }
 }
 
@@ -418,6 +435,7 @@ struct EventReceiver<T: host::Transport> {
 }
 
 impl<T: host::Transport> EventReceiver<T> {
+    /// Returns a new shared event receiver.
     fn new(transport: Arc<T>) -> SharedEventReceiver<T> {
         Arc::new(tokio::sync::RwLock::new(Self {
             transport,
@@ -454,15 +472,19 @@ impl<T: host::Transport> EventReceiver<T> {
     /// Returns the received event or [`None`] if the most recent call to
     /// `next()` failed.
     #[inline]
+    #[must_use]
     fn event(&self) -> Option<Event> {
-        if self.tail == 0 {
+        if self.tail < EVT_HDR {
             return None;
         }
-        Some(Event {
-            typ: self.evt.typ,
-            cmd_status: self.evt.cmd_status,
-            // SAFETY: A valid Event must exist if self.tail != 0
-            tail: &unsafe { self.xfer.as_ref().unwrap_unchecked() }.as_ref()[self.tail..],
-        })
+        // SAFETY: We have a valid Event and EVT_HDR <= self.tail <= buf.len()
+        let tail = unsafe {
+            self.xfer
+                .as_ref()
+                .unwrap_unchecked()
+                .as_ref()
+                .get_unchecked(self.tail..)
+        };
+        Some(Event { tail, ..self.evt })
     }
 }

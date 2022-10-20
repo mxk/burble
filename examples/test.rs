@@ -12,7 +12,7 @@ async fn main() -> Result<()> {
     let host = hci::Host::new(ctlr);
     let mon = host.enable_events();
     host.init().await?;
-    let ver = host.read_local_version().await?;
-    info!("Local version: {:?}", ver);
+    info!("Local version: {:?}", host.read_local_version().await?);
+    info!("Device address: {:?}", host.read_bd_addr().await?);
     Ok(mon.disable().await?)
 }

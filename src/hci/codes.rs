@@ -21,6 +21,7 @@ pub enum Opcode {
     // Informational parameters commands ([Vol 4] Part E, Section 7.4)
     ReadLocalVersionInformation = InfoParams.ocf(0x0001),
     ReadLocalSupportedCommands = InfoParams.ocf(0x0002),
+    ReadBdAddr = InfoParams.ocf(0x0009),
 }
 
 impl From<u16> for Opcode {
