@@ -29,7 +29,7 @@ fn event_cmd_complete() {
     let mut pkt = vec![EventCode::CommandComplete as u8, 3, 3, 0x01, 0x10];
     let e = Event::try_from(pkt.as_ref()).unwrap();
     let mut want = CommandStatus {
-        quota: CommandQuota(3),
+        cmd_quota: 3,
         opcode: Opcode::ReadLocalVersionInformation,
         status: Status::Success,
     };
@@ -52,7 +52,7 @@ fn event_cmd_status() {
     let pkt = [EventCode::CommandStatus as u8, 4, 0xff, 3, 0x01, 0x10];
     let e = Event::try_from(pkt.as_ref()).unwrap();
     let want = CommandStatus {
-        quota: CommandQuota(3),
+        cmd_quota: 3,
         opcode: Opcode::ReadLocalVersionInformation,
         status: Status::UnspecifiedError,
     };

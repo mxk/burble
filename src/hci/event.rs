@@ -98,7 +98,7 @@ impl<'a> TryFrom<&'a [u8]> for Event<'a> {
         };
         let cmd_status = match typ {
             EventType::Hci(EventCode::CommandComplete) => Some(CommandStatus {
-                quota: CommandQuota(tail.get_u8()),
+                cmd_quota: tail.get_u8(),
                 opcode: Opcode::from(tail.get_u16_le()),
                 status: if tail.is_empty() {
                     Status::Success
@@ -108,7 +108,7 @@ impl<'a> TryFrom<&'a [u8]> for Event<'a> {
             }),
             EventType::Hci(EventCode::CommandStatus) => Some(CommandStatus {
                 status: Status::from(tail.get_u8()),
-                quota: CommandQuota(tail.get_u8()),
+                cmd_quota: tail.get_u8(),
                 opcode: Opcode::from(tail.get_u16_le()),
             }),
             _ => None,
@@ -132,15 +132,10 @@ pub enum EventType {
 /// Basic information from `CommandComplete` or `CommandStatus` events.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct CommandStatus {
-    pub quota: CommandQuota,
+    pub cmd_quota: u8,
     pub opcode: Opcode,
     pub status: Status,
 }
-
-/// Number of HCI command packets the host can send to the controller.
-#[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
-#[repr(transparent)]
-pub struct CommandQuota(u8);
 
 /// Received event router. When an event is received, all registered waiters
 /// with matching filters are notified in a broadcast fashion, and must process
@@ -160,14 +155,14 @@ pub(super) struct EventRouter<T: host::Transport> {
 
 impl<T: host::Transport> EventRouter<T> {
     /// Returns a new event router using transport `t`.
-    pub fn new(t: Arc<T>) -> Arc<Self> {
+    pub fn new(transport: Arc<T>) -> Arc<Self> {
         Arc::new(Self {
             waiters: parking_lot::Mutex::new(Waiters {
                 queue: VecDeque::with_capacity(4),
                 next_id: 0,
                 cmd_quota: 1, // [Vol 4] Part E, Section 4.4
             }),
-            recv: tokio::sync::Mutex::new(EventReceiver::new(t)),
+            recv: tokio::sync::Mutex::new(EventReceiver::new(transport)),
             notify: tokio::sync::Notify::new(),
         })
     }
@@ -223,8 +218,8 @@ impl<T: host::Transport> EventRouter<T> {
 
         // Provide EventGuards to registered waiters and notify them
         let evt = guard.get();
-        if let Some(CommandStatus { quota: q, .. }) = evt.cmd_status {
-            waiters.cmd_quota = q.0;
+        if let Some(CommandStatus { cmd_quota: q, .. }) = evt.cmd_status {
+            waiters.cmd_quota = q;
         }
         let mut notify = false;
         for w in waiters.queue.iter_mut().filter(|w| w.filter.matches(&evt)) {
