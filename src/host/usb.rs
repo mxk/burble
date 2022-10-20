@@ -496,7 +496,7 @@ mod libusb {
 
         /// Submits the transfer.
         pub fn submit(mut self: Box<Self>, dev: Arc<DeviceHandle<T>>) -> Result<TransferFuture<T>> {
-            assert!(self.result.is_none(), "tried to resubmit a finished transfer");
+            assert_eq!(self.result, None, "tried to resubmit a finished transfer");
 
             let buf_ptr = self.buf.as_mut_ptr();
             let buf_len = match self.inner().endpoint & LIBUSB_ENDPOINT_DIR_MASK {

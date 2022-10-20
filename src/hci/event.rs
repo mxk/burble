@@ -23,16 +23,18 @@ pub struct Event<'a> {
 
 impl Event<'_> {
     /// Returns the event type.
-    #[inline]
     #[cfg(test)]
-    pub fn typ(&self) -> EventType {
+    #[inline]
+    #[must_use]
+    pub const fn typ(&self) -> EventType {
         self.typ
     }
 
     /// Returns any unparsed bytes.
-    #[inline]
     #[cfg(test)]
-    pub fn tail(&self) -> &[u8] {
+    #[inline]
+    #[must_use]
+    pub const fn tail(&self) -> &[u8] {
         self.tail
     }
 
@@ -236,6 +238,7 @@ impl<T: host::Transport> EventRouter<T> {
 }
 
 /// Future that continuously receives HCI events.
+#[derive(Debug)]
 pub struct EventReceiverTask {
     h: tokio::task::JoinHandle<Result<()>>,
     c: CancellationToken,

@@ -9,7 +9,6 @@ license = "MPL-2.0"
 publish = false
 
 [dependencies]
-bitvec = "1.0.1"
 bytes = "1.2.1"
 parking_lot = { version = "0.12.1", features = ["hardware-lock-elision"] }
 rusb = "0.9.1"
