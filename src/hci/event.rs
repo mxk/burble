@@ -18,10 +18,12 @@ const EVT_HDR: usize = 2;
 pub(crate) const EVT_BUF: usize = EVT_HDR + u8::MAX as usize;
 
 /// HCI event decoder.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Event<'a> {
     typ: EventType,
-    cmd_status: Option<CommandStatus>,
+    cmd_quota: u8,
+    opcode: Opcode,
+    status: Status,
     tail: &'a [u8],
 }
 
@@ -34,29 +36,38 @@ impl Event<'_> {
         self.typ
     }
 
+    /// Returns the number of commands that the host is allowed to send to the
+    /// controller from `CommandComplete` or `CommandStatus` events.
+    #[cfg(test)]
+    #[inline]
+    #[must_use]
+    pub(super) const fn cmd_quota(&self) -> u8 {
+        self.cmd_quota
+    }
+
+    /// Returns the opcode from `CommandComplete` or `CommandStatus` events, or
+    /// [`Opcode::None`] for non-command events and either command event that
+    /// only updates the command quota.
+    #[inline]
+    #[must_use]
+    pub const fn opcode(&self) -> Opcode {
+        self.opcode
+    }
+
+    /// Returns the command status for `CommandComplete` or `CommandStatus`
+    /// events, or [`Status::Success`] for non-command events.
+    #[inline]
+    #[must_use]
+    pub const fn status(&self) -> Status {
+        self.status
+    }
+
     /// Returns any unparsed bytes.
     #[cfg(test)]
     #[inline]
     #[must_use]
     pub const fn tail(&self) -> &[u8] {
         self.tail
-    }
-
-    /// Returns the command opcode from `CommandComplete` or `CommandStatus`
-    /// events. Returns [`Opcode::None`] for other event types. Note that
-    /// `Opcode::None` can also appear in a `CommandComplete` event.
-    #[inline]
-    #[must_use]
-    pub fn opcode(&self) -> Opcode {
-        self.cmd_status.map_or(Opcode::None, |s| s.opcode)
-    }
-
-    /// Returns basic information from `CommandComplete` or `CommandStatus`
-    /// events. Returns [`None`] for other event types.
-    #[inline]
-    #[must_use]
-    pub const fn cmd_status(&self) -> Option<CommandStatus> {
-        self.cmd_status
     }
 
     /// Returns the next u8.
@@ -127,28 +138,29 @@ impl<'a> TryFrom<&'a [u8]> for Event<'a> {
                 })
             }
         };
-        let cmd_status = match typ {
-            EventType::Hci(EventCode::CommandComplete) => Some(CommandStatus {
-                cmd_quota: tail.get_u8(),
-                opcode: Opcode::from(tail.get_u16_le()),
-                status: if tail.is_empty() {
-                    Status::Success
-                } else {
-                    Status::from(tail.get_u8())
-                },
-            }),
-            EventType::Hci(EventCode::CommandStatus) => Some(CommandStatus {
-                status: Status::from(tail.get_u8()),
-                cmd_quota: tail.get_u8(),
-                opcode: Opcode::from(tail.get_u16_le()),
-            }),
-            _ => None,
-        };
-        Ok(Self {
+        let mut evt = Self {
             typ,
-            cmd_status,
+            cmd_quota: 0,
+            opcode: Opcode::None,
+            status: Status::Success,
             tail,
-        })
+        };
+        match typ {
+            EventType::Hci(EventCode::CommandComplete) => {
+                evt.cmd_quota = evt.u8();
+                evt.opcode = Opcode::from(evt.u16());
+                if !evt.tail.is_empty() {
+                    evt.status = Status::from(evt.u8());
+                }
+            }
+            EventType::Hci(EventCode::CommandStatus) => {
+                evt.status = Status::from(evt.u8());
+                evt.cmd_quota = evt.u8();
+                evt.opcode = Opcode::from(evt.u16());
+            }
+            _ => {}
+        };
+        Ok(evt)
     }
 }
 
@@ -168,6 +180,25 @@ impl From<Event<'_>> for () {
 pub enum EventType {
     Hci(EventCode),
     Le(SubeventCode),
+}
+
+impl EventType {
+    /// Returns whether the event type is either `CommandStatus` or
+    /// `CommandComplete`.
+    #[inline]
+    #[must_use]
+    pub const fn is_cmd(self) -> bool {
+        use EventCode::{CommandComplete, CommandStatus};
+        matches!(self, Self::Hci(CommandComplete | CommandStatus))
+    }
+}
+
+impl Default for EventType {
+    /// Returns an invalid `EventType`.
+    #[inline]
+    fn default() -> Self {
+        Self::Hci(EventCode::LeMetaEvent)
+    }
 }
 
 /// Basic information from `CommandComplete` or `CommandStatus` events.
@@ -266,8 +297,8 @@ impl<T: host::Transport> EventRouter<T> {
 
         // Provide EventGuards to registered waiters and notify them
         let evt = guard.get();
-        if let Some(CommandStatus { cmd_quota: q, .. }) = evt.cmd_status {
-            waiters.cmd_quota = q;
+        if evt.typ.is_cmd() {
+            waiters.cmd_quota = evt.cmd_quota;
         }
         let mut notify = false;
         for w in waiters.queue.iter_mut().filter(|w| w.filter.matches(&evt)) {
@@ -362,7 +393,7 @@ impl EventFilter {
         use EventFilter::*;
         match *self {
             _Any => true,
-            Command(opcode) => matches!(evt.cmd_status, Some(st) if st.opcode == opcode),
+            Command(opcode) => evt.opcode == opcode && evt.typ.is_cmd(),
         }
     }
 }
@@ -451,12 +482,11 @@ impl<T: host::Transport> EventGuard<T> {
         unsafe { self.r.event().unwrap_unchecked() }
     }
 
-    /// Returns the command status. It returns `Status::Success` for non-command
-    /// events.
+    /// Returns the command status or `Status::Success` for non-command events.
     #[inline]
     #[must_use]
     pub fn status(&self) -> Status {
-        self.r.evt.cmd_status.map_or(Status::Success, |s| s.status)
+        self.r.evt.status
     }
 
     /// Returns the received event if it represents successful command
@@ -464,14 +494,16 @@ impl<T: host::Transport> EventGuard<T> {
     #[inline]
     pub fn cmd_ok(&self) -> Result<Event> {
         let evt = self.get();
-        match evt.cmd_status {
-            Some(CommandStatus {
-                status: Status::Success,
-                ..
-            }) => Ok(evt),
-            Some(st) => Err(Error::from(st)),
-            None => Err(Error::NonCommandEvent { typ: evt.typ }),
+        if !evt.typ.is_cmd() {
+            return Err(Error::NonCommandEvent { typ: evt.typ });
         }
+        if evt.status != Status::Success {
+            return Err(Error::CommandFailed {
+                opcode: evt.opcode,
+                status: evt.status,
+            });
+        }
+        Ok(evt)
     }
 
     /// Calls `f` on the received event if the event represents successful
@@ -506,11 +538,7 @@ impl<T: host::Transport> EventReceiver<T> {
         Arc::new(tokio::sync::RwLock::new(Self {
             transport,
             xfer: None,
-            evt: Event {
-                typ: EventType::Hci(EventCode::LeMetaEvent),
-                cmd_status: None,
-                tail: &[],
-            },
+            evt: Event::default(),
             tail: 0,
         }))
     }

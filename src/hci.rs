@@ -71,16 +71,6 @@ impl Error {
     }
 }
 
-impl From<CommandStatus> for Error {
-    #[inline]
-    fn from(st: CommandStatus) -> Self {
-        Self::CommandFailed {
-            opcode: st.opcode,
-            status: st.status,
-        }
-    }
-}
-
 /// Common HCI result type.
 pub type Result<T> = std::result::Result<T, Error>;
 
