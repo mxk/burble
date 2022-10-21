@@ -19,6 +19,7 @@
 #![allow(clippy::redundant_pub_crate)]
 #![warn(clippy::pedantic)]
 #![allow(clippy::enum_glob_use)]
+#![allow(clippy::match_wild_err_arm)]
 #![allow(clippy::missing_errors_doc)]
 #![allow(clippy::missing_panics_doc)]
 #![allow(clippy::module_name_repetitions)]

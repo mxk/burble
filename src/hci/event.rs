@@ -41,6 +41,15 @@ impl Event<'_> {
         self.tail
     }
 
+    /// Returns the command opcode from `CommandComplete` or `CommandStatus`
+    /// events. Returns [`Opcode::None`] for other event types. Note that
+    /// `Opcode::None` can also appear in a `CommandComplete` event.
+    #[inline]
+    #[must_use]
+    pub fn opcode(&self) -> Opcode {
+        self.cmd_status.map_or(Opcode::None, |s| s.opcode)
+    }
+
     /// Returns basic information from `CommandComplete` or `CommandStatus`
     /// events. Returns [`None`] for other event types.
     #[inline]
@@ -139,6 +148,16 @@ impl<'a> TryFrom<&'a [u8]> for Event<'a> {
             cmd_status,
             tail,
         })
+    }
+}
+
+// TODO: From should use &mut Event
+
+impl From<Event<'_>> for () {
+    /// Converts events without any additional parameters.
+    #[inline]
+    fn from(e: Event) -> Self {
+        debug_assert_eq!(e.tail.len(), 0);
     }
 }
 
@@ -415,18 +434,41 @@ impl<T: host::Transport> EventGuard<T> {
         unsafe { self.0.event().unwrap_unchecked() }
     }
 
-    /// Calls `f` on the received event if the event represents successful
-    /// command completion.
-    pub fn map<'a, R>(&'a self, f: impl FnOnce(Event<'a>) -> R) -> Result<R> {
+    /// Returns the command status. It returns `Status::Success` for non-command
+    /// events.
+    #[inline]
+    #[must_use]
+    pub fn status(&self) -> Status {
+        self.0.evt.cmd_status.map_or(Status::Success, |s| s.status)
+    }
+
+    /// Returns the received event if it represents successful command
+    /// completion.
+    #[inline]
+    pub fn cmd_ok(&self) -> Result<Event> {
         let evt = self.get();
         match evt.cmd_status {
             Some(CommandStatus {
                 status: Status::Success,
                 ..
-            }) => Ok(f(evt)),
+            }) => Ok(evt),
             Some(st) => Err(Error::from(st)),
             None => Err(Error::NonCommandEvent { typ: evt.typ }),
         }
+    }
+
+    /// Calls `f` on the received event if the event represents successful
+    /// command completion.
+    #[inline]
+    pub fn map<'a, R>(&'a self, f: impl FnOnce(Event<'a>) -> R) -> Result<R> {
+        Ok(f(self.cmd_ok()?))
+    }
+}
+
+impl<T: host::Transport, U: for<'a> From<Event<'a>>> From<EventGuard<T>> for Result<U> {
+    #[inline]
+    fn from(g: EventGuard<T>) -> Self {
+        g.map(U::from)
     }
 }
 

@@ -89,14 +89,43 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub struct Host<T: host::Transport> {
     transport: Arc<T>,
     router: Arc<EventRouter<T>>,
+    buf_info: LeBufferInfo,
 }
 
 impl<T: host::Transport> Host<T> {
     /// Returns an HCI host using transport layer `t`.
-    pub fn new(transport: T) -> Self {
-        let transport = Arc::new(transport);
-        let router = EventRouter::new(Arc::clone(&transport));
-        Self { transport, router }
+    #[must_use]
+    pub fn new(transport: Arc<T>) -> Self {
+        Self {
+            transport: Arc::clone(&transport),
+            router: EventRouter::new(transport),
+            buf_info: LeBufferInfo::default(),
+        }
+    }
+
+    /// Performs a reset and basic controller initialization.
+    pub async fn init(&mut self) -> Result<()> {
+        self.reset().await?;
+        // [Vol 4] Part E, Section 4.1 and [Vol 4] Part E, Section 7.8.2
+        self.buf_info = self.le_read_buffer_size().await?;
+        if self.buf_info.acl_max_pkts == 0 {
+            let bi = self.read_buffer_size().await?;
+            self.buf_info.acl_max_len = bi.acl_max_len;
+            self.buf_info.acl_max_pkts = bi.acl_max_pkts;
+        }
+        debug!("Controller buffers: {:?}", self.buf_info);
+
+        self.cmd_with(Opcode::WriteLeHostSupport, |mut cmd| {
+            cmd.u8(0x01).u8(0);
+        })
+        .await?
+        .map(|_| ())
+        .or_else(|e| match e.status() {
+            // TODO: Why InvalidCommandParameters?
+            Some(Status::UnknownCommand | Status::InvalidCommandParameters) => Ok(()),
+            _ => Err(e),
+        })?;
+        Ok(())
     }
 
     /// Receives the next HCI event, routes it to registered waiters, and
@@ -116,7 +145,20 @@ impl<T: host::Transport> Host<T> {
     /// Executes an HCI command and returns the command completion event. The
     /// caller must check the completion status to determine whether the command
     /// was successful.
-    async fn cmd(&self, opcode: Opcode, enc: impl FnOnce(Command) + Send) -> Result<EventGuard<T>> {
+    async fn cmd(&self, opcode: Opcode) -> Result<EventGuard<T>> {
+        self.cmd_with(opcode, |_cmd| ()).await
+    }
+
+    // TODO: Move parameter encoding to Command?
+
+    /// Executes an HCI command, calling `enc` to provide parameters, and
+    /// returns the command completion event. The caller must check the
+    /// completion status to determine whether the command was successful.
+    async fn cmd_with(
+        &self,
+        opcode: Opcode,
+        enc: impl FnOnce(Command) + Send,
+    ) -> Result<EventGuard<T>> {
         let mut cmd = self.transport.command();
         let off = cmd.buf_mut().len();
         enc(Command::new(opcode, cmd.buf_mut()));
@@ -130,22 +172,6 @@ impl<T: host::Transport> Host<T> {
             opcode,
             status: Status::UnspecifiedError,
         })
-    }
-
-    /// Performs a reset and basic controller initialization.
-    pub async fn init(&self) -> Result<()> {
-        self.reset().await?;
-        let r = self
-            .cmd(Opcode::WriteLeHostSupport, |mut cmd| {
-                cmd.u8(0x01).u8(0);
-            })
-            .await?;
-        r.map(|_| ()).or_else(|e| match e.status() {
-            // TODO: Why InvalidCommandParameters?
-            Some(Status::UnknownCommand | Status::InvalidCommandParameters) => Ok(()),
-            _ => Err(e),
-        })?;
-        Ok(())
     }
 }
 

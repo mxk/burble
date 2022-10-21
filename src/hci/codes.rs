@@ -21,7 +21,12 @@ pub enum Opcode {
     // Informational parameters commands ([Vol 4] Part E, Section 7.4)
     ReadLocalVersionInformation = InfoParams.ocf(0x0001),
     ReadLocalSupportedCommands = InfoParams.ocf(0x0002),
+    ReadBufferSize = InfoParams.ocf(0x0005),
     ReadBdAddr = InfoParams.ocf(0x0009),
+
+    // LE Controller commands ([Vol 4] Part E, Section 7.8)
+    LeReadBufferSize = Le.ocf(0x0002),
+    LeReadBufferSizeV2 = Le.ocf(0x0060),
 }
 
 impl From<u16> for Opcode {
@@ -41,7 +46,7 @@ enum OpcodeGroup {
     InfoParams = 0x04,
     _StatusParams = 0x05,
     _Testing = 0x06,
-    _Le = 0x08,
+    Le = 0x08,
 }
 
 impl OpcodeGroup {
