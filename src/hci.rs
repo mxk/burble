@@ -106,15 +106,14 @@ impl<T: host::Transport> Host<T> {
         debug!("Controller buffers: {:?}", self.buf_info);
 
         match self
-            .cmd_with(Opcode::WriteLeHostSupport, |mut cmd| {
+            .exec_params(Opcode::WriteLeHostSupport, |cmd| {
                 cmd.u8(0x01).u8(0);
             })
             .await?
             .cmd_ok()
         {
-            // TODO: Why InvalidCommandParameters?
             Err(Error::CommandFailed {
-                status: Status::UnknownCommand | Status::InvalidCommandParameters,
+                status: Status::UnknownCommand,
                 ..
             })
             | Ok(_) => (),
@@ -137,36 +136,28 @@ impl<T: host::Transport> Host<T> {
         self.router.recv_event().await
     }
 
-    /// Executes an HCI command and returns the command completion event. The
-    /// caller must check the completion status to determine whether the command
-    /// was successful.
-    async fn cmd(&self, opcode: Opcode) -> Result<EventGuard<T>> {
-        self.cmd_with(opcode, |_cmd| ()).await
+    /// Returns a new command with the specified `opcode`.
+    #[inline]
+    fn cmd(&self, opcode: Opcode) -> Command<T> {
+        Command::new(self, opcode)
     }
 
-    // TODO: Move parameter encoding to Command?
+    /// Executes a command with no parameters and returns the command completion
+    /// event.
+    #[inline]
+    async fn exec(&self, opcode: Opcode) -> Result<EventGuard<T>> {
+        self.cmd(opcode).exec().await
+    }
 
-    /// Executes an HCI command, calling `enc` to provide parameters, and
-    /// returns the command completion event. The caller must check the
-    /// completion status to determine whether the command was successful.
-    async fn cmd_with(
+    /// Executes a command, calling `f` to provide parameters, and returns the
+    /// command completion event.
+    #[inline]
+    async fn exec_params(
         &self,
         opcode: Opcode,
-        enc: impl FnOnce(Command) + Send,
+        f: impl FnOnce(&mut Command<T>) + Send,
     ) -> Result<EventGuard<T>> {
-        let mut cmd = self.transport.command();
-        let off = cmd.buf_mut().len();
-        enc(Command::new(opcode, cmd.buf_mut()));
-        trace!("Command: {:02x?}", &cmd.buf_mut()[off..]);
-        let mut waiter = Arc::clone(&self.router).register(EventFilter::Command(opcode))?;
-        cmd.submit()?.await.result().unwrap().map_err(|e| {
-            warn!("{opcode:?} failed: {e}");
-            e
-        })?;
-        waiter.next().await.ok_or(Error::CommandAborted {
-            opcode,
-            status: Status::UnspecifiedError,
-        })
+        self.cmd(opcode).params(f).exec().await
     }
 }
 

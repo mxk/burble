@@ -5,17 +5,17 @@ use crate::hci::*;
 impl<T: host::Transport> Host<T> {
     /// Returns the controller's version information.
     pub async fn read_local_version(&self) -> Result<LocalVersion> {
-        self.cmd(Opcode::ReadLocalVersionInformation).await?.into()
+        self.exec(Opcode::ReadLocalVersionInformation).await?.into()
     }
 
     /// Returns the controller's ACL and SCO packet size and count limits.
     pub async fn read_buffer_size(&self) -> Result<BufferInfo> {
-        self.cmd(Opcode::ReadBufferSize).await?.into()
+        self.exec(Opcode::ReadBufferSize).await?.into()
     }
 
     /// Returns the controller's public address.
     pub async fn read_bd_addr(&self) -> Result<Addr> {
-        let evt = self.cmd(Opcode::ReadBdAddr).await?;
+        let evt = self.exec(Opcode::ReadBdAddr).await?;
         Ok(Addr::Public(evt.cmd_ok()?.addr()))
     }
 }

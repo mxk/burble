@@ -4,6 +4,6 @@ use crate::hci::*;
 impl<T: host::Transport> Host<T> {
     /// Reset the controller's link manager, baseband, and link layer.
     pub async fn reset(&self) -> Result<()> {
-        self.cmd(Opcode::Reset).await?.into()
+        self.exec(Opcode::Reset).await?.into()
     }
 }
