@@ -1,8 +1,10 @@
 use std::collections::VecDeque;
 use std::future::Future;
 use std::sync::Arc;
+use std::time::Duration;
 
 use bytes::Buf;
+use tokio::time::timeout;
 use tracing::trace;
 
 use crate::dev::RawAddr;
@@ -222,8 +224,13 @@ impl<T: host::Transport> EventRouter<T> {
         // writer waiting.
         let shared = self.recv.lock().await;
 
-        // Wait for all read locks to be released and receive the next event
-        let mut recv = shared.clone().write_owned().await;
+        // Wait for all read locks to be released and receive the next event.
+        // EventGuards should never be held long, so the timeout serves as a
+        // deadlock detection mechanism.
+        let mut recv = match timeout(Duration::from_secs(3), shared.clone().write_owned()).await {
+            Ok(recv) => recv,
+            Err(_) => panic!("recv_event stalled (EventGuard held for too long)"),
+        };
         recv.next().await?;
 
         // TODO: Remove and notify receivers for certain fatal errors, like lost

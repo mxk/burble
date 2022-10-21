@@ -14,7 +14,7 @@ parking_lot = { version = "0.12.1", features = ["hardware-lock-elision"] }
 rusb = "0.9.1"
 strum = { version = "0.24.1", features = ["derive"] }
 thiserror = "1.0.36"
-tokio = { version = "1.21.2", features = ["macros", "parking_lot", "rt", "sync"] }
+tokio = { version = "1.21.2", features = ["macros", "parking_lot", "rt", "sync", "time"] }
 tokio-util = "0.7.4"
 tracing = "0.1.36"
 
