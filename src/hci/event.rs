@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 use std::future::Future;
+use std::marker::PhantomData;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -241,15 +242,17 @@ impl<T: host::Transport> EventRouter<T> {
         // RwLock::try_read_owned() is called. Since Tokio's RwLock is
         // write-preferring, acquiring read locks would fail if there is a
         // writer waiting.
-        let shared = self.recv.lock().await;
+        let rwlock = self.recv.lock().await;
 
         // Wait for all read locks to be released and receive the next event.
-        // EventGuards should never be held long, so the timeout serves as a
-        // deadlock detection mechanism.
-        let mut recv = match timeout(Duration::from_secs(3), shared.clone().write_owned()).await {
-            Ok(recv) => recv,
-            Err(_) => panic!("recv_event stalled (EventGuard held for too long)"),
-        };
+        // Clippy checks that EventGuards are not held across await points, so
+        // the caller can't deadlock, but it's possible that another Waiter with
+        // an event is not being awaited. The timeout should catch that.
+        let mut recv =
+            match timeout(Duration::from_secs(3), Arc::clone(&rwlock).write_owned()).await {
+                Ok(recv) => recv,
+                Err(_) => panic!("recv_event stalled (EventGuard held for too long)"),
+            };
         recv.next().await?;
 
         // TODO: Remove and notify receivers for certain fatal errors, like lost
@@ -259,7 +262,7 @@ impl<T: host::Transport> EventRouter<T> {
 
         // Lock router before downgrading to a read lock
         let mut waiters = self.waiters.lock();
-        let guard = EventGuard(recv.downgrade());
+        let guard = EventGuard::new(recv.downgrade());
 
         // Provide EventGuards to registered waiters and notify them
         let evt = guard.get();
@@ -270,7 +273,7 @@ impl<T: host::Transport> EventRouter<T> {
         for w in waiters.queue.iter_mut().filter(|w| w.filter.matches(&evt)) {
             // try_read_owned() is guaranteed to succeed since we are
             // holding our own read lock and there are no writers waiting.
-            w.ready = Some(EventGuard(shared.clone().try_read_owned().unwrap()));
+            w.ready = Some(Arc::clone(&rwlock).try_read_owned().unwrap());
             notify = true;
         }
         if notify {
@@ -379,7 +382,7 @@ struct Waiters<T: host::Transport> {
 struct Waiter<T: host::Transport> {
     id: u64,
     filter: EventFilter,
-    ready: Option<EventGuard<T>>,
+    ready: Option<tokio::sync::OwnedRwLockReadGuard<EventReceiver<T>>>,
 }
 
 /// Guard that unregisters the event waiter when dropped.
@@ -402,7 +405,7 @@ impl<T: host::Transport> EventWaiterGuard<T> {
                 }
             };
             match ready_or_notify {
-                Ok(ready) => return Some(ready),
+                Ok(ready) => return Some(EventGuard::new(ready)),
                 Err(notify) => notify.await,
             };
         }
@@ -421,17 +424,31 @@ impl<T: host::Transport> Drop for EventWaiterGuard<T> {
 }
 
 /// Guard providing access to a received event. The next event cannot be
-/// received until all guards are dropped.
+/// received until all guards are dropped. It is `!Send` to prevent it from
+/// being held across `await` points.
 #[derive(Debug)]
-pub struct EventGuard<T: host::Transport>(tokio::sync::OwnedRwLockReadGuard<EventReceiver<T>>);
+pub struct EventGuard<T: host::Transport> {
+    r: tokio::sync::OwnedRwLockReadGuard<EventReceiver<T>>,
+    _not_send: PhantomData<*const ()>,
+}
 
 impl<T: host::Transport> EventGuard<T> {
+    /// Returns a read lock that is !Send and !Sync.
+    #[inline]
+    #[must_use]
+    fn new(r: tokio::sync::OwnedRwLockReadGuard<EventReceiver<T>>) -> Self {
+        Self {
+            r,
+            _not_send: PhantomData,
+        }
+    }
+
     /// Returns the received event.
     #[inline]
     #[must_use]
     pub fn get(&self) -> Event {
         // SAFETY: EventGuard can only contain a valid Event
-        unsafe { self.0.event().unwrap_unchecked() }
+        unsafe { self.r.event().unwrap_unchecked() }
     }
 
     /// Returns the command status. It returns `Status::Success` for non-command
@@ -439,7 +456,7 @@ impl<T: host::Transport> EventGuard<T> {
     #[inline]
     #[must_use]
     pub fn status(&self) -> Status {
-        self.0.evt.cmd_status.map_or(Status::Success, |s| s.status)
+        self.r.evt.cmd_status.map_or(Status::Success, |s| s.status)
     }
 
     /// Returns the received event if it represents successful command

@@ -7,11 +7,12 @@ impl<T: host::Transport> Host<T> {
     /// command.
     pub async fn le_read_buffer_size(&self) -> Result<LeBufferInfo> {
         // TODO: Use supported features to determine which version to use?
-        let evt = self.cmd(Opcode::LeReadBufferSizeV2).await?;
-        if evt.status() != Status::UnknownCommand {
-            return evt.into();
+        {
+            let evt = self.cmd(Opcode::LeReadBufferSizeV2).await?;
+            if evt.status() != Status::UnknownCommand {
+                return evt.into();
+            }
         }
-        drop(evt);
         self.cmd(Opcode::LeReadBufferSize).await?.into()
     }
 }
