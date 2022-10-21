@@ -15,9 +15,8 @@ impl<T: host::Transport> Host<T> {
 
     /// Returns the controller's public address.
     pub async fn read_bd_addr(&self) -> Result<Addr> {
-        self.cmd(Opcode::ReadBdAddr)
-            .await?
-            .map(|mut e| Addr::Public(e.addr()))
+        let evt = self.cmd(Opcode::ReadBdAddr).await?;
+        Ok(Addr::Public(evt.cmd_ok()?.addr()))
     }
 }
 
@@ -31,8 +30,8 @@ pub struct LocalVersion {
     pub lmp_subversion: u16,
 }
 
-impl From<Event<'_>> for LocalVersion {
-    fn from(mut e: Event) -> Self {
+impl From<&mut Event<'_>> for LocalVersion {
+    fn from(e: &mut Event) -> Self {
         Self {
             hci_version: e.u8(),
             hci_subversion: e.u16(),
@@ -52,8 +51,8 @@ pub struct BufferInfo {
     pub sco_max_pkts: usize,
 }
 
-impl From<Event<'_>> for BufferInfo {
-    fn from(mut e: Event) -> Self {
+impl From<&mut Event<'_>> for BufferInfo {
+    fn from(e: &mut Event) -> Self {
         Self {
             acl_max_len: e.u16() as _,
             sco_max_len: e.u8() as _,

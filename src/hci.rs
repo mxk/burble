@@ -105,16 +105,21 @@ impl<T: host::Transport> Host<T> {
         }
         debug!("Controller buffers: {:?}", self.buf_info);
 
-        self.cmd_with(Opcode::WriteLeHostSupport, |mut cmd| {
-            cmd.u8(0x01).u8(0);
-        })
-        .await?
-        .map(|_| ())
-        .or_else(|e| match e.status() {
+        match self
+            .cmd_with(Opcode::WriteLeHostSupport, |mut cmd| {
+                cmd.u8(0x01).u8(0);
+            })
+            .await?
+            .cmd_ok()
+        {
             // TODO: Why InvalidCommandParameters?
-            Some(Status::UnknownCommand | Status::InvalidCommandParameters) => Ok(()),
-            _ => Err(e),
-        })?;
+            Err(Error::CommandFailed {
+                status: Status::UnknownCommand | Status::InvalidCommandParameters,
+                ..
+            })
+            | Ok(_) => (),
+            Err(e) => return Err(e),
+        }
         Ok(())
     }
 

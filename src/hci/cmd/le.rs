@@ -26,8 +26,8 @@ pub struct LeBufferInfo {
     pub iso_max_pkts: usize,
 }
 
-impl From<Event<'_>> for LeBufferInfo {
-    fn from(mut e: Event) -> Self {
+impl From<&mut Event<'_>> for LeBufferInfo {
+    fn from(e: &mut Event) -> Self {
         if e.opcode() == Opcode::LeReadBufferSize {
             Self {
                 acl_max_len: e.u16() as _,

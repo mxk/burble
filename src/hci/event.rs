@@ -164,14 +164,10 @@ impl<'a> TryFrom<&'a [u8]> for Event<'a> {
     }
 }
 
-// TODO: From should use &mut Event
-
-impl From<Event<'_>> for () {
+impl From<&mut Event<'_>> for () {
     /// Converts events without any additional parameters.
     #[inline]
-    fn from(e: Event) -> Self {
-        debug_assert_eq!(e.tail.len(), 0);
-    }
+    fn from(_: &mut Event) -> Self {}
 }
 
 /// HCI event or LE subevent code.
@@ -505,19 +501,16 @@ impl<T: host::Transport> EventGuard<T> {
         }
         Ok(evt)
     }
-
-    /// Calls `f` on the received event if the event represents successful
-    /// command completion.
-    #[inline]
-    pub fn map<'a, R>(&'a self, f: impl FnOnce(Event<'a>) -> R) -> Result<R> {
-        Ok(f(self.cmd_ok()?))
-    }
 }
 
-impl<T: host::Transport, U: for<'a> From<Event<'a>>> From<EventGuard<T>> for Result<U> {
+impl<T: host::Transport, R: for<'a, 'b> From<&'a mut Event<'b>>> From<EventGuard<T>> for Result<R> {
+    /// Converts `CommandComplete` parameters to a concrete type.
     #[inline]
     fn from(g: EventGuard<T>) -> Self {
-        g.map(U::from)
+        let mut evt = g.cmd_ok()?;
+        let r = R::from(&mut evt);
+        debug_assert_eq!(evt.tail.len(), 0, "unconsumed event");
+        Ok(r)
     }
 }
 
