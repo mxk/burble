@@ -39,7 +39,7 @@ impl Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// HCI transport layer.
-pub trait Transport: Debug + Send + Sync {
+pub trait Transport: Clone + Debug + Send + Sync {
     type Transfer: Transfer;
 
     /// Returns an outbound command transfer.

@@ -10,6 +10,7 @@ use tracing::trace;
 
 use crate::dev::RawAddr;
 use crate::host;
+use crate::host::Transfer;
 
 use super::*;
 
@@ -222,19 +223,6 @@ pub(super) struct EventRouter<T: host::Transport> {
 }
 
 impl<T: host::Transport> EventRouter<T> {
-    /// Returns a new event router using transport `t`.
-    pub fn new(transport: Arc<T>) -> Arc<Self> {
-        Arc::new(Self {
-            waiters: parking_lot::Mutex::new(Waiters {
-                queue: VecDeque::with_capacity(4),
-                next_id: 0,
-                cmd_quota: 1, // [Vol 4] Part E, Section 4.4
-            }),
-            recv: tokio::sync::Mutex::new(EventReceiver::new(transport)),
-            notify: tokio::sync::Notify::new(),
-        })
-    }
-
     /// Register a new event waiter with filter `f`.
     pub fn register(self: Arc<Self>, f: EventFilter) -> Result<EventWaiterGuard<T>> {
         let mut ws = self.waiters.lock();
@@ -264,7 +252,7 @@ impl<T: host::Transport> EventRouter<T> {
 
     /// Receives the next event, notifies registered waiters, and returns the
     /// event to the caller.
-    pub async fn recv_event(&self) -> Result<EventGuard<T>> {
+    pub async fn recv_event(&self, transport: &T) -> Result<EventGuard<T>> {
         // Ensure that there are no calls to RwLock::write_owned() when
         // RwLock::try_read_owned() is called. Since Tokio's RwLock is
         // write-preferring, acquiring read locks would fail if there is a
@@ -280,7 +268,7 @@ impl<T: host::Transport> EventRouter<T> {
                 Ok(recv) => recv,
                 Err(_) => panic!("recv_event stalled (EventGuard held for too long)"),
             };
-        recv.next().await?;
+        recv.next(transport).await?;
 
         // TODO: Remove and notify receivers for certain fatal errors, like lost
         // device.
@@ -310,6 +298,17 @@ impl<T: host::Transport> EventRouter<T> {
     }
 }
 
+impl<T: host::Transport> Default for EventRouter<T> {
+    #[inline]
+    fn default() -> Self {
+        Self {
+            waiters: parking_lot::Mutex::default(),
+            recv: tokio::sync::Mutex::default(),
+            notify: tokio::sync::Notify::default(),
+        }
+    }
+}
+
 /// Future that continuously receives HCI events.
 #[derive(Debug)]
 pub struct EventReceiverTask {
@@ -320,10 +319,10 @@ pub struct EventReceiverTask {
 
 impl EventReceiverTask {
     /// Returns a new event monitor.
-    pub(super) fn new<T: host::Transport + 'static>(router: Arc<EventRouter<T>>) -> Self {
+    pub(super) fn new<T: host::Transport + 'static>(host: Host<T>) -> Self {
         let c = CancellationToken::new();
         Self {
-            h: tokio::spawn(Self::run(router, c.clone())),
+            h: tokio::spawn(Self::run(host, c.clone())),
             c: c.clone(),
             _g: c.drop_guard(),
         }
@@ -336,16 +335,13 @@ impl EventReceiverTask {
     }
 
     /// Receives HCI events until cancellation.
-    async fn run<T: host::Transport>(
-        router: Arc<EventRouter<T>>,
-        c: CancellationToken,
-    ) -> Result<()> {
+    async fn run<T: host::Transport>(h: Host<T>, c: CancellationToken) -> Result<()> {
         debug!("Event receiver task started");
         loop {
             let r: Result<EventGuard<T>> = tokio::select! {
-                r = router.recv_event() => r,
+                r = h.event() => r,
                 _ = c.cancelled() => {
-                    debug!("Event receiver task stopped");
+                    debug!("Event receiver task terminating");
                     return Ok(());
                 }
             };
@@ -361,8 +357,8 @@ impl EventReceiverTask {
 impl Future for EventReceiverTask {
     type Output = Result<()>;
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        Poll::Ready(ready!(Pin::new(&mut self.h).poll(cx)).unwrap())
+    fn poll(mut self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Self::Output> {
+        Poll::Ready(ready!(Pin::new(&mut self.h).poll(ctx)).unwrap())
     }
 }
 
@@ -402,6 +398,17 @@ struct Waiters<T: host::Transport> {
     queue: VecDeque<Waiter<T>>,
     next_id: u64,
     cmd_quota: u8,
+}
+
+impl<T: host::Transport> Default for Waiters<T> {
+    #[inline]
+    fn default() -> Self {
+        Self {
+            queue: VecDeque::with_capacity(4),
+            next_id: 0,
+            cmd_quota: 1, // [Vol 4] Part E, Section 4.4
+        }
+    }
 }
 
 /// Registered event waiter.
@@ -519,28 +526,17 @@ type SharedEventReceiver<T> = Arc<tokio::sync::RwLock<EventReceiver<T>>>;
 /// HCI event receiver.
 #[derive(Debug)]
 struct EventReceiver<T: host::Transport> {
-    transport: Arc<T>,
     xfer: Option<T::Transfer>,
     evt: Event<'static>,
     tail: usize,
 }
 
 impl<T: host::Transport> EventReceiver<T> {
-    /// Returns a new shared event receiver.
-    fn new(transport: Arc<T>) -> SharedEventReceiver<T> {
-        Arc::new(tokio::sync::RwLock::new(Self {
-            transport,
-            xfer: None,
-            evt: Event::default(),
-            tail: 0,
-        }))
-    }
-
     /// Receives and validates the next event.
-    async fn next(&mut self) -> Result<()> {
+    async fn next(&mut self, transport: &T) -> Result<()> {
         self.tail = 0;
         let xfer = {
-            let mut xfer = self.xfer.take().unwrap_or_else(|| self.transport.event());
+            let mut xfer = self.xfer.take().unwrap_or_else(|| transport.event());
             xfer.reset();
             self.xfer = Some(xfer.submit()?.await);
             // SAFETY: xfer can't be None
@@ -573,5 +569,16 @@ impl<T: host::Transport> EventReceiver<T> {
                 .get_unchecked(self.tail..)
         };
         Some(Event { tail, ..self.evt })
+    }
+}
+
+impl<T: host::Transport> Default for EventReceiver<T> {
+    #[inline]
+    fn default() -> Self {
+        Self {
+            xfer: None,
+            evt: Event::default(),
+            tail: 0,
+        }
     }
 }

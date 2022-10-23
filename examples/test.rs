@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use anyhow::Result;
 use tracing::info;
 
@@ -11,7 +9,7 @@ async fn main() -> Result<()> {
     let usb = host::Usb::new()?;
     let mut ctlr = usb.open_first(0x7392, 0xC611)?;
     ctlr.init()?;
-    let mut host = hci::Host::new(Arc::new(ctlr));
+    let host = hci::Host::new(ctlr);
     let mon = host.enable_events();
     host.init().await?;
     info!("Local version: {:?}", host.read_local_version().await?);

@@ -114,7 +114,7 @@ impl Display for UsbControllerInfo {
 }
 
 /// Opened USB Bluetooth controller.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct UsbController {
     dev: Arc<DeviceHandle>,
     ep: Endpoints,

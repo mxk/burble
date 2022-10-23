@@ -12,7 +12,6 @@ use tracing::{debug, trace, warn};
 pub use {cmd::*, codes::*, event::*};
 
 use crate::host;
-use crate::host::Transfer;
 
 mod cmd;
 mod codes;
@@ -77,33 +76,33 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// Host-side of a Host Controller Interface.
 #[derive(Clone, Debug)]
 pub struct Host<T: host::Transport> {
-    transport: Arc<T>,
+    transport: T,
     router: Arc<EventRouter<T>>,
-    buf_info: LeBufferInfo,
 }
 
 impl<T: host::Transport> Host<T> {
     /// Returns an HCI host using transport layer `t`.
+    #[inline]
     #[must_use]
-    pub fn new(transport: Arc<T>) -> Self {
+    pub fn new(transport: T) -> Self {
         Self {
-            transport: Arc::clone(&transport),
-            router: EventRouter::new(transport),
-            buf_info: LeBufferInfo::default(),
+            transport,
+            router: Arc::default(),
         }
     }
 
     /// Performs a reset and basic controller initialization.
-    pub async fn init(&mut self) -> Result<()> {
+    pub async fn init(&self) -> Result<()> {
         self.reset().await?;
         // [Vol 4] Part E, Section 4.1 and [Vol 4] Part E, Section 7.8.2
-        self.buf_info = self.le_read_buffer_size().await?;
-        if self.buf_info.acl_max_pkts == 0 {
+        // TODO: Move to L2CAP
+        let mut buf_info = self.le_read_buffer_size().await?;
+        if buf_info.acl_max_pkts == 0 {
             let bi = self.read_buffer_size().await?;
-            self.buf_info.acl_max_len = bi.acl_max_len;
-            self.buf_info.acl_max_pkts = bi.acl_max_pkts;
+            buf_info.acl_max_len = bi.acl_max_len;
+            buf_info.acl_max_pkts = bi.acl_max_pkts;
         }
-        debug!("Controller buffers: {:?}", self.buf_info);
+        debug!("Controller buffers: {:?}", buf_info);
 
         match self
             .exec_params(Opcode::WriteLeHostSupport, |cmd| {
@@ -133,7 +132,7 @@ impl<T: host::Transport> Host<T> {
     /// will continue to wait.
     #[inline]
     pub async fn event(&self) -> Result<EventGuard<T>> {
-        self.router.recv_event().await
+        self.router.recv_event(&self.transport).await
     }
 
     /// Returns a new command with the specified `opcode`.
@@ -167,6 +166,6 @@ impl<T: host::Transport + 'static> Host<T> {
     #[inline]
     #[must_use]
     pub fn enable_events(&self) -> EventReceiverTask {
-        EventReceiverTask::new(Arc::clone(&self.router))
+        EventReceiverTask::new(self.clone())
     }
 }

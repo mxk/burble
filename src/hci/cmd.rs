@@ -2,6 +2,8 @@ use bytes::{BufMut, BytesMut};
 
 pub use {hci_control::*, info_params::*, le::*};
 
+use crate::host::Transfer;
+
 use super::*;
 
 mod hci_control;
