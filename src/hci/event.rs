@@ -495,7 +495,7 @@ impl<T: host::Transport> EventGuard<T> {
     /// Returns the received event if it represents successful command
     /// completion.
     #[inline]
-    pub fn cmd_ok(&self) -> Result<Event> {
+    pub fn ok(&self) -> Result<Event> {
         let evt = self.get();
         if !evt.typ.is_cmd() {
             return Err(Error::NonCommandEvent { typ: evt.typ });
@@ -514,7 +514,7 @@ impl<T: host::Transport, R: for<'a, 'b> From<&'a mut Event<'b>>> From<EventGuard
     /// Converts `CommandComplete` parameters to a concrete type.
     #[inline]
     fn from(g: EventGuard<T>) -> Self {
-        let mut evt = g.cmd_ok()?;
+        let mut evt = g.ok()?;
         let r = R::from(&mut evt);
         debug_assert_eq!(evt.tail.len(), 0, "unconsumed event");
         Ok(r)

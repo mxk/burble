@@ -59,6 +59,8 @@ pub trait Transport: Clone + Debug + Send + Sync {
 pub trait Transfer: AsRef<[u8]> + Debug + Send + Sync {
     type Future: Future<Output = Self> + Debug + Send + Unpin;
 
+    // TODO: Use Limit for buf_mut?
+
     /// Returns a mutable reference to the transfer buffer. A newly allocated
     /// transfer may start with a non-empty buffer. The header, if any, must not
     /// be modified. The buffer may be allocated in a DMA region, so the caller

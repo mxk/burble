@@ -4,15 +4,17 @@ use std::fmt::Debug;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{ready, Context, Poll};
+use std::time::Duration;
 
 use bytes::Bytes;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, trace, warn};
 
-pub use {cmd::*, codes::*, event::*};
+pub use {adv::*, cmd::*, codes::*, event::*};
 
 use crate::host;
 
+mod adv;
 mod cmd;
 mod codes;
 mod event;
@@ -104,20 +106,15 @@ impl<T: host::Transport> Host<T> {
         }
         debug!("Controller buffers: {:?}", buf_info);
 
-        match self
-            .exec_params(Opcode::WriteLeHostSupport, |cmd| {
-                cmd.u8(0x01).u8(0);
-            })
-            .await?
-            .cmd_ok()
-        {
-            Err(Error::CommandFailed {
-                status: Status::UnknownCommand,
-                ..
-            })
-            | Ok(_) => (),
-            Err(e) => return Err(e),
-        }
+        self.write_le_host_support(true)
+            .await
+            .or_else(|e| match e {
+                Error::CommandFailed {
+                    status: Status::UnknownCommand,
+                    ..
+                } => Ok(()),
+                e => Err(e),
+            })?;
         Ok(())
     }
 
@@ -135,17 +132,11 @@ impl<T: host::Transport> Host<T> {
         self.router.recv_event(&self.transport).await
     }
 
-    /// Returns a new command with the specified `opcode`.
-    #[inline]
-    fn cmd(&self, opcode: Opcode) -> Command<T> {
-        Command::new(self, opcode)
-    }
-
     /// Executes a command with no parameters and returns the command completion
     /// event.
     #[inline]
     async fn exec(&self, opcode: Opcode) -> Result<EventGuard<T>> {
-        self.cmd(opcode).exec().await
+        Command::new(self, opcode).exec().await
     }
 
     /// Executes a command, calling `f` to provide parameters, and returns the
@@ -156,7 +147,9 @@ impl<T: host::Transport> Host<T> {
         opcode: Opcode,
         f: impl FnOnce(&mut Command<T>) + Send,
     ) -> Result<EventGuard<T>> {
-        self.cmd(opcode).params(f).exec().await
+        let mut cmd = Command::new(self, opcode);
+        f(&mut cmd);
+        cmd.exec().await
     }
 }
 
@@ -168,4 +161,45 @@ impl<T: host::Transport + 'static> Host<T> {
     pub fn enable_events(&self) -> EventReceiverTask {
         EventReceiverTask::new(self.clone())
     }
+}
+
+/// Returns the number of 10ms ticks in `d` (rounding down) or `None` if the
+/// value overflows `u16`.
+#[inline]
+fn ticks_10ms(d: Duration) -> Option<u16> {
+    ticks_ms(d, 10)
+}
+
+/// Returns the number of 0.625ms ticks in `d` (rounding down) or `None` if the
+/// value overflows `u32`.
+#[inline]
+fn ticks_625us(d: Duration) -> Option<u32> {
+    ticks_us(d, 625)
+}
+
+/// Returns the number of 1.25ms ticks in `d` (rounding down) or `None` if the
+/// value overflows `u16`.
+#[inline]
+fn ticks_1250us(d: Duration) -> Option<u16> {
+    ticks_us(d, 1250)
+}
+
+/// Returns the number of millisecond `tick`s in `d` (rounding down) or `None`
+/// if the value overflows `T`.
+#[inline]
+fn ticks_ms<T: Default + Eq + Ord + TryFrom<u128>>(d: Duration, tick: u16) -> Option<T> {
+    if d.is_zero() {
+        return Some(T::default());
+    }
+    T::try_from((d.as_millis() / u128::from(tick)).max(1)).ok()
+}
+
+/// Returns the number of microsecond `tick`s in `d` (rounding down) or `None`
+/// if the value overflows `T`.
+#[inline]
+fn ticks_us<T: Default + Ord + TryFrom<u128>>(d: Duration, tick: u16) -> Option<T> {
+    if d.is_zero() {
+        return Some(T::default());
+    }
+    T::try_from((d.as_micros() / u128::from(tick)).max(1)).ok()
 }

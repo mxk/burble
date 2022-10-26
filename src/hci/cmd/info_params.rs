@@ -15,8 +15,8 @@ impl<T: host::Transport> Host<T> {
 
     /// Returns the controller's public address.
     pub async fn read_bd_addr(&self) -> Result<Addr> {
-        let evt = self.exec(Opcode::ReadBdAddr).await?;
-        Ok(Addr::Public(evt.cmd_ok()?.addr()))
+        let r = self.exec(Opcode::ReadBdAddr);
+        Ok(Addr::Public(r.await?.ok()?.addr()))
     }
 }
 

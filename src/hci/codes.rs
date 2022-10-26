@@ -27,12 +27,31 @@ pub enum Opcode {
     // LE Controller commands ([Vol 4] Part E, Section 7.8)
     LeReadBufferSize = Le.ocf(0x0002),
     LeReadBufferSizeV2 = Le.ocf(0x0060),
+    LeSetAdvertisingSetRandomAddress = Le.ocf(0x0035),
+    LeSetExtendedAdvertisingParameters = Le.ocf(0x0036),
+    LeSetExtendedAdvertisingData = Le.ocf(0x0037),
+    LeSetExtendedScanResponseData = Le.ocf(0x0038),
+    LeSetExtendedAdvertisingEnable = Le.ocf(0x0039),
+    LeReadMaximumAdvertisingDataLength = Le.ocf(0x003A),
+    LeReadNumberOfSupportedAdvertisingSets = Le.ocf(0x003B),
+    LeRemoveAdvertisingSet = Le.ocf(0x003C),
+    LeClearAdvertisingSets = Le.ocf(0x003D),
+    LeSetPeriodicAdvertisingParameters = Le.ocf(0x003E),
+    LeSetPeriodicAdvertisingData = Le.ocf(0x003F),
+    LeSetPeriodicAdvertisingEnable = Le.ocf(0x0040),
 }
 
 impl From<u16> for Opcode {
     #[inline]
     fn from(v: u16) -> Self {
         Self::from_repr(v).unwrap_or(Self::None)
+    }
+}
+
+impl From<Opcode> for u16 {
+    #[inline]
+    fn from(v: Opcode) -> Self {
+        v as _
     }
 }
 

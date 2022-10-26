@@ -28,24 +28,15 @@ impl<'a, T: host::Transport> Command<'a, T> {
     #[must_use]
     pub fn new(host: &'a Host<T>, opcode: Opcode) -> Self {
         // TODO: Transfer reuse
-        let xfer = host.transport.command();
-        let hdr = xfer.as_ref().len();
         let mut cmd = Self {
             router: &host.router,
-            xfer,
+            xfer: host.transport.command(),
             opcode,
-            hdr,
+            hdr: 0,
         };
-        cmd.u16(opcode as _).u8(0); // Final length is set in exec()
+        cmd.hdr = cmd.xfer.as_ref().len();
+        cmd.u16(opcode).u8(0); // Final length is set in exec()
         cmd
-    }
-
-    /// Calls `f` to set command parameters.
-    #[inline]
-    #[must_use]
-    pub fn params(mut self, f: impl FnOnce(&mut Self)) -> Self {
-        f(&mut self);
-        self
     }
 
     /// Executes the command and returns its completion event. The caller must
@@ -77,17 +68,46 @@ impl<'a, T: host::Transport> Command<'a, T> {
         self.xfer.buf_mut()
     }
 
-    /// Writes a u8 parameter to the command buffer.
+    /// Writes a `bool` parameter to the command buffer.
     #[inline]
-    pub fn u8(&mut self, v: u8) -> &mut Self {
-        self.buf().put_u8(v);
+    pub fn bool<V: Into<bool>>(&mut self, v: V) -> &mut Self {
+        self.buf().put_u8(u8::from(v.into()));
         self
     }
 
-    /// Writes a u16 parameter to the command buffer.
+    /// Writes an `i8` parameter to the command buffer.
     #[inline]
-    pub fn u16(&mut self, v: u16) -> &mut Self {
-        self.buf().put_u16_le(v);
+    pub fn i8<V: Into<i8>>(&mut self, v: V) -> &mut Self {
+        self.buf().put_i8(v.into());
+        self
+    }
+
+    /// Writes a `u8` parameter to the command buffer.
+    #[inline]
+    pub fn u8<V: Into<u8>>(&mut self, v: V) -> &mut Self {
+        self.buf().put_u8(v.into());
+        self
+    }
+
+    /// Writes a `u16` parameter to the command buffer.
+    #[inline]
+    pub fn u16<V: Into<u16>>(&mut self, v: V) -> &mut Self {
+        self.buf().put_u16_le(v.into());
+        self
+    }
+
+    /// Writes a `u24` parameter to the command buffer.
+    #[inline]
+    pub fn u24<V: Into<u32>>(&mut self, v: V) -> &mut Self {
+        let v = v.into().to_le_bytes();
+        assert_eq!(v[3], 0);
+        self.slice(&v[..3])
+    }
+
+    /// Writes raw byte slice to the command buffer.
+    #[inline]
+    pub fn slice<V: AsRef<[u8]>>(&mut self, v: V) -> &mut Self {
+        self.buf().put_slice(v.as_ref());
         self
     }
 }

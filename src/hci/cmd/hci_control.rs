@@ -6,4 +6,12 @@ impl<T: host::Transport> Host<T> {
     pub async fn reset(&self) -> Result<()> {
         self.exec(Opcode::Reset).await?.into()
     }
+
+    /// Sets the LE Supported (Host) Link Manager Protocol feature bit.
+    pub async fn write_le_host_support(&self, enable: bool) -> Result<()> {
+        let r = self.exec_params(Opcode::WriteLeHostSupport, |cmd| {
+            cmd.bool(enable).u8(0);
+        });
+        r.await?.into()
+    }
 }
