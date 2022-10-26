@@ -114,14 +114,14 @@ impl<'a> TryFrom<&'a [u8]> for Event<'a> {
         if tail.len() != len as usize {
             return Err(Error::InvalidEvent(Bytes::copy_from_slice(orig)));
         }
-        let typ = match EventCode::from_repr(code) {
-            Some(EventCode::LeMetaEvent) => {
+        let typ = match EventCode::try_from(code) {
+            Ok(EventCode::LeMetaEvent) => {
                 // After the header is validated, we allow further decoding
                 // calls to panic if there is missing data.
                 let subevent = tail.get_u8();
-                match SubeventCode::from_repr(subevent) {
-                    Some(subevent) => EventType::Le(subevent),
-                    None => {
+                match SubeventCode::try_from(subevent) {
+                    Ok(subevent) => EventType::Le(subevent),
+                    Err(_) => {
                         return Err(Error::UnknownEvent {
                             code: code as _,
                             subevent,
@@ -130,8 +130,8 @@ impl<'a> TryFrom<&'a [u8]> for Event<'a> {
                     }
                 }
             }
-            Some(code) => EventType::Hci(code),
-            None => {
+            Ok(code) => EventType::Hci(code),
+            Err(_) => {
                 return Err(Error::UnknownEvent {
                     code,
                     subevent: 0,

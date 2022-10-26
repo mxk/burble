@@ -4,7 +4,17 @@ use OpcodeGroup::*;
 
 /// HCI command opcodes ([Vol 4] Part E, Section 7).
 #[derive(
-    Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd, strum::Display, strum::FromRepr,
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    Eq,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    num_enum::IntoPrimitive,
+    num_enum::FromPrimitive,
+    strum::Display,
 )]
 #[non_exhaustive]
 #[repr(u16)]
@@ -41,20 +51,6 @@ pub enum Opcode {
     LeSetPeriodicAdvertisingEnable = Le.ocf(0x0040),
 }
 
-impl From<u16> for Opcode {
-    #[inline]
-    fn from(v: u16) -> Self {
-        Self::from_repr(v).unwrap_or(Self::None)
-    }
-}
-
-impl From<Opcode> for u16 {
-    #[inline]
-    fn from(v: Opcode) -> Self {
-        v as _
-    }
-}
-
 // Opcode group field definitions.
 #[derive(Clone, Copy)]
 #[repr(u16)]
@@ -77,7 +73,7 @@ impl OpcodeGroup {
 }
 
 /// HCI event codes ([Vol 4] Part E, Section 7.7).
-#[derive(Clone, Copy, Debug, Eq, PartialEq, strum::FromRepr)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, num_enum::TryFromPrimitive)]
 #[non_exhaustive]
 #[repr(u8)]
 pub enum EventCode {
@@ -149,7 +145,7 @@ pub enum EventCode {
 }
 
 /// HCI LE subevent codes ([Vol 4] Part E, Section 7.7.65).
-#[derive(Clone, Copy, Debug, Eq, PartialEq, strum::FromRepr)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, num_enum::TryFromPrimitive)]
 #[non_exhaustive]
 #[repr(u8)]
 pub enum SubeventCode {
@@ -192,12 +188,11 @@ pub enum SubeventCode {
 
 /// HCI status codes ([Vol 1] Part F, Section 1.3).
 #[derive(
-    Clone, Copy, Debug, Default, Eq, PartialEq, strum::Display, strum::FromRepr, thiserror::Error,
+    Clone, Copy, Debug, Eq, PartialEq, num_enum::FromPrimitive, strum::Display, thiserror::Error,
 )]
 #[non_exhaustive]
 #[repr(u8)]
 pub enum Status {
-    #[default]
     Success = 0x00,
     UnknownCommand = 0x01,
     UnknownConnectionIdentifier = 0x02,
@@ -229,6 +224,7 @@ pub enum Status {
     ScoIntervalRejected = 0x1C,
     ScoAirModeRejected = 0x1D,
     InvalidLmpLlParameters = 0x1E,
+    #[num_enum(default)] // [Vol 4] Part E, Section 1.2
     UnspecifiedError = 0x1F,
     UnsupportedLmpLlParameterValue = 0x20,
     RoleChangeNotAllowed = 0x21,
@@ -266,10 +262,9 @@ pub enum Status {
     PacketTooLong = 0x45,
 }
 
-impl From<u8> for Status {
+impl Default for Status {
     #[inline]
-    fn from(v: u8) -> Self {
-        // [Vol 4] Part E, Section 1.2
-        Self::from_repr(v).unwrap_or(Self::UnspecifiedError)
+    fn default() -> Self {
+        Self::Success
     }
 }

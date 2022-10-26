@@ -164,7 +164,7 @@ impl Default for AdvChanMap {
 
 /// Type of address being used in an advertising packet.
 #[allow(clippy::exhaustive_enums)]
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, num_enum::IntoPrimitive)]
 #[repr(u8)]
 pub enum AdvAddrType {
     /// Public Device Address.
@@ -183,16 +183,9 @@ pub enum AdvAddrType {
     PrivateOrRandom = 0x03,
 }
 
-impl From<AdvAddrType> for u8 {
-    #[inline]
-    fn from(v: AdvAddrType) -> Self {
-        v as _
-    }
-}
-
 /// Type of filtering to perform for scan and connection requests.
 #[allow(clippy::exhaustive_enums)]
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, num_enum::IntoPrimitive)]
 #[repr(u8)]
 pub enum AdvFilterPolicy {
     /// Process scan and connection requests from all devices (i.e., the Filter
@@ -210,16 +203,9 @@ pub enum AdvFilterPolicy {
     FilterAll = 0x03,
 }
 
-impl From<AdvFilterPolicy> for u8 {
-    #[inline]
-    fn from(p: AdvFilterPolicy) -> Self {
-        p as _
-    }
-}
-
 /// Defines the interpretation of advertising data.
 #[allow(clippy::exhaustive_enums)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, num_enum::IntoPrimitive)]
 #[repr(u8)]
 pub enum AdvDataOp {
     /// Intermediate fragment of fragmented extended advertising data.
@@ -234,15 +220,8 @@ pub enum AdvDataOp {
     Unchanged = 0x04,
 }
 
-impl From<AdvDataOp> for u8 {
-    #[inline]
-    fn from(op: AdvDataOp) -> Self {
-        op as _
-    }
-}
-
 /// Physical layer for advertising. LE Coded assumes S=8.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, num_enum::IntoPrimitive)]
 #[non_exhaustive]
 #[repr(u8)]
 pub enum AdvPhy {
@@ -250,13 +229,6 @@ pub enum AdvPhy {
     Le1M = 0x01,
     Le2M = 0x02,
     LeCoded = 0x03,
-}
-
-impl From<AdvPhy> for u8 {
-    #[inline]
-    fn from(p: AdvPhy) -> Self {
-        p as _
-    }
 }
 
 /// `HCI_LE_Set_Extended_Advertising_Enable` command parameters.
