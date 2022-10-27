@@ -1,5 +1,7 @@
 #![allow(clippy::use_self)]
 
+use bitflags::bitflags;
+
 use OpcodeGroup::*;
 
 /// HCI command opcodes ([Vol 4] Part E, Section 7).
@@ -19,8 +21,8 @@ use OpcodeGroup::*;
 #[non_exhaustive]
 #[repr(u16)]
 pub enum Opcode {
-    // Opcode 0x0000 is used to update Num_HCI_Command_Packets ([Vol 4] Part E,
-    // Section 7.7.14)
+    /// Opcode 0x0000 is used to update `Num_HCI_Command_Packets`
+    /// ([Vol 4] Part E, Section 7.7.14).
     #[default]
     None = 0x0000,
 
@@ -459,4 +461,111 @@ pub enum Role {
     Central = 0x00,
     /// Device is acting as Peripheral.
     Peripheral = 0x01,
+}
+
+bitflags! {
+    /// Basic properties of an advertising event
+    /// ([Vol 4] Part E, Section 7.8.53).
+    #[derive(Default)]
+    #[repr(transparent)]
+    pub struct AdvProp: u16 {
+        const CONNECTABLE = 1 << 0;
+        const SCANNABLE = 1 << 1;
+        const DIRECTED = 1 << 2;
+        const HIGH_DUTY_CYCLE = 1 << 3;
+        const LEGACY = 1 << 4;
+        const ANONYMOUS = 1 << 5;
+        const INCLUDE_TX_POWER = 1 << 6;
+    }
+}
+
+bitflags! {
+    /// Channels used for transmitting advertising packets
+    /// ([Vol 4] Part E, Section 7.8.53).
+    #[repr(transparent)]
+    pub struct AdvChanMap: u8 {
+        const CH37 = 1 << 0;
+        const CH38 = 1 << 1;
+        const CH39 = 1 << 2;
+    }
+}
+
+impl Default for AdvChanMap {
+    #[inline]
+    fn default() -> Self {
+        Self::all()
+    }
+}
+
+/// Type of address being used in an advertising packet
+/// ([Vol 4] Part E, Section 7.8.53).
+#[allow(clippy::exhaustive_enums)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, num_enum::IntoPrimitive)]
+#[repr(u8)]
+pub enum AdvAddrType {
+    /// Public Device Address.
+    #[default]
+    Public = 0x00,
+    /// Random Device Address
+    Random = 0x01,
+    /// Controller generates the Resolvable Private Address based on the local
+    /// IRK from the resolving list. If the resolving list contains no matching
+    /// entry, use the public address.
+    PrivateOrPublic = 0x02,
+    /// Controller generates the Resolvable Private Address based on the local
+    /// IRK from the resolving list. If the resolving list contains no matching
+    /// entry, use the random address from
+    /// `le_set_advertising_set_random_address()`.
+    PrivateOrRandom = 0x03,
+}
+
+/// Type of filtering to perform for scan and connection requests
+/// ([Vol 4] Part E, Section 7.8.53).
+#[allow(clippy::exhaustive_enums)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, num_enum::IntoPrimitive)]
+#[repr(u8)]
+pub enum AdvFilterPolicy {
+    /// Process scan and connection requests from all devices (i.e., the Filter
+    /// Accept List is not in use).
+    #[default]
+    None = 0x00,
+    /// Process connection requests from all devices and scan requests only from
+    /// devices that are in the Filter Accept List.
+    FilterScan = 0x01,
+    /// Process scan requests from all devices and connection requests only from
+    /// devices that are in the Filter Accept List.
+    FilterConnect = 0x02,
+    /// Process scan and connection requests only from devices in the Filter
+    /// Accept List.
+    FilterAll = 0x03,
+}
+
+/// Physical layer for advertising. LE Coded assumes S=8
+/// ([Vol 4] Part E, Section 7.8.53).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, num_enum::IntoPrimitive)]
+#[non_exhaustive]
+#[repr(u8)]
+pub enum AdvPhy {
+    #[default]
+    Le1M = 0x01,
+    Le2M = 0x02,
+    LeCoded = 0x03,
+}
+
+/// Defines the interpretation of advertising data
+/// ([Vol 4] Part E, Section 7.8.54).
+#[allow(clippy::exhaustive_enums)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, num_enum::IntoPrimitive)]
+#[repr(u8)]
+pub enum AdvDataOp {
+    /// Intermediate fragment of fragmented extended advertising data.
+    Cont = 0x00,
+    /// First fragment of fragmented extended advertising data.
+    First = 0x01,
+    /// Last fragment of fragmented extended advertising data.
+    Last = 0x02,
+    /// Complete extended advertising data.
+    Complete = 0x03,
+    /// Unchanged data (just update the Advertising DID).
+    Unchanged = 0x04,
 }
