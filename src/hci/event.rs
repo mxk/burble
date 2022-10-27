@@ -31,11 +31,18 @@ pub struct Event<'a> {
 
 impl Event<'_> {
     /// Returns the event type.
-    #[cfg(test)]
     #[inline]
     #[must_use]
     pub const fn typ(&self) -> EventType {
         self.typ
+    }
+
+    /// Returns the event status or [`Status::Success`] for events without a
+    /// status parameter.
+    #[inline]
+    #[must_use]
+    pub const fn status(&self) -> Status {
+        self.status
     }
 
     /// Returns the number of commands that the host is allowed to send to the
@@ -56,12 +63,15 @@ impl Event<'_> {
         self.opcode
     }
 
-    /// Returns the command status for `CommandComplete` or `CommandStatus`
-    /// events, or [`Status::Success`] for non-command events.
+    /// Returns the associated connection handle or an invalid handle for
+    /// non-connection events.
     #[inline]
     #[must_use]
-    pub const fn status(&self) -> Status {
-        self.status
+    pub const fn conn_handle(&self) -> ConnHandle {
+        match self.typ.param_fmt().handle_type() {
+            Some(HandleType::Conn) => ConnHandle::new(self.handle),
+            _ => ConnHandle::invalid(),
+        }
     }
 
     /// Returns any unparsed bytes.
@@ -386,8 +396,8 @@ impl Future for EventReceiverTask {
 /// Defines event matching criteria.
 #[derive(Clone, Debug)]
 pub(crate) enum EventFilter {
-    _Any,
     Command(Opcode),
+    _AdvManager,
 }
 
 impl EventFilter {
@@ -396,17 +406,24 @@ impl EventFilter {
     fn conflicts_with(&self, other: &Self) -> bool {
         use EventFilter::*;
         match (self, other) {
-            (&Command(lhs), &Command(rhs)) => lhs == rhs,
+            (&Command(a), &Command(b)) => a == b,
+            (&_AdvManager, &_AdvManager) => true,
             _ => false,
         }
     }
 
     /// Returns whether `evt` matches the filter.
     fn matches(&self, evt: &Event) -> bool {
-        use EventFilter::*;
+        use {EventFilter::*, EventType::*, SubeventCode::*};
         match *self {
-            _Any => true,
             Command(opcode) => evt.opcode == opcode && evt.typ.is_cmd(),
+            _AdvManager => match evt.typ {
+                Le(ConnectionComplete | EnhancedConnectionComplete) => {
+                    LeConnectionComplete::from(&mut evt.clone()).role == Role::Peripheral
+                }
+                Le(AdvertisingSetTerminated) => true,
+                _ => false,
+            },
         }
     }
 }

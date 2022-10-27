@@ -449,3 +449,14 @@ impl Default for Status {
         Self::Success
     }
 }
+
+/// Device connection role ([Vol 4] Part E, Sections 7.7.65.1 and 7.7.65.10).
+#[allow(clippy::exhaustive_enums)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, num_enum::TryFromPrimitive)]
+#[repr(u8)]
+pub enum Role {
+    /// Device is acting as Central.
+    Central = 0x00,
+    /// Device is acting as Peripheral.
+    Peripheral = 0x01,
+}

@@ -10,13 +10,14 @@ use bytes::Bytes;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, trace, warn};
 
-pub use {adv::*, cmd::*, codes::*, event::*};
+pub use {adv::*, cmd::*, codes::*, conn::*, event::*};
 
 use crate::host;
 
 mod adv;
 mod cmd;
 mod codes;
+mod conn;
 mod event;
 
 #[cfg(test)]
@@ -163,18 +164,23 @@ impl<T: host::Transport + 'static> Host<T> {
     }
 }
 
+/// Converts the count of 10ms `ticks` into [`Duration`].
+#[inline]
+fn duration_10ms(ticks: u16) -> Duration {
+    Duration::from_millis(u64::from(ticks) * 10)
+}
+
+/// Converts the count of 1.25ms `ticks` into [`Duration`].
+#[inline]
+fn duration_1250us(ticks: u16) -> Duration {
+    Duration::from_micros(u64::from(ticks) * 1250)
+}
+
 /// Returns the number of 10ms ticks in `d` (rounding down) or `None` if the
 /// value overflows `u16`.
 #[inline]
 fn ticks_10ms(d: Duration) -> Option<u16> {
     ticks_ms(d, 10)
-}
-
-/// Returns the number of 0.625ms ticks in `d` (rounding down) or `None` if the
-/// value overflows `u32`.
-#[inline]
-fn ticks_625us(d: Duration) -> Option<u32> {
-    ticks_us(d, 625)
 }
 
 /// Returns the number of 1.25ms ticks in `d` (rounding down) or `None` if the
@@ -184,20 +190,33 @@ fn ticks_1250us(d: Duration) -> Option<u16> {
     ticks_us(d, 1250)
 }
 
-/// Returns the number of millisecond `tick`s in `d` (rounding down) or `None`
-/// if the value overflows `T`.
+/// Returns the number of 0.625ms ticks in `d` (rounding down) or `None` if the
+/// value overflows `u32`.
 #[inline]
-fn ticks_ms<T: Default + Eq + Ord + TryFrom<u128>>(d: Duration, tick: u16) -> Option<T> {
+fn ticks_625us(d: Duration) -> Option<u32> {
+    ticks_us(d, 625)
+}
+
+/// Converts duration `d` into the count of `tick` milliseconds, rounding down.
+/// Returns `None` if the count overflows `T`.
+#[inline]
+fn ticks_ms<T>(d: Duration, tick: u16) -> Option<T>
+where
+    T: Default + Eq + Ord + TryFrom<u128>,
+{
     if d.is_zero() {
         return Some(T::default());
     }
     T::try_from((d.as_millis() / u128::from(tick)).max(1)).ok()
 }
 
-/// Returns the number of microsecond `tick`s in `d` (rounding down) or `None`
-/// if the value overflows `T`.
+/// Converts duration `d` into the count of `tick` microseconds, rounding down.
+/// Returns `None` if the count overflows `T`.
 #[inline]
-fn ticks_us<T: Default + Ord + TryFrom<u128>>(d: Duration, tick: u16) -> Option<T> {
+fn ticks_us<T>(d: Duration, tick: u16) -> Option<T>
+where
+    T: Default + Ord + TryFrom<u128>,
+{
     if d.is_zero() {
         return Some(T::default());
     }
