@@ -10,7 +10,7 @@ use bytes::Bytes;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, trace, warn};
 
-pub use {adv::*, cmd::*, codes::*, conn::*, event::*};
+pub use {adv::*, cmd::*, codes::*, conn::*, event::*, handle::*};
 
 use crate::host;
 
@@ -19,6 +19,7 @@ mod cmd;
 mod codes;
 mod conn;
 mod event;
+mod handle;
 
 #[cfg(test)]
 mod tests;

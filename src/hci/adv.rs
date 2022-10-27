@@ -23,7 +23,7 @@ impl<T: host::Transport> AdvManager<T> {
 
     /// Allocates a new advertising handle with the specified parameters.
     pub async fn alloc(&mut self, p: AdvParams) -> Result<(AdvHandle, TxPower)> {
-        let h = AdvHandle(0); // TODO: Make dynamic
+        let h = AdvHandle::from_raw(0); // TODO: Make dynamic
         self.host
             .le_set_extended_advertising_parameters(h, p)
             .await
@@ -80,6 +80,7 @@ impl<T: host::Transport> AdvManager<T> {
     fn op_chunks(d: &[u8], chunk_size: usize) -> impl ExactSizeIterator<Item = (AdvDataOp, &[u8])> {
         let mut chunks = d.chunks(chunk_size);
         if chunks.len() == 0 {
+            // Ensure that there is always at least one chunk
             chunks = [0].chunks(1);
         }
         let last = chunks.len() - 1;
@@ -89,25 +90,6 @@ impl<T: host::Transport> AdvManager<T> {
             i if last == i => (AdvDataOp::Last, c),
             _ => (AdvDataOp::Cont, c),
         })
-    }
-}
-
-/// Advertising set handle. Dropping the handle does not disable the advertising
-/// set.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(transparent)]
-pub struct AdvHandle(u8);
-
-impl Default for AdvHandle {
-    fn default() -> Self {
-        Self(0xFF) // Invalid handle
-    }
-}
-
-impl From<AdvHandle> for u8 {
-    #[inline]
-    fn from(h: AdvHandle) -> Self {
-        h.0
     }
 }
 

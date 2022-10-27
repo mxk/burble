@@ -1,50 +1,6 @@
-use std::u16;
-
 use crate::dev::{Addr, RawAddr};
 
 use super::*;
-
-/// Connection handle.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(transparent)]
-pub struct ConnHandle(u16);
-
-impl ConnHandle {
-    /// Returns a new connection handle.
-    #[inline]
-    #[must_use]
-    pub(super) const fn new(h: u16) -> Self {
-        Self(h)
-    }
-
-    /// Returns an invalid connection handle.
-    #[inline]
-    #[must_use]
-    pub const fn invalid() -> Self {
-        Self(0xFFFF)
-    }
-
-    /// Returns whether the connection handle is valid.
-    #[inline]
-    #[must_use]
-    pub const fn is_valid(self) -> bool {
-        self.0 >> 12 == 0 // [Vol 4] Part E, Section 5.4.2
-    }
-}
-
-impl Default for ConnHandle {
-    #[inline]
-    fn default() -> Self {
-        Self::invalid()
-    }
-}
-
-impl From<ConnHandle> for u16 {
-    #[inline]
-    fn from(h: ConnHandle) -> Self {
-        h.0
-    }
-}
 
 /// `HCI_LE_Connection_Complete` and `HCI_LE_Enhanced_Connection_Complete` event
 /// parameters.

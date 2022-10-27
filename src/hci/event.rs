@@ -69,7 +69,7 @@ impl Event<'_> {
     #[must_use]
     pub const fn conn_handle(&self) -> ConnHandle {
         match self.typ.param_fmt().handle_type() {
-            Some(HandleType::Conn) => ConnHandle::new(self.handle),
+            Some(HandleType::Conn) => ConnHandle::from_raw(self.handle),
             _ => ConnHandle::invalid(),
         }
     }
