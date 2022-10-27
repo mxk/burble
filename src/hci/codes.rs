@@ -62,6 +62,7 @@ enum OpcodeGroup {
     _StatusParams = 0x05,
     _Testing = 0x06,
     Le = 0x08,
+    _Vendor = 0x3F, // [Vol 4] Part E, Section 5.4.1
 }
 
 impl OpcodeGroup {
@@ -141,7 +142,84 @@ pub enum EventCode {
     InquiryResponseNotification = 0x56,
     AuthenticatedPayloadTimeoutExpired = 0x57,
     SamStatusChange = 0x58,
-    Vendor = 0xFF,
+    Vendor = 0xFF, // [Vol 4] Part E, Section 5.4.4
+}
+
+impl EventCode {
+    /// Returns the format of the associated event parameters.
+    #[inline]
+    #[must_use]
+    pub const fn param_fmt(self) -> EventFmt {
+        use {EventCode::*, EventFmt::*, HandleType::*};
+        #[allow(clippy::match_same_arms)]
+        match self {
+            InquiryComplete => Status,
+            InquiryResult => Other,
+            ConnectionComplete => StatusAndHandle(Conn),
+            ConnectionRequest => Other,
+            DisconnectionComplete => StatusAndHandle(Conn),
+            AuthenticationComplete => StatusAndHandle(Conn),
+            RemoteNameRequestComplete => Status,
+            EncryptionChangeV1 => StatusAndHandle(Conn),
+            EncryptionChangeV2 => StatusAndHandle(Conn),
+            ChangeConnectionLinkKeyComplete => StatusAndHandle(Conn),
+            LinkKeyTypeChanged => StatusAndHandle(Conn),
+            ReadRemoteSupportedFeaturesComplete => StatusAndHandle(Conn),
+            ReadRemoteVersionInformationComplete => StatusAndHandle(Conn),
+            QosSetupComplete => StatusAndHandle(Conn),
+            CommandComplete => Status, // Other format, but want has_status() == true
+            CommandStatus => Status,
+            HardwareError => Other,
+            FlushOccurred => Handle(Conn),
+            RoleChange => Status,
+            NumberOfCompletedPackets => Other,
+            ModeChange => StatusAndHandle(Conn),
+            ReturnLinkKeys => Other,
+            PinCodeRequest => Other,
+            LinkKeyRequest => Other,
+            LinkKeyNotification => Other,
+            LoopbackCommand => Other,
+            DataBufferOverflow => Other,
+            MaxSlotsChange => Handle(Conn),
+            ReadClockOffsetComplete => StatusAndHandle(Conn),
+            ConnectionPacketTypeChanged => StatusAndHandle(Conn),
+            QosViolation => Handle(Conn),
+            PageScanRepetitionModeChange => Other,
+            FlowSpecificationComplete => StatusAndHandle(Conn),
+            InquiryResultWithRssi => Other,
+            ReadRemoteExtendedFeaturesComplete => StatusAndHandle(Conn),
+            SynchronousConnectionComplete => StatusAndHandle(Conn),
+            SynchronousConnectionChanged => StatusAndHandle(Conn),
+            SniffSubrating => StatusAndHandle(Conn),
+            ExtendedInquiryResult => Other,
+            EncryptionKeyRefreshComplete => StatusAndHandle(Conn),
+            IoCapabilityRequest => Other,
+            IoCapabilityResponse => Other,
+            UserConfirmationRequest => Other,
+            UserPasskeyRequest => Other,
+            RemoteOobDataRequest => Other,
+            SimplePairingComplete => Status,
+            LinkSupervisionTimeoutChanged => Handle(Conn),
+            EnhancedFlushComplete => Handle(Conn),
+            UserPasskeyNotification => Other,
+            KeypressNotification => Other,
+            RemoteHostSupportedFeaturesNotification => Other,
+            NumberOfCompletedDataBlocks => Other,
+            LeMetaEvent => Other,
+            TriggeredClockCapture => Handle(Conn),
+            SynchronizationTrainComplete => Status,
+            SynchronizationTrainReceived => Status,
+            ConnectionlessPeripheralBroadcastReceive => Other,
+            ConnectionlessPeripheralBroadcastTimeout => Other,
+            TruncatedPageComplete => Status,
+            PeripheralPageResponseTimeout => Other,
+            ConnectionlessPeripheralBroadcastChannelMapChange => Other,
+            InquiryResponseNotification => Other,
+            AuthenticatedPayloadTimeoutExpired => Handle(Conn),
+            SamStatusChange => Handle(Conn),
+            Vendor => Other,
+        }
+    }
 }
 
 /// HCI LE subevent codes ([Vol 4] Part E, Section 7.7.65).
@@ -184,6 +262,109 @@ pub enum SubeventCode {
     TransmitPowerReporting = 0x21,
     BigInfoAdvertisingReport = 0x22,
     SubrateChange = 0x23,
+}
+
+impl SubeventCode {
+    /// Returns the format of the associated event parameters.
+    #[inline]
+    #[must_use]
+    pub const fn param_fmt(self) -> EventFmt {
+        use {EventFmt::*, HandleType::*, SubeventCode::*};
+        #[allow(clippy::match_same_arms)]
+        match self {
+            ConnectionComplete => StatusAndHandle(Conn),
+            AdvertisingReport => Other,
+            ConnectionUpdateComplete => StatusAndHandle(Conn),
+            ReadRemoteFeaturesComplete => StatusAndHandle(Conn),
+            LongTermKeyRequest => Handle(Conn),
+            RemoteConnectionParameterRequest => Handle(Conn),
+            DataLengthChange => Handle(Conn),
+            ReadLocalP256PublicKeyComplete => Status,
+            GenerateDhKeyComplete => Status,
+            EnhancedConnectionComplete => StatusAndHandle(Conn),
+            DirectedAdvertisingReport => Other,
+            PhyUpdateComplete => StatusAndHandle(Conn),
+            ExtendedAdvertisingReport => Other,
+            PeriodicAdvertisingSyncEstablished => StatusAndHandle(Sync),
+            PeriodicAdvertisingReport => Handle(Sync),
+            PeriodicAdvertisingSyncLost => Handle(Sync),
+            ScanTimeout => Other,
+            AdvertisingSetTerminated => StatusAndHandle(Adv),
+            ScanRequestReceived => Handle(Adv),
+            ChannelSelectionAlgorithm => Handle(Conn),
+            ConnectionlessIqReport => Handle(Sync),
+            ConnectionIqReport => Handle(Conn),
+            CteRequestFailed => StatusAndHandle(Conn),
+            PeriodicAdvertisingSyncTransferReceived => StatusAndHandle(Conn),
+            CisEstablished => StatusAndHandle(Conn),
+            CisRequest => Handle(Conn),
+            CreateBigComplete => StatusAndHandle(Big),
+            TerminateBigComplete => Handle(Big),
+            BigSyncEstablished => StatusAndHandle(Big),
+            BigSyncLost => Handle(Big),
+            RequestPeerScaComplete => StatusAndHandle(Conn),
+            PathLossThreshold => Handle(Conn),
+            TransmitPowerReporting => StatusAndHandle(Conn),
+            BigInfoAdvertisingReport => Handle(Sync),
+            SubrateChange => StatusAndHandle(Conn),
+        }
+    }
+}
+
+/// Event parameter format.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum EventFmt {
+    /// Event has neither status nor handle parameters.
+    Other,
+    /// Event has only a status parameter.
+    Status,
+    /// Event has only a handle parameter (Connection, Sync, etc.).
+    Handle(HandleType),
+    /// Event has both status and handle parameters.
+    StatusAndHandle(HandleType),
+}
+
+impl EventFmt {
+    /// Returns whether the associated event has a status parameter.
+    #[inline]
+    #[must_use]
+    pub const fn has_status(self) -> bool {
+        matches!(self, Self::Status | Self::StatusAndHandle(_))
+    }
+
+    /// Returns the type of handle contained in the associated event.
+    #[inline]
+    #[must_use]
+    pub const fn handle_type(self) -> Option<HandleType> {
+        match self {
+            Self::Other | Self::Status => None,
+            Self::Handle(t) | Self::StatusAndHandle(t) => Some(t),
+        }
+    }
+}
+
+/// Type of handle ([Vol 4] Part E, Section 5.3.1)
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum HandleType {
+    /// Connection handle.
+    Conn,
+    /// Advertising train handle.
+    Sync,
+    /// Advertising handle.
+    Adv,
+    /// Broadcast Isochronous Group handle.
+    Big,
+}
+
+impl HandleType {
+    /// Returns whether the handle type is `u8` (`u16` otherwise).
+    #[inline]
+    #[must_use]
+    pub const fn is_u8(self) -> bool {
+        matches!(self, HandleType::Adv | HandleType::Big)
+    }
 }
 
 /// HCI status codes ([Vol 1] Part F, Section 1.3).

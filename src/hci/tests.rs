@@ -1,3 +1,5 @@
+use matches::assert_matches;
+
 use crate::dev::RawAddr;
 
 use super::*;
@@ -7,20 +9,17 @@ fn event() {
     let pkt = [1, 2, 3, 4];
     let mut e = Event::try_from(pkt.as_ref()).unwrap();
     assert_eq!(e.typ(), EventType::Hci(EventCode::InquiryComplete));
-    assert_eq!(e.tail(), &pkt[2..]);
-    assert_eq!(e.u8(), pkt[2]);
+    assert_eq!(e.status(), Status::HardwareFailure);
+    assert_eq!(e.tail(), &pkt[3..]);
     assert_eq!(e.u8(), pkt[3]);
     assert!(e.tail().is_empty());
 }
 
 #[test]
 fn event_le() {
-    let pkt = [EventCode::LeMetaEvent as u8, 2, 3, 4];
+    let pkt = [EventCode::LeMetaEvent as u8, 2, 2, 4];
     let mut e = Event::try_from(pkt.as_ref()).unwrap();
-    assert_eq!(
-        e.typ(),
-        EventType::Le(SubeventCode::ConnectionUpdateComplete)
-    );
+    assert_eq!(e.typ(), EventType::Le(SubeventCode::AdvertisingReport));
     assert_eq!(e.tail(), &pkt[3..]);
     assert_eq!(e.u8(), pkt[3]);
 }
@@ -58,27 +57,27 @@ fn event_cmd_status() {
 #[test]
 fn event_error() {
     let event = |b: &[u8]| Event::try_from(b).unwrap_err();
-    assert!(matches!(event(&[]), Error::InvalidEvent(_)));
-    assert!(matches!(
+    assert_matches!(event(&[]), Error::InvalidEvent(_));
+    assert_matches!(
         event(&[EventCode::InquiryComplete as u8, 1]),
         Error::InvalidEvent(_)
-    ));
-    assert!(matches!(
+    );
+    assert_matches!(
         event(&[0, 1, 2]),
         Error::UnknownEvent {
             code: 0,
             subevent: 0,
             ..
         }
-    ));
-    assert!(matches!(
+    );
+    assert_matches!(
         event(&[EventCode::LeMetaEvent as u8, 1, 0xff]),
         Error::UnknownEvent {
             code: 0x3e,
             subevent: 0xff,
             ..
         }
-    ));
+    );
 }
 
 #[test]

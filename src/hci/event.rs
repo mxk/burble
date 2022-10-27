@@ -22,9 +22,10 @@ pub(crate) const EVT_BUF: usize = EVT_HDR + u8::MAX as usize;
 #[derive(Clone, Debug, Default)]
 pub struct Event<'a> {
     typ: EventType,
+    status: Status,
     cmd_quota: u8,
     opcode: Opcode,
-    status: Status,
+    handle: u16,
     tail: &'a [u8],
 }
 
@@ -46,9 +47,9 @@ impl Event<'_> {
         self.cmd_quota
     }
 
-    /// Returns the opcode from `CommandComplete` or `CommandStatus` events, or
-    /// [`Opcode::None`] for non-command events and either command event that
-    /// only updates the command quota.
+    /// Returns the opcode from `CommandComplete` or `CommandStatus` events.
+    /// [`Opcode::None`] may be returned for either event that only updates the
+    /// command quota and for non-command events.
     #[inline]
     #[must_use]
     pub const fn opcode(&self) -> Opcode {
@@ -103,8 +104,8 @@ impl Event<'_> {
 impl<'a> TryFrom<&'a [u8]> for Event<'a> {
     type Error = Error;
 
-    /// Tries to parse event header from `orig`. The subevent code for LE events
-    /// and command status information are also consumed.
+    /// Tries to parse event header from `orig`. The subevent code for LE
+    /// events, event status, and handle parameters are also consumed.
     fn try_from(orig: &'a [u8]) -> Result<Self> {
         if orig.len() < EVT_HDR {
             return Err(Error::InvalidEvent(Bytes::copy_from_slice(orig)));
@@ -141,10 +142,8 @@ impl<'a> TryFrom<&'a [u8]> for Event<'a> {
         };
         let mut evt = Self {
             typ,
-            cmd_quota: 0,
-            opcode: Opcode::None,
-            status: Status::Success,
             tail,
+            ..Self::default()
         };
         match typ {
             EventType::Hci(EventCode::CommandComplete) => {
@@ -159,8 +158,20 @@ impl<'a> TryFrom<&'a [u8]> for Event<'a> {
                 evt.cmd_quota = evt.u8();
                 evt.opcode = Opcode::from(evt.u16());
             }
-            _ => {}
-        };
+            _ => {
+                let pf = typ.param_fmt();
+                if pf.has_status() {
+                    evt.status = Status::from(evt.u8());
+                }
+                if let Some(t) = pf.handle_type() {
+                    evt.handle = if t.is_u8() {
+                        u16::from(evt.u8())
+                    } else {
+                        evt.u16()
+                    };
+                }
+            }
+        }
         Ok(evt)
     }
 }
@@ -187,6 +198,16 @@ impl EventType {
     pub const fn is_cmd(self) -> bool {
         use EventCode::{CommandComplete, CommandStatus};
         matches!(self, Self::Hci(CommandComplete | CommandStatus))
+    }
+
+    /// Returns the format of the associated event parameters.
+    #[inline]
+    #[must_use]
+    pub const fn param_fmt(self) -> EventFmt {
+        match self {
+            Self::Hci(c) => c.param_fmt(),
+            Self::Le(c) => c.param_fmt(),
+        }
     }
 }
 
