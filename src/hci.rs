@@ -10,14 +10,14 @@ use bytes::Bytes;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, trace, warn};
 
-pub use {adv::*, cmd::*, codes::*, conn::*, event::*, handle::*};
+pub use {adv::*, cmd::*, conn::*, consts::*, event::*, handle::*};
 
 use crate::host;
 
 mod adv;
 mod cmd;
-mod codes;
 mod conn;
+mod consts;
 mod event;
 mod handle;
 
