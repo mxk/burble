@@ -1,7 +1,7 @@
 Blackrock User-Mode Bluetooth LE Library
 ========================================
 
-A user-mode BLE stack implementation starting from the USB transport layer via [libusb]. Based on [Bluetooth Core Specification v5.3][spec]. Tested on Windows and Linux.
+A user-mode BLE stack implementation starting from the USB transport layer via [libusb]. Based on [Bluetooth Core Specification v5.3][spec] (LE Core Configuration as defined in [Vol 0] Part B, Section 4.4). Tested on Windows and Linux.
 
 **Status:** Under development
 

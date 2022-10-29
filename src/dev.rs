@@ -1,3 +1,5 @@
+//! Device addressing.
+
 use std::fmt::{Debug, Display, Formatter};
 
 /// Bluetooth device address ([Vol 6] Part B, Section 1.3).

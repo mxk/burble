@@ -42,5 +42,6 @@
 #![warn(clippy::unseparated_literal_suffix)]
 
 pub mod dev;
+pub mod gap;
 pub mod hci;
 pub mod host;

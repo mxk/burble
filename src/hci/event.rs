@@ -2,6 +2,7 @@ use std::collections::VecDeque;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::sync::Arc;
+use std::task::ready;
 use std::time::Duration;
 
 use bytes::Buf;

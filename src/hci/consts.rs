@@ -14,8 +14,8 @@ use OpcodeGroup::*;
     Ord,
     PartialEq,
     PartialOrd,
-    num_enum::IntoPrimitive,
     num_enum::FromPrimitive,
+    num_enum::IntoPrimitive,
     strum::Display,
 )]
 #[non_exhaustive]

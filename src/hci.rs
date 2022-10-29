@@ -1,9 +1,9 @@
-//! Host Controller Interface.
+//! Host Controller Interface ([Vol 4] Part E).
 
 use std::fmt::Debug;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{ready, Context, Poll};
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -167,34 +167,34 @@ impl<T: host::Transport + 'static> Host<T> {
 
 /// Converts the count of 10ms `ticks` into [`Duration`].
 #[inline]
-fn duration_10ms(ticks: u16) -> Duration {
+pub(crate) fn duration_10ms(ticks: u16) -> Duration {
     Duration::from_millis(u64::from(ticks) * 10)
 }
 
 /// Converts the count of 1.25ms `ticks` into [`Duration`].
 #[inline]
-fn duration_1250us(ticks: u16) -> Duration {
+pub(crate) fn duration_1250us(ticks: u16) -> Duration {
     Duration::from_micros(u64::from(ticks) * 1250)
 }
 
 /// Returns the number of 10ms ticks in `d` (rounding down) or `None` if the
 /// value overflows `u16`.
 #[inline]
-fn ticks_10ms(d: Duration) -> Option<u16> {
+pub(crate) fn ticks_10ms(d: Duration) -> Option<u16> {
     ticks_ms(d, 10)
 }
 
 /// Returns the number of 1.25ms ticks in `d` (rounding down) or `None` if the
 /// value overflows `u16`.
 #[inline]
-fn ticks_1250us(d: Duration) -> Option<u16> {
+pub(crate) fn ticks_1250us(d: Duration) -> Option<u16> {
     ticks_us(d, 1250)
 }
 
 /// Returns the number of 0.625ms ticks in `d` (rounding down) or `None` if the
 /// value overflows `u32`.
 #[inline]
-fn ticks_625us(d: Duration) -> Option<u32> {
+pub(crate) fn ticks_625us(d: Duration) -> Option<u32> {
     ticks_us(d, 625)
 }
 

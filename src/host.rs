@@ -1,4 +1,4 @@
-//! Controller enumeration and transport layer interface.
+//! Host transport layer ([Vol 4] Parts A-D)
 
 use std::fmt::Debug;
 use std::future::Future;
