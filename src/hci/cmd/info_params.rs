@@ -23,9 +23,9 @@ impl<T: host::Transport> Host<T> {
 /// `HCI_Read_Local_Version_Information` return parameters.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct LocalVersion {
-    pub hci_version: u8,
+    pub hci_version: CoreVersion,
     pub hci_subversion: u16,
-    pub lmp_version: u8,
+    pub lmp_version: CoreVersion,
     pub company_id: u16,
     pub lmp_subversion: u16,
 }
@@ -33,9 +33,9 @@ pub struct LocalVersion {
 impl From<&mut Event<'_>> for LocalVersion {
     fn from(e: &mut Event) -> Self {
         Self {
-            hci_version: e.u8(),
+            hci_version: CoreVersion::from(e.u8()),
             hci_subversion: e.u16(),
-            lmp_version: e.u8(),
+            lmp_version: CoreVersion::from(e.u8()),
             company_id: e.u16(),
             lmp_subversion: e.u16(),
         }

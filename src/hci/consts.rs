@@ -569,3 +569,37 @@ pub enum AdvDataOp {
     /// Unchanged data (just update the Advertising DID).
     Unchanged = 0x04,
 }
+
+/// Bluetooth Core Specification versions ([Assigned Numbers] Section 2.1).
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    Eq,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    num_enum::FromPrimitive,
+    num_enum::IntoPrimitive,
+    strum::Display,
+)]
+#[non_exhaustive]
+#[repr(u8)]
+pub enum CoreVersion {
+    V1_0b = 0x00,
+    V1_1 = 0x01,
+    V1_2 = 0x02,
+    V2_0 = 0x03,
+    V2_1 = 0x04,
+    V3_0 = 0x05,
+    V4_0 = 0x06,
+    V4_1 = 0x07,
+    V4_2 = 0x08,
+    V5_0 = 0x09,
+    V5_1 = 0x0A,
+    V5_2 = 0x0B,
+    V5_3 = 0x0C,
+    #[default]
+    Unknown = 0xFF,
+}
