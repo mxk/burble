@@ -1,17 +1,12 @@
 //! Implementation of length-type-value response data format used in the
 //! Extended Inquiry Response (EIR), Advertising Data (AD), Scan Response Data
-//! (SRD), Additional Controller Advertising Data (ACAD), and OOB data blocks.
-//!
-//! Reference:
+//! (SRD), Additional Controller Advertising Data (ACAD), and OOB data blocks:
 //!
 //! * [Vol 3] Part C, Section 8
 //! * [Vol 3] Part C, Section 11
 //! * [Vol 6] Part B, Section 2.3.4.8
 //! * [Core Specification Supplement] Part A, Section 1
 //! * [Assigned Numbers] Section 2.3
-//!
-//! [Core Specification Supplement]: https://www.bluetooth.com/specifications/specs/
-//! [Assigned Numbers]: https://www.bluetooth.com/specifications/assigned-numbers/
 
 use std::time::Duration;
 
@@ -21,7 +16,7 @@ use crate::hci::{ticks_1250us, ticks_625us};
 
 use super::*;
 
-/// Response data writer.
+/// Response data builder.
 #[derive(Clone, Debug)]
 pub struct ResponseDataMut(BytesMut);
 
@@ -40,28 +35,21 @@ impl ResponseDataMut {
         self.0.freeze()
     }
 
-    /// Pads the buffer with zeros to length `n`.
-    #[inline]
-    pub fn pad_len(&mut self, n: usize) -> &mut Self {
-        self.0.put_bytes(0, n.saturating_sub(self.0.len()));
-        self
-    }
-
-    /// Appends service UUIDs ([CSS] Part A, Section 1.1). Each UUID is encoded
-    /// in the optimal format.
-    pub fn service_uuid<T: Copy + Into<Uuid>>(&mut self, complete: bool, v: &[T]) -> &mut Self {
-        let typ = u8::from(ResponseDataType::IncompleteServiceUuid16) + u8::from(complete);
-        self.maybe_put(typ, complete, |b| {
+    /// Appends service class UUIDs ([CSS] Part A, Section 1.1). Each UUID is
+    /// encoded in the optimal format.
+    pub fn service_class<T: Copy + Into<Uuid>>(&mut self, complete: bool, v: &[T]) -> &mut Self {
+        let typ = u8::from(ResponseDataType::IncompleteServiceClass16) + u8::from(complete);
+        self.maybe_put(complete, typ, |b| {
             v.iter()
                 .filter_map(|&u| u.into().as_u16())
                 .for_each(|v| b.put_u16_le(v));
         })
-        .maybe_put(typ + 2, complete, |b| {
+        .maybe_put(complete, typ + 2, |b| {
             v.iter()
                 .filter_map(|&u| u.into().as_u32())
                 .for_each(|v| b.put_u32_le(v));
         })
-        .maybe_put(typ + 4, complete, |b| {
+        .maybe_put(complete, typ + 4, |b| {
             v.iter()
                 .filter_map(|&u| u.into().as_u128())
                 .for_each(|v| b.put_u128_le(v));
@@ -122,8 +110,9 @@ impl ResponseDataMut {
 
     /// Appends a length-type-data field to the buffer, calling `f` to provide
     /// the data.
+    #[inline]
     fn put<T: Into<u8>>(&mut self, typ: T, f: impl Fn(&mut BytesMut)) -> &mut Self {
-        self.maybe_put(typ, true, f)
+        self.maybe_put(true, typ, f)
     }
 
     /// Append a length-type-data field to the buffer, calling `f` to provide
@@ -131,8 +120,8 @@ impl ResponseDataMut {
     /// gets appended.
     fn maybe_put<T: Into<u8>>(
         &mut self,
-        typ: T,
         keep_empty: bool,
+        typ: T,
         f: impl Fn(&mut BytesMut),
     ) -> &mut Self {
         let i = self.0.len();
@@ -161,7 +150,7 @@ mod tests {
     #[test]
     fn css_example_2_1_1() {
         let mut eir = ResponseDataMut::new();
-        eir.local_name(true, "Phone").service_uuid(
+        eir.local_name(true, "Phone").service_class(
             true,
             &[ServiceClassId::Panu, ServiceClassId::HandsfreeAudioGateway],
         );
