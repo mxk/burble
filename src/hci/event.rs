@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 use std::future::Future;
 use std::marker::PhantomData;
+use std::ops::Deref;
 use std::sync::Arc;
 use std::task::ready;
 use std::time::Duration;
@@ -524,28 +525,31 @@ impl<T: host::Transport> EventGuard<T> {
         unsafe { self.r.event().unwrap_unchecked() }
     }
 
-    /// Returns the command status or `Status::Success` for non-command events.
-    #[inline]
-    #[must_use]
-    pub fn status(&self) -> Status {
-        self.r.evt.status
-    }
-
     /// Returns the received event if it represents successful command
     /// completion.
     #[inline]
     pub fn ok(&self) -> Result<Event> {
-        let evt = self.get();
-        if !evt.typ.is_cmd() {
-            return Err(Error::NonCommandEvent { typ: evt.typ });
+        if !self.typ.is_cmd() {
+            return Err(Error::NonCommandEvent { typ: self.typ });
         }
-        if evt.status != Status::Success {
+        if self.status != Status::Success {
             return Err(Error::CommandFailed {
-                opcode: evt.opcode,
-                status: evt.status,
+                opcode: self.opcode,
+                status: self.status,
             });
         }
-        Ok(evt)
+        Ok(self.get())
+    }
+}
+
+impl<T: host::Transport> Deref for EventGuard<T> {
+    type Target = Event<'static>;
+
+    /// Provides access to `Event` metadata. The `tail()` will be empty. Use
+    /// [`Self::get()`] or [`Self::ok()`] to get a decodable event.
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        &self.r.evt
     }
 }
 
