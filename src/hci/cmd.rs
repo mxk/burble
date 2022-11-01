@@ -54,11 +54,18 @@ impl<'a, T: host::Transport> Command<'a, T> {
             warn!("Failed to submit {} command: {e}", self.opcode);
             e
         })?;
-        // TODO: Handle CommandStatus events
-        waiter.next().await.ok_or(Error::CommandAborted {
-            opcode: self.opcode,
-            status: Status::UnspecifiedError,
-        })
+        // [Vol 4] Part E, Section 4.4
+        loop {
+            let g = waiter.next().await.ok_or(Error::CommandAborted {
+                opcode: self.opcode,
+                status: Status::UnspecifiedError,
+            })?;
+            if g.typ() == EventType::Hci(EventCode::CommandComplete) {
+                return Ok(g);
+            } else if let Err(e) = g.ok() {
+                return Err(e); // Failed CommandStatus
+            }
+        }
     }
 
     /// Returns the command transfer buffer.
