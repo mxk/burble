@@ -16,20 +16,20 @@ pub(crate) const CMD_BUF: usize = CMD_HDR + u8::MAX as usize;
 
 /// HCI command encoder.
 #[derive(Debug)]
-pub(super) struct Command<'a, T: host::Transport> {
-    router: &'a EventRouter<T>,
+pub(super) struct Command<T: host::Transport> {
+    router: Arc<EventRouter<T>>,
     xfer: T::Transfer,
     opcode: Opcode,
     hdr: usize,
 }
 
-impl<'a, T: host::Transport> Command<'a, T> {
+impl<T: host::Transport> Command<T> {
     /// Allocates a new HCI command.
     #[must_use]
-    pub fn new(host: &'a Host<T>, opcode: Opcode) -> Self {
+    pub fn new(host: &Host<T>, opcode: Opcode) -> Self {
         // TODO: Transfer reuse
         let mut cmd = Self {
-            router: &host.router,
+            router: Arc::clone(&host.router),
             xfer: host.transport.command(),
             opcode,
             hdr: 0,
@@ -49,7 +49,7 @@ impl<'a, T: host::Transport> Command<'a, T> {
         // Event registration must happen first to ensure that the command quota
         // is not exceeded, to check for any conflicting commands, and to
         // guarantee that the completion event will not be missed.
-        let mut waiter = self.router.register(EventFilter::Command(self.opcode))?;
+        let mut waiter = Arc::clone(&self.router).register(EventFilter::Command(self.opcode))?;
         self.xfer.submit()?.await.result().unwrap().map_err(|e| {
             warn!("Failed to submit {} command: {e}", self.opcode);
             e

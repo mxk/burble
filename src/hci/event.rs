@@ -257,7 +257,7 @@ pub(super) struct EventRouter<T: host::Transport> {
 
 impl<T: host::Transport> EventRouter<T> {
     /// Register a new event waiter with filter `f`.
-    pub fn register(&self, f: EventFilter) -> Result<EventWaiterGuard<T>> {
+    pub fn register(self: Arc<Self>, f: EventFilter) -> Result<EventWaiterGuard<T>> {
         let mut ws = self.waiters.lock();
         if ws.queue.iter().any(|w| f.conflicts_with(&w.filter)) {
             return Err(Error::FilterConflict);
@@ -326,6 +326,8 @@ impl<T: host::Transport> EventRouter<T> {
         }
         if notify {
             self.notify.notify_waiters();
+        } else {
+            trace!("Ignored event: {evt:?}");
         }
         Ok(guard)
     }
@@ -461,12 +463,12 @@ struct Waiter<T: host::Transport> {
 
 /// Guard that unregisters the event waiter when dropped.
 #[derive(Debug)]
-pub(super) struct EventWaiterGuard<'a, T: host::Transport> {
-    router: &'a EventRouter<T>,
+pub(super) struct EventWaiterGuard<T: host::Transport> {
+    router: Arc<EventRouter<T>>,
     id: u64,
 }
 
-impl<T: host::Transport> EventWaiterGuard<'_, T> {
+impl<T: host::Transport> EventWaiterGuard<T> {
     /// Returns the next matching event or [`None`] if the waiter is no longer
     /// registered (e.g. if the controller is lost).
     pub async fn next(&mut self) -> Option<EventGuard<T>> {
@@ -486,7 +488,7 @@ impl<T: host::Transport> EventWaiterGuard<'_, T> {
     }
 }
 
-impl<T: host::Transport> Drop for EventWaiterGuard<'_, T> {
+impl<T: host::Transport> Drop for EventWaiterGuard<T> {
     fn drop(&mut self) {
         let mut ws = self.router.waiters.lock();
         if let Some(i) = ws.queue.iter().position(|w| w.id == self.id) {
