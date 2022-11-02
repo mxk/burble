@@ -97,13 +97,9 @@ impl<T: host::Transport> Host<T> {
         let r = self.exec_params(Opcode::LeSetExtendedAdvertisingEnable, |cmd| {
             cmd.bool(enable);
             cmd.u8(u8::try_from(cfg.len()).unwrap());
-            for c in cfg.iter() {
+            for c in cfg {
                 cmd.u8(c.handle);
-            }
-            for c in cfg.iter() {
                 cmd.u16(ticks_10ms(c.duration).expect("invalid advertising duration"));
-            }
-            for c in cfg.iter() {
                 cmd.u8(c.max_events);
             }
         });
