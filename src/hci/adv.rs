@@ -1,4 +1,3 @@
-use crate::dev::Addr;
 use crate::host;
 
 use super::*;
@@ -7,7 +6,7 @@ use super::*;
 #[derive(Debug)]
 pub struct AdvManager<T: host::Transport> {
     host: Host<T>,
-    _max_len: usize,
+    max_len: usize,
 }
 
 impl<T: host::Transport> AdvManager<T> {
@@ -15,14 +14,18 @@ impl<T: host::Transport> AdvManager<T> {
     pub async fn new(host: Host<T>) -> Result<Self> {
         host.le_clear_advertising_sets().await?;
         let max_len = host.le_read_maximum_advertising_data_length().await?;
-        Ok(Self {
-            host,
-            _max_len: max_len,
-        })
+        Ok(Self { host, max_len })
+    }
+
+    /// Returns the maximum advertising data length.
+    #[inline]
+    #[must_use]
+    pub const fn max_len(&self) -> usize {
+        self.max_len
     }
 
     /// Allocates a new advertising handle with the specified parameters.
-    pub async fn alloc(&mut self, p: AdvParams) -> Result<(AdvHandle, TxPower)> {
+    pub async fn alloc_handle(&mut self, p: AdvParams) -> Result<(AdvHandle, TxPower)> {
         let h = AdvHandle::from_raw(0); // TODO: Make dynamic
         self.host
             .le_set_extended_advertising_parameters(h, p)
@@ -45,23 +48,22 @@ impl<T: host::Transport> AdvManager<T> {
     }
 
     /// Enable advertising.
-    pub async fn enable(&mut self, cfg: &[AdvEnableParams]) -> Result<()> {
+    pub async fn enable(&mut self, p: AdvEnableParams) -> Result<AdvGuard<T>> {
+        let waiter = Arc::clone(&self.host.router).register(EventFilter::AdvManager)?;
         self.host
-            .le_set_extended_advertising_enable(true, cfg)
-            .await
+            .le_set_extended_advertising_enable(true, &[p])
+            .await?;
+        Ok(AdvGuard { waiter, conn: None })
     }
 
-    /// Disable advertising.
-    pub async fn disable(&mut self, cfg: &[AdvHandle]) -> Result<()> {
-        let cfg: Vec<AdvEnableParams> = cfg
-            .iter()
-            .map(|h| AdvEnableParams {
-                handle: *h,
-                ..AdvEnableParams::default()
-            })
-            .collect();
+    // Disable advertising.
+    pub async fn disable(&mut self, h: AdvHandle) -> Result<()> {
+        let p = AdvEnableParams {
+            handle: h,
+            ..AdvEnableParams::default()
+        };
         self.host
-            .le_set_extended_advertising_enable(false, cfg.as_slice())
+            .le_set_extended_advertising_enable(false, &[p])
             .await
     }
 
@@ -93,35 +95,40 @@ impl<T: host::Transport> AdvManager<T> {
     }
 }
 
-/// `HCI_LE_Set_Extended_Advertising_Parameters` command parameters.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct AdvParams {
-    pub props: AdvProp,
-    pub pri_interval: (Duration, Duration),
-    pub pri_chan_map: AdvChanMap,
-    pub addr_type: AdvAddrType,
-    pub peer_addr: Addr,
-    pub filter_policy: AdvFilterPolicy,
-    pub tx_power: Option<TxPower>,
-    pub pri_phy: AdvPhy,
-    pub sec_max_skip: u8,
-    pub sec_phy: AdvPhy,
-    pub sid: u8,
-    pub scan_request_notify: bool,
+#[derive(Debug)]
+pub struct AdvGuard<T: host::Transport> {
+    waiter: EventWaiterGuard<T>,
+    conn: Option<LeConnectionComplete>,
 }
 
-/// `HCI_LE_Set_Extended_Advertising_Enable` command parameters.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct AdvEnableParams {
-    pub handle: AdvHandle,
-    pub duration: Duration,
-    pub max_events: u8,
-}
-
-/// `HCI_LE_Set_Extended_Advertising_Enable` command parameters.
-#[derive(Clone, Copy, Debug)]
-pub struct AdvPeriodicParams {
-    pub handle: AdvHandle,
-    pub duration: Duration,
-    pub max_events: u8,
+impl<T: host::Transport> AdvGuard<T> {
+    pub async fn accept(&mut self) -> Result<LeConnectionComplete> {
+        use SubeventCode::*;
+        loop {
+            let evt = self
+                .waiter
+                .next()
+                .await
+                .ok_or_else(|| Error::from(Status::UnspecifiedError))?;
+            match evt.typ() {
+                EventType::Le(ConnectionComplete | EnhancedConnectionComplete) => {
+                    self.conn = Some((&mut evt.get()).into());
+                }
+                EventType::Le(AdvertisingSetTerminated) => {
+                    if let Some(conn) = self.conn.take() {
+                        let evt = LeAdvertisingSetTerminated::from(&mut evt.get());
+                        if conn.handle == evt.conn_handle {
+                            return Ok(conn);
+                        }
+                    }
+                    let mut s = evt.status();
+                    if s.is_ok() {
+                        s = Status::UnknownConnectionIdentifier;
+                    }
+                    return Err(Error::from(s));
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
 }

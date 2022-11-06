@@ -2,19 +2,23 @@ use std::collections::VecDeque;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::ops::Deref;
+use std::pin::Pin;
 use std::sync::Arc;
-use std::task::ready;
+use std::task::{ready, Context, Poll};
 use std::time::Duration;
 
 use bytes::Buf;
 use tokio::time::timeout;
-use tracing::trace;
+use tokio_util::sync::CancellationToken;
+use tracing::{debug, trace};
 
-use crate::dev::RawAddr;
-use crate::host;
-use crate::host::Transfer;
+pub use le::*;
+
+use crate::{dev::RawAddr, host, host::Transfer};
 
 use super::*;
+
+mod le;
 
 /// HCI event header and buffer sizes ([Vol 4] Part E, Section 5.4.4).
 const EVT_HDR: usize = 2;
@@ -63,6 +67,18 @@ impl Event<'_> {
     #[must_use]
     pub const fn opcode(&self) -> Opcode {
         self.opcode
+    }
+
+    /// Returns the associated advertising handle or an invalid handle for
+    /// non-advertising events.
+    #[inline]
+    #[must_use]
+    pub const fn adv_handle(&self) -> AdvHandle {
+        #[allow(clippy::cast_possible_truncation)]
+        match self.typ.param_fmt().handle_type() {
+            Some(HandleType::Adv) => AdvHandle::from_raw(self.handle as u8),
+            _ => AdvHandle::invalid(),
+        }
     }
 
     /// Returns the associated connection handle or an invalid handle for
@@ -296,11 +312,8 @@ impl<T: host::Transport> EventRouter<T> {
         // Clippy checks that EventGuards are not held across await points, so
         // the caller can't deadlock, but it's possible that another Waiter with
         // an event is not being awaited. The timeout should catch that.
-        let mut recv =
-            match timeout(Duration::from_secs(3), Arc::clone(&rwlock).write_owned()).await {
-                Ok(recv) => recv,
-                Err(_) => panic!("recv_event stalled (EventGuard held for too long)"),
-            };
+        let mut recv = (timeout(Duration::from_secs(3), Arc::clone(&rwlock).write_owned()).await)
+            .expect("recv_event stalled (EventGuard held for too long)");
         recv.next(transport).await?;
 
         // TODO: Remove and notify receivers for certain fatal errors, like lost
@@ -401,7 +414,7 @@ impl Future for EventReceiverTask {
 #[derive(Clone, Debug)]
 pub(crate) enum EventFilter {
     Command(Opcode),
-    _AdvManager,
+    AdvManager,
 }
 
 impl EventFilter {
@@ -411,7 +424,7 @@ impl EventFilter {
         use EventFilter::*;
         match (self, other) {
             (&Command(a), &Command(b)) => a == b,
-            (&_AdvManager, &_AdvManager) => true,
+            (&AdvManager, &AdvManager) => true,
             _ => false,
         }
     }
@@ -421,7 +434,7 @@ impl EventFilter {
         use {EventFilter::*, EventType::*, SubeventCode::*};
         match *self {
             Command(opcode) => evt.opcode == opcode && evt.typ.is_cmd(),
-            _AdvManager => match evt.typ {
+            AdvManager => match evt.typ {
                 Le(ConnectionComplete | EnhancedConnectionComplete) => {
                     LeConnectionComplete::from(&mut evt.clone()).role == Role::Peripheral
                 }
@@ -534,7 +547,7 @@ impl<T: host::Transport> EventGuard<T> {
         if !self.typ.is_cmd() {
             return Err(Error::NonCommandEvent { typ: self.typ });
         }
-        if self.status != Status::Success {
+        if !self.status.is_ok() {
             return Err(Error::CommandFailed {
                 opcode: self.opcode,
                 status: self.status,

@@ -216,10 +216,45 @@ impl From<&mut Event<'_>> for LeBufferInfo {
     }
 }
 
+/// `HCI_LE_Set_Extended_Advertising_Parameters` command parameters.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct AdvParams {
+    pub props: AdvProp,
+    pub pri_interval: (Duration, Duration),
+    pub pri_chan_map: AdvChanMap,
+    pub addr_type: AdvAddrType,
+    pub peer_addr: Addr,
+    pub filter_policy: AdvFilterPolicy,
+    pub tx_power: Option<TxPower>,
+    pub pri_phy: AdvPhy,
+    pub sec_max_skip: u8,
+    pub sec_phy: AdvPhy,
+    pub sid: u8,
+    pub scan_request_notify: bool,
+}
+
+/// `HCI_LE_Set_Extended_Advertising_Enable` command parameters.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct AdvEnableParams {
+    pub handle: AdvHandle,
+    pub duration: Duration,
+    pub max_events: u8,
+}
+
+impl From<AdvHandle> for AdvEnableParams {
+    #[inline]
+    fn from(h: AdvHandle) -> Self {
+        Self {
+            handle: h,
+            ..Self::default()
+        }
+    }
+}
+
 /// TX power level in dBm.
 #[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
 #[repr(transparent)]
-pub struct TxPower(i8);
+pub struct TxPower(pub(crate) i8);
 
 impl TxPower {
     /// Returns a power level of `v` dBm.

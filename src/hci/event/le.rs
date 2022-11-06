@@ -52,3 +52,30 @@ impl From<&mut Event<'_>> for LeConnectionComplete {
         }
     }
 }
+
+/// `HCI_LE_Advertising_Set_Terminated` event parameters.
+#[derive(Clone, Debug)]
+pub struct LeAdvertisingSetTerminated {
+    pub status: Status,
+    pub adv_handle: AdvHandle,
+    pub conn_handle: ConnHandle,
+    pub num_events: u8,
+}
+
+impl From<&mut Event<'_>> for LeAdvertisingSetTerminated {
+    fn from(e: &mut Event<'_>) -> Self {
+        Self {
+            status: e.status(),
+            adv_handle: e.adv_handle(),
+            conn_handle: {
+                let h = e.u16();
+                if e.status().is_ok() {
+                    ConnHandle::from_raw(h)
+                } else {
+                    ConnHandle::invalid()
+                }
+            },
+            num_events: e.u8(),
+        }
+    }
+}

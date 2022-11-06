@@ -448,6 +448,15 @@ pub enum Status {
     PacketTooLong = 0x45,
 }
 
+impl Status {
+    /// Returns whether status is `Success`.
+    #[inline]
+    #[must_use]
+    pub const fn is_ok(self) -> bool {
+        matches!(self, Status::Success)
+    }
+}
+
 impl Default for Status {
     #[inline]
     fn default() -> Self {

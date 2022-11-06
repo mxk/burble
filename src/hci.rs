@@ -1,22 +1,18 @@
 //! Host Controller Interface ([Vol 4] Part E).
 
 use std::fmt::Debug;
-use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{Context, Poll};
 use std::time::Duration;
 
 use bytes::Bytes;
-use tokio_util::sync::CancellationToken;
-use tracing::{debug, trace, warn};
+use tracing::debug;
 
-pub use {adv::*, cmd::*, conn::*, consts::*, event::*, handle::*};
+pub use {adv::*, cmd::*, consts::*, event::*, handle::*};
 
 use crate::host;
 
 mod adv;
 mod cmd;
-mod conn;
 mod consts;
 mod event;
 mod handle;
