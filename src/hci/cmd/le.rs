@@ -1,5 +1,5 @@
-use crate::dev::{Addr, RawAddr};
 use crate::hci::*;
+use crate::le::{Addr, RawAddr};
 
 // LE Controller commands ([Vol 4] Part E, Section 7.8).
 impl<T: host::Transport> Host<T> {

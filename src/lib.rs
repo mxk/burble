@@ -41,7 +41,7 @@
 #![warn(clippy::undocumented_unsafe_blocks)]
 #![warn(clippy::unseparated_literal_suffix)]
 
-pub mod dev;
 pub mod gap;
 pub mod hci;
 pub mod host;
+pub mod le;

@@ -14,7 +14,7 @@ use tracing::{debug, trace};
 
 pub use le::*;
 
-use crate::{dev::RawAddr, host, host::Transfer};
+use crate::{host, host::Transfer, le::RawAddr};
 
 use super::*;
 

@@ -1,6 +1,6 @@
 use matches::assert_matches;
 
-use crate::dev::RawAddr;
+use crate::le::RawAddr;
 
 use super::*;
 

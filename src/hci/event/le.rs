@@ -1,4 +1,4 @@
-use crate::dev::{Addr, RawAddr};
+use crate::le::{Addr, RawAddr};
 
 use super::*;
 
