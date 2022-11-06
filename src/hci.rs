@@ -95,9 +95,19 @@ impl<T: host::Transport> Host<T> {
         }
     }
 
-    /// Performs a reset and basic controller initialization.
+    /// Performs a reset and basic controller initialization
+    /// ([Vol 6] Part D, Section 2.1).
     pub async fn init(&self) -> Result<()> {
+        // TODO: USB endpoints need to be reset. Otherwise, old events are
+        // delivered. Try using libusb_set_configuration.
         self.reset().await?;
+
+        // Unmask all events.
+        // SAFETY: The controller ignores any reserved bits set to 1.
+        self.set_event_mask(EventMask::default()).await?;
+        let _ignore_unknown = self.set_event_mask_page_2(EventMaskPage2::default()).await;
+        self.le_set_event_mask(LeEventMask::default()).await?;
+
         // [Vol 4] Part E, Section 4.1 and [Vol 4] Part E, Section 7.8.2
         // TODO: Move to L2CAP
         let mut buf_info = self.le_read_buffer_size().await?;
@@ -108,15 +118,7 @@ impl<T: host::Transport> Host<T> {
         }
         debug!("Controller buffers: {:?}", buf_info);
 
-        self.write_le_host_support(true)
-            .await
-            .or_else(|e| match e {
-                Error::CommandFailed {
-                    status: Status::UnknownCommand,
-                    ..
-                } => Ok(()),
-                e => Err(e),
-            })?;
+        let _ignore_unknown = self.write_le_host_support(true).await;
         Ok(())
     }
 

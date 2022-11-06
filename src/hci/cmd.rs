@@ -1,4 +1,5 @@
 use bytes::{BufMut, BytesMut};
+use tracing::{trace, warn};
 
 pub use {hci_control::*, info_params::*, le::*};
 
@@ -109,6 +110,13 @@ impl<T: host::Transport> Command<T> {
         let v = v.into().to_le_bytes();
         assert_eq!(v[3], 0);
         self.slice(&v[..3])
+    }
+
+    /// Writes a `u64` parameter to the command buffer.
+    #[inline]
+    pub fn u64<V: Into<u64>>(&mut self, v: V) -> &mut Self {
+        self.buf().put_u64_le(v.into());
+        self
     }
 
     /// Writes raw byte slice to the command buffer.
