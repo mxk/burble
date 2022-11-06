@@ -75,9 +75,10 @@ impl Event<'_> {
     #[must_use]
     pub const fn adv_handle(&self) -> AdvHandle {
         #[allow(clippy::cast_possible_truncation)]
-        match self.typ.param_fmt().handle_type() {
-            Some(HandleType::Adv) => AdvHandle::from_raw(self.handle as u8),
-            _ => AdvHandle::invalid(),
+        if self.typ.param_fmt().contains(EventFmt::ADV_HANDLE) {
+            AdvHandle::from_raw(self.handle as u8)
+        } else {
+            AdvHandle::invalid()
         }
     }
 
@@ -86,9 +87,10 @@ impl Event<'_> {
     #[inline]
     #[must_use]
     pub const fn conn_handle(&self) -> ConnHandle {
-        match self.typ.param_fmt().handle_type() {
-            Some(HandleType::Conn) => ConnHandle::from_raw(self.handle),
-            _ => ConnHandle::invalid(),
+        if self.typ.param_fmt().contains(EventFmt::CONN_HANDLE) {
+            ConnHandle::from_raw(self.handle)
+        } else {
+            ConnHandle::invalid()
         }
     }
 
@@ -188,11 +190,11 @@ impl<'a> TryFrom<&'a [u8]> for Event<'a> {
             }
             _ => {
                 let pf = typ.param_fmt();
-                if pf.has_status() {
+                if pf.intersects(EventFmt::STATUS) {
                     evt.status = Status::from(evt.u8());
                 }
-                if let Some(t) = pf.handle_type() {
-                    evt.handle = if t.is_u8() {
+                if pf.intersects(EventFmt::HANDLE) {
+                    evt.handle = if pf.intersects(EventFmt::ADV_HANDLE | EventFmt::BIG_HANDLE) {
                         u16::from(evt.u8())
                     } else {
                         evt.u16()

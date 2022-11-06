@@ -155,74 +155,77 @@ impl EventCode {
     #[inline]
     #[must_use]
     pub const fn param_fmt(self) -> EventFmt {
-        use {EventCode::*, EventFmt::*, HandleType::*};
+        use EventCode::*;
+        const OTHER: EventFmt = EventFmt::empty();
+        const STATUS: EventFmt = EventFmt::STATUS;
+        const CONN_HANDLE: EventFmt = EventFmt::CONN_HANDLE;
         #[allow(clippy::match_same_arms)]
         match self {
-            InquiryComplete => Status,
-            InquiryResult => Other,
-            ConnectionComplete => StatusAndHandle(Conn),
-            ConnectionRequest => Other,
-            DisconnectionComplete => StatusAndHandle(Conn),
-            AuthenticationComplete => StatusAndHandle(Conn),
-            RemoteNameRequestComplete => Status,
-            EncryptionChangeV1 => StatusAndHandle(Conn),
-            EncryptionChangeV2 => StatusAndHandle(Conn),
-            ChangeConnectionLinkKeyComplete => StatusAndHandle(Conn),
-            LinkKeyTypeChanged => StatusAndHandle(Conn),
-            ReadRemoteSupportedFeaturesComplete => StatusAndHandle(Conn),
-            ReadRemoteVersionInformationComplete => StatusAndHandle(Conn),
-            QosSetupComplete => StatusAndHandle(Conn),
-            CommandComplete => Status, // Other format, but want has_status() == true
-            CommandStatus => Status,
-            HardwareError => Other,
-            FlushOccurred => Handle(Conn),
-            RoleChange => Status,
-            NumberOfCompletedPackets => Other,
-            ModeChange => StatusAndHandle(Conn),
-            ReturnLinkKeys => Other,
-            PinCodeRequest => Other,
-            LinkKeyRequest => Other,
-            LinkKeyNotification => Other,
-            LoopbackCommand => Other,
-            DataBufferOverflow => Other,
-            MaxSlotsChange => Handle(Conn),
-            ReadClockOffsetComplete => StatusAndHandle(Conn),
-            ConnectionPacketTypeChanged => StatusAndHandle(Conn),
-            QosViolation => Handle(Conn),
-            PageScanRepetitionModeChange => Other,
-            FlowSpecificationComplete => StatusAndHandle(Conn),
-            InquiryResultWithRssi => Other,
-            ReadRemoteExtendedFeaturesComplete => StatusAndHandle(Conn),
-            SynchronousConnectionComplete => StatusAndHandle(Conn),
-            SynchronousConnectionChanged => StatusAndHandle(Conn),
-            SniffSubrating => StatusAndHandle(Conn),
-            ExtendedInquiryResult => Other,
-            EncryptionKeyRefreshComplete => StatusAndHandle(Conn),
-            IoCapabilityRequest => Other,
-            IoCapabilityResponse => Other,
-            UserConfirmationRequest => Other,
-            UserPasskeyRequest => Other,
-            RemoteOobDataRequest => Other,
-            SimplePairingComplete => Status,
-            LinkSupervisionTimeoutChanged => Handle(Conn),
-            EnhancedFlushComplete => Handle(Conn),
-            UserPasskeyNotification => Other,
-            KeypressNotification => Other,
-            RemoteHostSupportedFeaturesNotification => Other,
-            NumberOfCompletedDataBlocks => Other,
-            LeMetaEvent => Other,
-            TriggeredClockCapture => Handle(Conn),
-            SynchronizationTrainComplete => Status,
-            SynchronizationTrainReceived => Status,
-            ConnectionlessPeripheralBroadcastReceive => Other,
-            ConnectionlessPeripheralBroadcastTimeout => Other,
-            TruncatedPageComplete => Status,
-            PeripheralPageResponseTimeout => Other,
-            ConnectionlessPeripheralBroadcastChannelMapChange => Other,
-            InquiryResponseNotification => Other,
-            AuthenticatedPayloadTimeoutExpired => Handle(Conn),
-            SamStatusChange => Handle(Conn),
-            Vendor => Other,
+            InquiryComplete => STATUS,
+            InquiryResult => OTHER,
+            ConnectionComplete => STATUS.union(CONN_HANDLE),
+            ConnectionRequest => OTHER,
+            DisconnectionComplete => STATUS.union(CONN_HANDLE),
+            AuthenticationComplete => STATUS.union(CONN_HANDLE),
+            RemoteNameRequestComplete => STATUS,
+            EncryptionChangeV1 => STATUS.union(CONN_HANDLE),
+            EncryptionChangeV2 => STATUS.union(CONN_HANDLE),
+            ChangeConnectionLinkKeyComplete => STATUS.union(CONN_HANDLE),
+            LinkKeyTypeChanged => STATUS.union(CONN_HANDLE),
+            ReadRemoteSupportedFeaturesComplete => STATUS.union(CONN_HANDLE),
+            ReadRemoteVersionInformationComplete => STATUS.union(CONN_HANDLE),
+            QosSetupComplete => STATUS.union(CONN_HANDLE),
+            CommandComplete => STATUS, // Other format, but want has_status() == true
+            CommandStatus => STATUS,
+            HardwareError => OTHER,
+            FlushOccurred => CONN_HANDLE,
+            RoleChange => STATUS,
+            NumberOfCompletedPackets => OTHER,
+            ModeChange => STATUS.union(CONN_HANDLE),
+            ReturnLinkKeys => OTHER,
+            PinCodeRequest => OTHER,
+            LinkKeyRequest => OTHER,
+            LinkKeyNotification => OTHER,
+            LoopbackCommand => OTHER,
+            DataBufferOverflow => OTHER,
+            MaxSlotsChange => CONN_HANDLE,
+            ReadClockOffsetComplete => STATUS.union(CONN_HANDLE),
+            ConnectionPacketTypeChanged => STATUS.union(CONN_HANDLE),
+            QosViolation => CONN_HANDLE,
+            PageScanRepetitionModeChange => OTHER,
+            FlowSpecificationComplete => STATUS.union(CONN_HANDLE),
+            InquiryResultWithRssi => OTHER,
+            ReadRemoteExtendedFeaturesComplete => STATUS.union(CONN_HANDLE),
+            SynchronousConnectionComplete => STATUS.union(CONN_HANDLE),
+            SynchronousConnectionChanged => STATUS.union(CONN_HANDLE),
+            SniffSubrating => STATUS.union(CONN_HANDLE),
+            ExtendedInquiryResult => OTHER,
+            EncryptionKeyRefreshComplete => STATUS.union(CONN_HANDLE),
+            IoCapabilityRequest => OTHER,
+            IoCapabilityResponse => OTHER,
+            UserConfirmationRequest => OTHER,
+            UserPasskeyRequest => OTHER,
+            RemoteOobDataRequest => OTHER,
+            SimplePairingComplete => STATUS,
+            LinkSupervisionTimeoutChanged => CONN_HANDLE,
+            EnhancedFlushComplete => CONN_HANDLE,
+            UserPasskeyNotification => OTHER,
+            KeypressNotification => OTHER,
+            RemoteHostSupportedFeaturesNotification => OTHER,
+            NumberOfCompletedDataBlocks => OTHER,
+            LeMetaEvent => OTHER,
+            TriggeredClockCapture => CONN_HANDLE,
+            SynchronizationTrainComplete => STATUS,
+            SynchronizationTrainReceived => STATUS,
+            ConnectionlessPeripheralBroadcastReceive => OTHER,
+            ConnectionlessPeripheralBroadcastTimeout => OTHER,
+            TruncatedPageComplete => STATUS,
+            PeripheralPageResponseTimeout => OTHER,
+            ConnectionlessPeripheralBroadcastChannelMapChange => OTHER,
+            InquiryResponseNotification => OTHER,
+            AuthenticatedPayloadTimeoutExpired => CONN_HANDLE,
+            SamStatusChange => CONN_HANDLE,
+            Vendor => OTHER,
         }
     }
 }
@@ -274,101 +277,71 @@ impl SubeventCode {
     #[inline]
     #[must_use]
     pub const fn param_fmt(self) -> EventFmt {
-        use {EventFmt::*, HandleType::*, SubeventCode::*};
+        use SubeventCode::*;
+        const OTHER: EventFmt = EventFmt::empty();
+        const STATUS: EventFmt = EventFmt::STATUS;
+        const CONN_HANDLE: EventFmt = EventFmt::CONN_HANDLE;
+        const SYNC_HANDLE: EventFmt = EventFmt::SYNC_HANDLE;
+        const ADV_HANDLE: EventFmt = EventFmt::ADV_HANDLE;
+        const BIG_HANDLE: EventFmt = EventFmt::BIG_HANDLE;
         #[allow(clippy::match_same_arms)]
         match self {
-            ConnectionComplete => StatusAndHandle(Conn),
-            AdvertisingReport => Other,
-            ConnectionUpdateComplete => StatusAndHandle(Conn),
-            ReadRemoteFeaturesComplete => StatusAndHandle(Conn),
-            LongTermKeyRequest => Handle(Conn),
-            RemoteConnectionParameterRequest => Handle(Conn),
-            DataLengthChange => Handle(Conn),
-            ReadLocalP256PublicKeyComplete => Status,
-            GenerateDhKeyComplete => Status,
-            EnhancedConnectionComplete => StatusAndHandle(Conn),
-            DirectedAdvertisingReport => Other,
-            PhyUpdateComplete => StatusAndHandle(Conn),
-            ExtendedAdvertisingReport => Other,
-            PeriodicAdvertisingSyncEstablished => StatusAndHandle(Sync),
-            PeriodicAdvertisingReport => Handle(Sync),
-            PeriodicAdvertisingSyncLost => Handle(Sync),
-            ScanTimeout => Other,
-            AdvertisingSetTerminated => StatusAndHandle(Adv),
-            ScanRequestReceived => Handle(Adv),
-            ChannelSelectionAlgorithm => Handle(Conn),
-            ConnectionlessIqReport => Handle(Sync),
-            ConnectionIqReport => Handle(Conn),
-            CteRequestFailed => StatusAndHandle(Conn),
-            PeriodicAdvertisingSyncTransferReceived => StatusAndHandle(Conn),
-            CisEstablished => StatusAndHandle(Conn),
-            CisRequest => Handle(Conn),
-            CreateBigComplete => StatusAndHandle(Big),
-            TerminateBigComplete => Handle(Big),
-            BigSyncEstablished => StatusAndHandle(Big),
-            BigSyncLost => Handle(Big),
-            RequestPeerScaComplete => StatusAndHandle(Conn),
-            PathLossThreshold => Handle(Conn),
-            TransmitPowerReporting => StatusAndHandle(Conn),
-            BigInfoAdvertisingReport => Handle(Sync),
-            SubrateChange => StatusAndHandle(Conn),
+            ConnectionComplete => STATUS.union(CONN_HANDLE),
+            AdvertisingReport => OTHER,
+            ConnectionUpdateComplete => STATUS.union(CONN_HANDLE),
+            ReadRemoteFeaturesComplete => STATUS.union(CONN_HANDLE),
+            LongTermKeyRequest => CONN_HANDLE,
+            RemoteConnectionParameterRequest => CONN_HANDLE,
+            DataLengthChange => CONN_HANDLE,
+            ReadLocalP256PublicKeyComplete => STATUS,
+            GenerateDhKeyComplete => STATUS,
+            EnhancedConnectionComplete => STATUS.union(CONN_HANDLE),
+            DirectedAdvertisingReport => OTHER,
+            PhyUpdateComplete => STATUS.union(CONN_HANDLE),
+            ExtendedAdvertisingReport => OTHER,
+            PeriodicAdvertisingSyncEstablished => STATUS.union(SYNC_HANDLE),
+            PeriodicAdvertisingReport => SYNC_HANDLE,
+            PeriodicAdvertisingSyncLost => SYNC_HANDLE,
+            ScanTimeout => OTHER,
+            AdvertisingSetTerminated => STATUS.union(ADV_HANDLE),
+            ScanRequestReceived => ADV_HANDLE,
+            ChannelSelectionAlgorithm => CONN_HANDLE,
+            ConnectionlessIqReport => SYNC_HANDLE,
+            ConnectionIqReport => CONN_HANDLE,
+            CteRequestFailed => STATUS.union(CONN_HANDLE),
+            PeriodicAdvertisingSyncTransferReceived => STATUS.union(CONN_HANDLE),
+            CisEstablished => STATUS.union(CONN_HANDLE),
+            CisRequest => CONN_HANDLE,
+            CreateBigComplete => STATUS.union(BIG_HANDLE),
+            TerminateBigComplete => BIG_HANDLE,
+            BigSyncEstablished => STATUS.union(BIG_HANDLE),
+            BigSyncLost => BIG_HANDLE,
+            RequestPeerScaComplete => STATUS.union(CONN_HANDLE),
+            PathLossThreshold => CONN_HANDLE,
+            TransmitPowerReporting => STATUS.union(CONN_HANDLE),
+            BigInfoAdvertisingReport => SYNC_HANDLE,
+            SubrateChange => STATUS.union(CONN_HANDLE),
         }
     }
 }
 
-/// Event parameter format.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[non_exhaustive]
-pub enum EventFmt {
-    /// Event has neither status nor handle parameters.
-    Other,
-    /// Event has only a status parameter.
-    Status,
-    /// Event has only a handle parameter (Connection, Sync, etc.).
-    Handle(HandleType),
-    /// Event has both status and handle parameters.
-    StatusAndHandle(HandleType),
-}
-
-impl EventFmt {
-    /// Returns whether the associated event has a status parameter.
-    #[inline]
-    #[must_use]
-    pub const fn has_status(self) -> bool {
-        matches!(self, Self::Status | Self::StatusAndHandle(_))
-    }
-
-    /// Returns the type of handle contained in the associated event.
-    #[inline]
-    #[must_use]
-    pub const fn handle_type(self) -> Option<HandleType> {
-        match self {
-            Self::Other | Self::Status => None,
-            Self::Handle(t) | Self::StatusAndHandle(t) => Some(t),
-        }
-    }
-}
-
-/// Type of handle ([Vol 4] Part E, Section 5.3.1)
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[non_exhaustive]
-pub enum HandleType {
-    /// Connection handle.
-    Conn,
-    /// Advertising train handle.
-    Sync,
-    /// Advertising handle.
-    Adv,
-    /// Broadcast Isochronous Group handle.
-    Big,
-}
-
-impl HandleType {
-    /// Returns whether the handle type is `u8` (`u16` otherwise).
-    #[inline]
-    #[must_use]
-    pub const fn is_u8(self) -> bool {
-        matches!(self, HandleType::Adv | HandleType::Big)
+bitflags! {
+    /// Event parameter format.
+    #[repr(transparent)]
+    pub struct EventFmt: u8 {
+        /// Event contains a status parameter.
+        const STATUS = 1 << 0;
+        /// Event contains a connection handle.
+        const CONN_HANDLE = 1 << 1;
+        /// Event contains a sync handle.
+        const SYNC_HANDLE = 1 << 2;
+        /// Event contains an advertising handle.
+        const ADV_HANDLE = 1 << 3;
+        /// Event contains a BIG handle.
+        const BIG_HANDLE = 1 << 4;
+        /// Handle type mask ([Vol 4] Part E, Section 5.3.1)
+        const HANDLE = Self::CONN_HANDLE.bits | Self::SYNC_HANDLE.bits |
+                       Self::ADV_HANDLE.bits | Self::BIG_HANDLE.bits;
     }
 }
 
