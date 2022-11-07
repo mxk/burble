@@ -108,6 +108,12 @@ impl Event<'_> {
         self.tail.get_u8()
     }
 
+    /// Returns the next i8.
+    #[inline]
+    pub fn i8(&mut self) -> i8 {
+        self.tail.get_i8()
+    }
+
     /// Returns the next u16.
     #[inline]
     pub fn u16(&mut self) -> u16 {
@@ -486,17 +492,17 @@ pub(super) struct EventWaiterGuard<T: host::Transport> {
 impl<T: host::Transport> EventWaiterGuard<T> {
     /// Returns the next matching event or [`None`] if the waiter is no longer
     /// registered (e.g. if the controller is lost).
-    pub async fn next(&mut self) -> Option<EventGuard<T>> {
+    pub async fn next(&mut self) -> Result<EventGuard<T>> {
         loop {
             let ready_or_notify = {
                 let mut ws = self.router.waiters.lock();
                 match ws.queue.iter_mut().find(|w| w.id == self.id) {
                     Some(w) => w.ready.take().ok_or_else(|| self.router.notify.notified()),
-                    None => return None,
+                    None => return Err(Status::UnspecifiedError.into()),
                 }
             };
             match ready_or_notify {
-                Ok(ready) => return Some(EventGuard::new(ready)),
+                Ok(ready) => return Ok(EventGuard::new(ready)),
                 Err(notify) => notify.await,
             };
         }

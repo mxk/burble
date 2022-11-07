@@ -1,9 +1,13 @@
+// TODO: Display
+
 /// Connection handle.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 #[repr(transparent)]
 pub struct ConnHandle(u16);
 
 impl ConnHandle {
+    pub(crate) const MAX: u16 = 0xEFF; // [Vol 4] Part E, Section 5.4.2
+
     /// Wraps a raw connection handle.
     #[inline]
     #[must_use]
@@ -22,7 +26,7 @@ impl ConnHandle {
     #[inline]
     #[must_use]
     pub const fn is_valid(self) -> bool {
-        self.0 >> 12 == 0 // [Vol 4] Part E, Section 5.4.2
+        self.0 <= Self::MAX
     }
 }
 
@@ -41,11 +45,13 @@ impl From<ConnHandle> for u16 {
 }
 
 /// Advertising set handle.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 #[repr(transparent)]
 pub struct AdvHandle(u8);
 
 impl AdvHandle {
+    pub(crate) const MAX: u8 = 0xEF; // [Vol 4] Part E, Section 7.8.53
+
     /// Wraps a raw advertising handle.
     #[inline]
     #[must_use]
@@ -64,7 +70,7 @@ impl AdvHandle {
     #[inline]
     #[must_use]
     pub const fn is_valid(self) -> bool {
-        self.0 <= 0xEF // [Vol 4] Part E, Section 7.8.53
+        self.0 <= Self::MAX
     }
 }
 

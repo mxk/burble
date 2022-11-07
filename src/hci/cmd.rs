@@ -57,9 +57,9 @@ impl<T: host::Transport> Command<T> {
         })?;
         // [Vol 4] Part E, Section 4.4
         loop {
-            let g = waiter.next().await.ok_or(Error::CommandAborted {
+            let g = waiter.next().await.map_err(|e| Error::CommandAborted {
                 opcode: self.opcode,
-                status: Status::UnspecifiedError,
+                status: e.status().unwrap_or(Status::UnspecifiedError),
             })?;
             if g.typ() == EventType::Hci(EventCode::CommandComplete) {
                 return Ok(g);

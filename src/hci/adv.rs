@@ -1,36 +1,49 @@
+use std::collections::{HashMap, HashSet};
+
 use crate::host;
+use crate::le::TxPower;
 
 use super::*;
 
-/// Advertising set manager.
+/// Advertisement manager.
 #[derive(Debug)]
-pub struct AdvManager<T: host::Transport> {
+pub struct Advertiser<T: host::Transport> {
     host: Host<T>,
-    max_len: usize,
+    handles: HashSet<AdvHandle>,
+    max_data_len: usize,
 }
 
-impl<T: host::Transport> AdvManager<T> {
+impl<T: host::Transport> Advertiser<T> {
     /// Creates a new advertisement manager.
     pub async fn new(host: Host<T>) -> Result<Self> {
         host.le_clear_advertising_sets().await?;
-        let max_len = host.le_read_maximum_advertising_data_length().await?;
-        Ok(Self { host, max_len })
+        let handles = HashSet::with_capacity(usize::from(
+            host.le_read_number_of_supported_advertising_sets().await?,
+        ));
+        let max_data_len = host.le_read_maximum_advertising_data_length().await?;
+        Ok(Self {
+            host,
+            handles,
+            max_data_len,
+        })
     }
 
     /// Returns the maximum advertising data length.
     #[inline]
     #[must_use]
-    pub const fn max_len(&self) -> usize {
-        self.max_len
+    pub const fn max_data_len(&self) -> usize {
+        self.max_data_len
     }
 
-    /// Allocates a new advertising handle with the specified parameters.
-    pub async fn alloc_handle(&mut self, p: AdvParams) -> Result<(AdvHandle, TxPower)> {
-        let h = AdvHandle::from_raw(0); // TODO: Make dynamic
-        self.host
-            .le_set_extended_advertising_parameters(h, p)
-            .await
-            .map(|p| (h, p))
+    /// Creates a new advertising handle with the specified parameters.
+    pub async fn create(&mut self, p: AdvParams) -> Result<(AdvHandle, TxPower)> {
+        // TODO: Allow using a random address.
+        // TODO: Handle legacy advertisements?
+        let h = self.alloc_handle()?;
+        (self.host.le_set_extended_advertising_parameters(h, p).await).map(|p| {
+            self.handles.insert(h);
+            (h, p)
+        })
     }
 
     /// Sets advertising data.
@@ -48,23 +61,24 @@ impl<T: host::Transport> AdvManager<T> {
     }
 
     /// Enable advertising.
-    pub async fn enable(&mut self, p: AdvEnableParams) -> Result<AdvGuard<T>> {
+    pub async fn enable(&mut self, p: AdvEnableParams) -> Result<AdvMonitor<T>> {
         let waiter = Arc::clone(&self.host.router).register(EventFilter::AdvManager)?;
-        self.host
-            .le_set_extended_advertising_enable(true, &[p])
-            .await?;
-        Ok(AdvGuard { waiter, conn: None })
+        (self.host.le_set_extended_advertising_enable(true, &[p])).await?;
+        Ok(AdvMonitor::new(waiter))
     }
 
     // Disable advertising.
     pub async fn disable(&mut self, h: AdvHandle) -> Result<()> {
-        let p = AdvEnableParams {
-            handle: h,
-            ..AdvEnableParams::default()
-        };
+        // TODO: Wake monitor(s).
         self.host
-            .le_set_extended_advertising_enable(false, &[p])
+            .le_set_extended_advertising_enable(false, &[h.into()])
             .await
+    }
+
+    // Disable advertising.
+    pub async fn disable_all(&mut self) -> Result<()> {
+        // TODO: Wake monitor(s).
+        (self.host.le_set_extended_advertising_enable(false, &[])).await
     }
 
     /// Removes an advertising handle.
@@ -75,6 +89,17 @@ impl<T: host::Transport> AdvManager<T> {
     /// Removes all advertising handles.
     pub async fn remove_all(&mut self) -> Result<()> {
         self.host.le_clear_advertising_sets().await
+    }
+
+    /// Allocates an unused advertising handle.
+    fn alloc_handle(&self) -> Result<AdvHandle> {
+        for i in 0..=AdvHandle::MAX {
+            let h = AdvHandle::from_raw(i);
+            if !self.handles.contains(&h) {
+                return Ok(h);
+            }
+        }
+        Err(Status::LimitReached.into())
     }
 
     /// Returns an iterator over chunks in `d`, specifying the appropriate
@@ -95,40 +120,78 @@ impl<T: host::Transport> AdvManager<T> {
     }
 }
 
-#[derive(Debug)]
-pub struct AdvGuard<T: host::Transport> {
-    waiter: EventWaiterGuard<T>,
-    conn: Option<LeConnectionComplete>,
+/// Result of enabling an advertising set.
+#[allow(variant_size_differences)]
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub enum AdvEvent {
+    Conn {
+        conn: LeConnectionComplete,
+        term: LeAdvertisingSetTerminated,
+    },
+    Term(LeAdvertisingSetTerminated),
 }
 
-impl<T: host::Transport> AdvGuard<T> {
-    pub async fn accept(&mut self) -> Result<LeConnectionComplete> {
+#[derive(Debug)]
+pub struct AdvMonitor<T: host::Transport> {
+    waiter: EventWaiterGuard<T>,
+    conn: HashMap<ConnHandle, LeConnectionComplete>,
+}
+
+impl<T: host::Transport> AdvMonitor<T> {
+    /// Returns a new advertising monitor.
+    #[inline]
+    #[must_use]
+    fn new(waiter: EventWaiterGuard<T>) -> Self {
+        Self {
+            waiter,
+            conn: HashMap::with_capacity(1),
+        }
+    }
+
+    /// Returns the next event for enabled advertising sets.
+    pub async fn event(&mut self) -> Result<AdvEvent> {
         use SubeventCode::*;
-        loop {
-            let evt = self
-                .waiter
-                .next()
-                .await
-                .ok_or_else(|| Error::from(Status::UnspecifiedError))?;
+        let term = loop {
+            let evt = self.waiter.next().await?;
             match evt.typ() {
                 EventType::Le(ConnectionComplete | EnhancedConnectionComplete) => {
-                    self.conn = Some((&mut evt.get()).into());
+                    // TODO: High duty cycle connectable directed advertisements
+                    // may terminate without an AdvertisingSetTerminated event.
+                    let conn = LeConnectionComplete::from(&mut evt.get());
+                    self.conn.insert(conn.handle, conn);
                 }
                 EventType::Le(AdvertisingSetTerminated) => {
-                    if let Some(conn) = self.conn.take() {
-                        let evt = LeAdvertisingSetTerminated::from(&mut evt.get());
-                        if conn.handle == evt.conn_handle {
-                            return Ok(conn);
-                        }
-                    }
-                    let mut s = evt.status();
-                    if s.is_ok() {
-                        s = Status::UnknownConnectionIdentifier;
-                    }
-                    return Err(Error::from(s));
+                    break LeAdvertisingSetTerminated::from(&mut evt.get())
                 }
-                _ => unreachable!(),
+                _ => continue,
+            }
+        };
+
+        // Handle AdvertisingSetTerminated event
+        if !term.status.is_ok() {
+            return Ok(AdvEvent::Term(term));
+        }
+        if let Some(conn) = self.conn.remove(&term.conn_handle) {
+            return Ok(AdvEvent::Conn { conn, term });
+        }
+        // The spec says that when a connection is created, the controller must
+        // generate a ConnectionComplete event followed immediately by an
+        // AdvertisingSetTerminated event ([Vol 4] Part E, Section 7.8.56). At
+        // least one controller (RTL8761BUV) does the opposite, so we wait for a
+        // short amount of time for a matching ConnectionComplete event, which
+        // normally comes within 5ms.
+        if let Ok(Ok(evt)) =
+            tokio::time::timeout(Duration::from_millis(100), self.waiter.next()).await
+        {
+            if let EventType::Le(ConnectionComplete | EnhancedConnectionComplete) = evt.typ() {
+                let conn = LeConnectionComplete::from(&mut evt.get());
+                if conn.handle == term.conn_handle {
+                    return Ok(AdvEvent::Conn { conn, term });
+                }
+                self.conn.insert(conn.handle, conn);
             }
         }
+        Ok(AdvEvent::Term(term))
     }
 }

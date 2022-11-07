@@ -12,7 +12,8 @@ use std::time::Duration;
 
 use bytes::{BufMut, Bytes, BytesMut};
 
-use crate::hci::{ticks_1250us, ticks_625us, TxPower};
+use crate::hci::{ticks_1250us, ticks_625us};
+use crate::le::TxPower;
 
 use super::*;
 
@@ -43,13 +44,13 @@ impl ResponseDataMut {
             v.iter()
                 .filter_map(|&u| u.into().as_u16())
                 .for_each(|v| b.put_u16_le(v));
-        })
-        .maybe_put(complete, typ + 2, |b| {
+        });
+        self.maybe_put(complete, typ + 2, |b| {
             v.iter()
                 .filter_map(|&u| u.into().as_u32())
                 .for_each(|v| b.put_u32_le(v));
-        })
-        .maybe_put(complete, typ + 4, |b| {
+        });
+        self.maybe_put(complete, typ + 4, |b| {
             v.iter()
                 .filter_map(|&u| u.into().as_u128())
                 .for_each(|v| b.put_u128_le(v));
@@ -78,7 +79,7 @@ impl ResponseDataMut {
 
     /// Appends TX power level ([CSS] Part A, Section 1.5).
     pub fn tx_power(&mut self, v: TxPower) -> &mut Self {
-        self.put(ResponseDataType::TxPower, |b| b.put_i8(v.0))
+        self.put(ResponseDataType::TxPower, |b| b.put_i8(v.as_i8()))
     }
 
     /// Appends peripheral connection interval range ([CSS] Part A, Section 1.9).

@@ -2,6 +2,8 @@
 
 use std::fmt::{Debug, Display, Formatter};
 
+use crate::hci::Event;
+
 /// Bluetooth device address ([Vol 6] Part B, Section 1.3).
 #[allow(clippy::exhaustive_enums)]
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, strum::Display)]
@@ -75,5 +77,47 @@ impl Debug for RawAddr {
 impl Display for RawAddr {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         Debug::fmt(self, f)
+    }
+}
+
+/// Transmission power level in dBm.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[repr(transparent)]
+pub struct TxPower(i8);
+
+impl TxPower {
+    /// Maximum power level ([Vol 6] Part A, Section 3).
+    pub(crate) const MAX: i8 = 20;
+
+    /// Unknown or no preference power level
+    /// ([Vol 4] Part E, Sections 7.5.4 and 7.8.53).
+    pub(crate) const NONE: i8 = 0x7F;
+
+    /// Returns a power level of `v` dBm.
+    #[inline]
+    #[must_use]
+    pub const fn new(v: i8) -> Self {
+        Self(v)
+    }
+
+    /// Returns the raw power level as `i8`.
+    #[inline]
+    #[must_use]
+    pub const fn as_i8(self) -> i8 {
+        self.0
+    }
+}
+
+impl Default for TxPower {
+    #[inline]
+    fn default() -> Self {
+        Self(Self::MAX)
+    }
+}
+
+impl From<&mut Event<'_>> for TxPower {
+    #[inline]
+    fn from(e: &mut Event<'_>) -> Self {
+        Self(e.i8())
     }
 }

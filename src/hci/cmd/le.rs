@@ -1,5 +1,5 @@
 use crate::hci::*;
-use crate::le::{Addr, RawAddr};
+use crate::le::{Addr, RawAddr, TxPower};
 
 // LE Controller commands ([Vol 4] Part E, Section 7.8).
 impl<T: host::Transport> Host<T> {
@@ -56,7 +56,7 @@ impl<T: host::Transport> Host<T> {
                 })
                 .slice(p.peer_addr.raw())
                 .u8(p.filter_policy)
-                .i8(p.tx_power.map_or(0x7F, |p| p.0))
+                .i8(p.tx_power.map_or(TxPower::NONE, TxPower::as_i8))
                 .u8(p.pri_phy)
                 .u8(p.sec_max_skip)
                 .u8(p.sec_phy)
@@ -248,27 +248,5 @@ impl From<AdvHandle> for AdvEnableParams {
             handle: h,
             ..Self::default()
         }
-    }
-}
-
-/// TX power level in dBm.
-#[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
-#[repr(transparent)]
-pub struct TxPower(pub(crate) i8);
-
-impl TxPower {
-    /// Returns a power level of `v` dBm.
-    #[inline]
-    #[must_use]
-    pub const fn new(v: i8) -> Self {
-        Self(v)
-    }
-}
-
-impl From<&mut Event<'_>> for TxPower {
-    #[inline]
-    fn from(e: &mut Event<'_>) -> Self {
-        #[allow(clippy::cast_possible_wrap)]
-        Self(e.u8() as i8)
     }
 }
