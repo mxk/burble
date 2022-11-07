@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
+use strum::IntoEnumIterator;
 use tracing::debug;
 
 pub use {adv::*, cmd::*, consts::*, event::*, handle::*};
@@ -99,10 +100,13 @@ impl<T: host::Transport> Host<T> {
         self.reset().await?;
 
         // Unmask all events.
-        // SAFETY: The controller ignores any reserved bits set to 1.
-        self.set_event_mask(EventMask::default()).await?;
-        let _ignore_unknown = self.set_event_mask_page_2(EventMaskPage2::default()).await;
-        self.le_set_event_mask(LeEventMask::default()).await?;
+        self.set_event_mask(EventMask::enable(EventCode::iter()))
+            .await?;
+        let _ignore_unknown = self
+            .set_event_mask_page_2(EventMask2::enable(EventCode::iter()))
+            .await;
+        self.le_set_event_mask(LeEventMask::enable(SubeventCode::iter()))
+            .await?;
 
         // [Vol 4] Part E, Section 4.1 and [Vol 4] Part E, Section 7.8.2
         // TODO: Move to L2CAP

@@ -79,7 +79,7 @@ impl OpcodeGroup {
 }
 
 /// HCI event codes ([Vol 4] Part E, Section 7.7).
-#[derive(Clone, Copy, Debug, Eq, PartialEq, num_enum::TryFromPrimitive)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, num_enum::TryFromPrimitive, strum::EnumIter)]
 #[non_exhaustive]
 #[repr(u8)]
 pub enum EventCode {
@@ -152,7 +152,6 @@ pub enum EventCode {
 
 impl EventCode {
     /// Returns the format of the associated event parameters.
-    #[inline]
     #[must_use]
     pub const fn param_fmt(self) -> EventFmt {
         use EventCode::*;
@@ -228,10 +227,88 @@ impl EventCode {
             Vendor => OTHER,
         }
     }
+
+    /// Returns the event mask for `HCI_Set_Event_Mask` and
+    /// `HCI_Set_Event_Mask_Page_2` commands, or 0 if the event is not valid for
+    /// the specified 1-based `page`.
+    #[must_use]
+    pub(super) const fn mask(self, page: u8) -> u64 {
+        use EventCode::*;
+        let (pg, bit) = match self {
+            // Page 1 ([Vol 4] Part E, Section 7.3.1)
+            InquiryComplete => (1, 0),
+            InquiryResult => (1, 1),
+            ConnectionComplete => (1, 2),
+            ConnectionRequest => (1, 3),
+            DisconnectionComplete => (1, 4),
+            AuthenticationComplete => (1, 5),
+            RemoteNameRequestComplete => (1, 6),
+            EncryptionChangeV1 => (1, 7),
+            ChangeConnectionLinkKeyComplete => (1, 8),
+            LinkKeyTypeChanged => (1, 9),
+            ReadRemoteSupportedFeaturesComplete => (1, 10),
+            ReadRemoteVersionInformationComplete => (1, 11),
+            QosSetupComplete => (1, 12),
+            HardwareError => (1, 15),
+            FlushOccurred => (1, 16),
+            RoleChange => (1, 17),
+            ModeChange => (1, 19),
+            ReturnLinkKeys => (1, 20),
+            PinCodeRequest => (1, 21),
+            LinkKeyRequest => (1, 22),
+            LinkKeyNotification => (1, 23),
+            LoopbackCommand => (1, 24),
+            DataBufferOverflow => (1, 25),
+            MaxSlotsChange => (1, 26),
+            ReadClockOffsetComplete => (1, 27),
+            ConnectionPacketTypeChanged => (1, 28),
+            QosViolation => (1, 29),
+            PageScanRepetitionModeChange => (1, 31),
+            FlowSpecificationComplete => (1, 32),
+            InquiryResultWithRssi => (1, 33),
+            ReadRemoteExtendedFeaturesComplete => (1, 34),
+            SynchronousConnectionComplete => (1, 43),
+            SynchronousConnectionChanged => (1, 44),
+            SniffSubrating => (1, 45),
+            ExtendedInquiryResult => (1, 46),
+            EncryptionKeyRefreshComplete => (1, 47),
+            IoCapabilityRequest => (1, 48),
+            IoCapabilityResponse => (1, 49),
+            UserConfirmationRequest => (1, 50),
+            UserPasskeyRequest => (1, 51),
+            RemoteOobDataRequest => (1, 52),
+            SimplePairingComplete => (1, 53),
+            LinkSupervisionTimeoutChanged => (1, 55),
+            EnhancedFlushComplete => (1, 56),
+            UserPasskeyNotification => (1, 58),
+            KeypressNotification => (1, 59),
+            RemoteHostSupportedFeaturesNotification => (1, 60),
+            LeMetaEvent => (1, 61),
+
+            // Page 2 ([Vol 4] Part E, Section 7.3.69)
+            NumberOfCompletedDataBlocks => (2, 8),
+            TriggeredClockCapture => (2, 14),
+            SynchronizationTrainComplete => (2, 15),
+            SynchronizationTrainReceived => (2, 16),
+            ConnectionlessPeripheralBroadcastReceive => (2, 17),
+            ConnectionlessPeripheralBroadcastTimeout => (2, 18),
+            TruncatedPageComplete => (2, 19),
+            PeripheralPageResponseTimeout => (2, 20),
+            ConnectionlessPeripheralBroadcastChannelMapChange => (2, 21),
+            InquiryResponseNotification => (2, 22),
+            AuthenticatedPayloadTimeoutExpired => (2, 23),
+            SamStatusChange => (2, 24),
+            EncryptionChangeV2 => (2, 25),
+
+            // Unmaskable events
+            CommandComplete | CommandStatus | NumberOfCompletedPackets | Vendor => (0, 0),
+        };
+        ((page == pg) as u64) << bit
+    }
 }
 
 /// HCI LE subevent codes ([Vol 4] Part E, Section 7.7.65).
-#[derive(Clone, Copy, Debug, Eq, PartialEq, num_enum::TryFromPrimitive)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, num_enum::TryFromPrimitive, strum::EnumIter)]
 #[non_exhaustive]
 #[repr(u8)]
 pub enum SubeventCode {
@@ -274,7 +351,6 @@ pub enum SubeventCode {
 
 impl SubeventCode {
     /// Returns the format of the associated event parameters.
-    #[inline]
     #[must_use]
     pub const fn param_fmt(self) -> EventFmt {
         use SubeventCode::*;
@@ -323,6 +399,50 @@ impl SubeventCode {
             SubrateChange => STATUS.union(CONN_HANDLE),
         }
     }
+
+    /// Returns the event mask for the `HCI_LE_Set_Event_Mask` command.
+    #[must_use]
+    pub(super) const fn mask(self) -> u64 {
+        use SubeventCode::*;
+        1 << match self {
+            // Page 1 ([Vol 4] Part E, Section 7.8.1)
+            ConnectionComplete => 0,
+            AdvertisingReport => 1,
+            ConnectionUpdateComplete => 2,
+            ReadRemoteFeaturesComplete => 3,
+            LongTermKeyRequest => 4,
+            RemoteConnectionParameterRequest => 5,
+            DataLengthChange => 6,
+            ReadLocalP256PublicKeyComplete => 7,
+            GenerateDhKeyComplete => 8,
+            EnhancedConnectionComplete => 9,
+            DirectedAdvertisingReport => 10,
+            PhyUpdateComplete => 11,
+            ExtendedAdvertisingReport => 12,
+            PeriodicAdvertisingSyncEstablished => 13,
+            PeriodicAdvertisingReport => 14,
+            PeriodicAdvertisingSyncLost => 15,
+            ScanTimeout => 16,
+            AdvertisingSetTerminated => 17,
+            ScanRequestReceived => 18,
+            ChannelSelectionAlgorithm => 19,
+            ConnectionlessIqReport => 20,
+            ConnectionIqReport => 21,
+            CteRequestFailed => 22,
+            PeriodicAdvertisingSyncTransferReceived => 23,
+            CisEstablished => 24,
+            CisRequest => 25,
+            CreateBigComplete => 26,
+            TerminateBigComplete => 27,
+            BigSyncEstablished => 28,
+            BigSyncLost => 29,
+            RequestPeerScaComplete => 30,
+            PathLossThreshold => 31,
+            TransmitPowerReporting => 32,
+            BigInfoAdvertisingReport => 33,
+            SubrateChange => 34,
+        }
+    }
 }
 
 bitflags! {
@@ -333,7 +453,7 @@ bitflags! {
         const STATUS = 1 << 0;
         /// Event contains a connection handle.
         const CONN_HANDLE = 1 << 1;
-        /// Event contains a sync handle.
+        /// Event contains a periodic advertising handle.
         const SYNC_HANDLE = 1 << 2;
         /// Event contains an advertising handle.
         const ADV_HANDLE = 1 << 3;
@@ -437,113 +557,6 @@ impl Default for Status {
     }
 }
 
-bitflags! {
-    /// Maskable events ([Vol 4] Part E, Section 7.3.1).
-    #[repr(transparent)]
-    pub struct EventMask: u64 {
-        const INQUIRY_COMPLETE = 1 << 0;
-        const INQUIRY_RESULT = 1 << 1;
-        const CONNECTION_COMPLETE = 1 << 2;
-        const CONNECTION_REQUEST = 1 << 3;
-        const DISCONNECTION_COMPLETE = 1 << 4;
-        const AUTHENTICATION_COMPLETE = 1 << 5;
-        const REMOTE_NAME_REQUEST_COMPLETE = 1 << 6;
-        const ENCRYPTION_CHANGE_V1 = 1 << 7;
-        const CHANGE_CONNECTION_LINK_KEY_COMPLETE = 1 << 8;
-        const LINK_KEY_TYPE_CHANGED = 1 << 9;
-        const READ_REMOTE_SUPPORTED_FEATURES_COMPLETE = 1 << 10;
-        const READ_REMOTE_VERSION_INFORMATION_COMPLETE = 1 << 11;
-        const QO_S_SETUP_COMPLETE = 1 << 12;
-        const HARDWARE_ERROR = 1 << 15;
-        const FLUSH_OCCURRED = 1 << 16;
-        const ROLE_CHANGE = 1 << 17;
-        const MODE_CHANGE = 1 << 19;
-        const RETURN_LINK_KEYS = 1 << 20;
-        const PIN_CODE_REQUEST = 1 << 21;
-        const LINK_KEY_REQUEST = 1 << 22;
-        const LINK_KEY_NOTIFICATION = 1 << 23;
-        const LOOPBACK_COMMAND = 1 << 24;
-        const DATA_BUFFER_OVERFLOW = 1 << 25;
-        const MAX_SLOTS_CHANGE = 1 << 26;
-        const READ_CLOCK_OFFSET_COMPLETE = 1 << 27;
-        const CONNECTION_PACKET_TYPE_CHANGED = 1 << 28;
-        const QO_S_VIOLATION = 1 << 29;
-        const PAGE_SCAN_MODE_CHANGE = 1 << 30;
-        const PAGE_SCAN_REPETITION_MODE_CHANGE = 1 << 31;
-        const FLOW_SPECIFICATION_COMPLETE = 1 << 32;
-        const INQUIRY_RESULT_WITH_RSSI = 1 << 33;
-        const READ_REMOTE_EXTENDED_FEATURES_COMPLETE = 1 << 34;
-        const SYNCHRONOUS_CONNECTION_COMPLETE = 1 << 43;
-        const SYNCHRONOUS_CONNECTION_CHANGED = 1 << 44;
-        const SNIFF_SUBRATING = 1 << 45;
-        const EXTENDED_INQUIRY_RESULT = 1 << 46;
-        const ENCRYPTION_KEY_REFRESH_COMPLETE = 1 << 47;
-        const IO_CAPABILITY_REQUEST = 1 << 48;
-        const IO_CAPABILITY_RESPONSE = 1 << 49;
-        const USER_CONFIRMATION_REQUEST = 1 << 50;
-        const USER_PASSKEY_REQUEST = 1 << 51;
-        const REMOTE_OOB_DATA_REQUEST = 1 << 52;
-        const SIMPLE_PAIRING_COMPLETE = 1 << 53;
-        const LINK_SUPERVISION_TIMEOUT_CHANGED = 1 << 55;
-        const ENHANCED_FLUSH_COMPLETE = 1 << 56;
-        const USER_PASSKEY_NOTIFICATION = 1 << 58;
-        const KEYPRESS_NOTIFICATION = 1 << 59;
-        const REMOTE_HOST_SUPPORTED_FEATURES_NOTIFICATION = 1 << 60;
-        const LE_META = 1 << 61;
-    }
-}
-
-impl Default for EventMask {
-    /// Returns an event mask with all bits, including reserved ones, set to 1.
-    #[inline]
-    fn default() -> Self {
-        // SAFETY: Controller interprets reserved or unsupported bits as 0.
-        unsafe { Self::from_bits_unchecked(u64::MAX) }
-    }
-}
-
-bitflags! {
-    /// Maskable events ([Vol 4] Part E, Section 7.3.69).
-    #[repr(transparent)]
-    pub struct EventMaskPage2: u64 {
-        const PHYSICAL_LINK_COMPLETE = 1 << 0;
-        const CHANNEL_SELECTED = 1 << 1;
-        const DISCONNECTION_PHYSICAL_LINK_COMPLETE = 1 << 2;
-        const PHYSICAL_LINK_LOSS_EARLY_WARNING = 1 << 3;
-        const PHYSICAL_LINK_RECOVERY = 1 << 4;
-        const LOGICAL_LINK_COMPLETE = 1 << 5;
-        const DISCONNECTION_LOGICAL_LINK_COMPLETE = 1 << 6;
-        const FLOW_SPEC_MODIFY_COMPLETE = 1 << 7;
-        const NUMBER_OF_COMPLETED_DATA_BLOCKS = 1 << 8;
-        const AMP_START_TEST = 1 << 9;
-        const AMP_TEST_END = 1 << 10;
-        const AMP_RECEIVER_REPORT = 1 << 11;
-        const SHORT_RANGE_MODE_CHANGE_COMPLETE = 1 << 12;
-        const AMP_STATUS_CHANGE = 1 << 13;
-        const TRIGGERED_CLOCK_CAPTURE = 1 << 14;
-        const SYNCHRONIZATION_TRAIN_COMPLETE = 1 << 15;
-        const SYNCHRONIZATION_TRAIN_RECEIVED = 1 << 16;
-        const CONNECTIONLESS_PERIPHERAL_BROADCAST_RECEIVE = 1 << 17;
-        const CONNECTIONLESS_PERIPHERAL_BROADCAST_TIMEOUT = 1 << 18;
-        const TRUNCATED_PAGE_COMPLETE = 1 << 19;
-        const PERIPHERAL_PAGE_RESPONSE_TIMEOUT = 1 << 20;
-        const CONNECTIONLESS_PERIPHERAL_BROADCAST_CHANNEL_MAP_CHANGE = 1 << 21;
-        const INQUIRY_RESPONSE_NOTIFICATION = 1 << 22;
-        const AUTHENTICATED_PAYLOAD_TIMEOUT_EXPIRED = 1 << 23;
-        const SAM_STATUS_CHANGE = 1 << 24;
-        const ENCRYPTION_CHANGE_V2 = 1 << 25;
-    }
-}
-
-impl Default for EventMaskPage2 {
-    /// Returns an event mask with all bits, including reserved ones, set to 1.
-    #[inline]
-    fn default() -> Self {
-        // SAFETY: Controller interprets reserved or unsupported bits as 0.
-        unsafe { Self::from_bits_unchecked(u64::MAX) }
-    }
-}
-
 /// Device connection role ([Vol 4] Part E, Sections 7.7.65.1 and 7.7.65.10).
 #[allow(clippy::exhaustive_enums)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, num_enum::TryFromPrimitive)]
@@ -553,57 +566,6 @@ pub enum Role {
     Central = 0x00,
     /// Device is acting as Peripheral.
     Peripheral = 0x01,
-}
-
-bitflags! {
-    /// Maskable LE events ([Vol 4] Part E, Section 7.8.1).
-    #[repr(transparent)]
-    pub struct LeEventMask: u64 {
-        const CONNECTION_COMPLETE = 1 << 0;
-        const ADVERTISING_REPORT = 1 << 1;
-        const CONNECTION_UPDATE_COMPLETE = 1 << 2;
-        const READ_REMOTE_FEATURES_COMPLETE = 1 << 3;
-        const LONG_TERM_KEY_REQUEST = 1 << 4;
-        const REMOTE_CONNECTION_PARAMETER_REQUEST = 1 << 5;
-        const DATA_LENGTH_CHANGE = 1 << 6;
-        const READ_LOCAL_P256_PUBLIC_KEY_COMPLETE = 1 << 7;
-        const GENERATE_DHKEY_COMPLETE = 1 << 8;
-        const ENHANCED_CONNECTION_COMPLETE = 1 << 9;
-        const DIRECTED_ADVERTISING_REPORT = 1 << 10;
-        const PHY_UPDATE_COMPLETE = 1 << 11;
-        const EXTENDED_ADVERTISING_REPORT = 1 << 12;
-        const PERIODIC_ADVERTISING_SYNC_ESTABLISHED = 1 << 13;
-        const PERIODIC_ADVERTISING_REPORT = 1 << 14;
-        const PERIODIC_ADVERTISING_SYNC_LOST = 1 << 15;
-        const SCAN_TIMEOUT = 1 << 16;
-        const ADVERTISING_SET_TERMINATED = 1 << 17;
-        const SCAN_REQUEST_RECEIVED = 1 << 18;
-        const CHANNEL_SELECTION_ALGORITHM = 1 << 19;
-        const CONNECTIONLESS_IQ_REPORT = 1 << 20;
-        const CONNECTION_IQ_REPORT = 1 << 21;
-        const CTE_REQUEST_FAILED = 1 << 22;
-        const PERIODIC_ADVERTISING_SYNC_TRANSFER_RECEIVED = 1 << 23;
-        const CIS_ESTABLISHED = 1 << 24;
-        const CIS_REQUEST = 1 << 25;
-        const CREATE_BIG_COMPLETE = 1 << 26;
-        const TERMINATE_BIG_COMPLETE = 1 << 27;
-        const BIG_SYNC_ESTABLISHED = 1 << 28;
-        const BIG_SYNC_LOST = 1 << 29;
-        const REQUEST_PEER_SCA_COMPLETE = 1 << 30;
-        const PATH_LOSS_THRESHOLD = 1 << 31;
-        const TRANSMIT_POWER_REPORTING = 1 << 32;
-        const BIGINFO_ADVERTISING_REPORT = 1 << 33;
-        const SUBRATE_CHANGE = 1 << 34;
-    }
-}
-
-impl Default for LeEventMask {
-    /// Returns an event mask with all bits, including reserved ones, set to 1.
-    #[inline]
-    fn default() -> Self {
-        // SAFETY: Controller interprets reserved or unsupported bits as 0.
-        unsafe { Self::from_bits_unchecked(u64::MAX) }
-    }
 }
 
 bitflags! {
