@@ -72,7 +72,7 @@ impl From<&mut Event<'_>> for LeAdvertisingSetTerminated {
                 if e.status().is_ok() {
                     ConnHandle::from_raw(h)
                 } else {
-                    ConnHandle::invalid()
+                    ConnHandle::INVALID
                 }
             },
             num_events: e.u8(),

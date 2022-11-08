@@ -6,6 +6,8 @@
 pub struct ConnHandle(u16);
 
 impl ConnHandle {
+    /// Invalid connection handle.
+    pub const INVALID: Self = Self(0xFFFF);
     pub(crate) const MAX: u16 = 0xEFF; // [Vol 4] Part E, Section 5.4.2
 
     /// Wraps a raw connection handle.
@@ -13,13 +15,6 @@ impl ConnHandle {
     #[must_use]
     pub(super) const fn from_raw(h: u16) -> Self {
         Self(h)
-    }
-
-    /// Returns an invalid connection handle.
-    #[inline]
-    #[must_use]
-    pub const fn invalid() -> Self {
-        Self(0xFFFF)
     }
 
     /// Returns whether the connection handle is valid.
@@ -33,7 +28,7 @@ impl ConnHandle {
 impl Default for ConnHandle {
     #[inline]
     fn default() -> Self {
-        Self::invalid()
+        Self::INVALID
     }
 }
 
@@ -50,6 +45,8 @@ impl From<ConnHandle> for u16 {
 pub struct AdvHandle(u8);
 
 impl AdvHandle {
+    /// Invalid advertising handle.
+    pub const INVALID: Self = Self(0xFF);
     pub(crate) const MAX: u8 = 0xEF; // [Vol 4] Part E, Section 7.8.53
 
     /// Wraps a raw advertising handle.
@@ -57,13 +54,6 @@ impl AdvHandle {
     #[must_use]
     pub(super) const fn from_raw(h: u8) -> Self {
         Self(h)
-    }
-
-    /// Returns an invalid advertising handle.
-    #[inline]
-    #[must_use]
-    pub const fn invalid() -> Self {
-        Self(0xFF)
     }
 
     /// Returns whether the connection handle is valid.
@@ -77,7 +67,7 @@ impl AdvHandle {
 impl Default for AdvHandle {
     #[inline]
     fn default() -> Self {
-        Self::invalid()
+        Self::INVALID
     }
 }
 

@@ -78,7 +78,7 @@ impl Event<'_> {
         if self.typ.param_fmt().contains(EventFmt::ADV_HANDLE) {
             AdvHandle::from_raw(self.handle as u8)
         } else {
-            AdvHandle::invalid()
+            AdvHandle::INVALID
         }
     }
 
@@ -90,7 +90,7 @@ impl Event<'_> {
         if self.typ.param_fmt().contains(EventFmt::CONN_HANDLE) {
             ConnHandle::from_raw(self.handle)
         } else {
-            ConnHandle::invalid()
+            ConnHandle::INVALID
         }
     }
 
