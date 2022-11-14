@@ -171,7 +171,6 @@ impl Transport for UsbController {
         Self::Transfer {
             t,
             dev: Arc::clone(&self.dev),
-            typ: TransferType::Command,
         }
     }
 
@@ -179,7 +178,6 @@ impl Transport for UsbController {
         Self::Transfer {
             t: libusb::Transfer::new_interrupt(self.ep.event, hci::EVT_BUF),
             dev: Arc::clone(&self.dev),
-            typ: TransferType::Event,
         }
     }
 
@@ -187,7 +185,6 @@ impl Transport for UsbController {
         Self::Transfer {
             t: libusb::Transfer::new_bulk(self.ep.acl_in, buf_cap),
             dev: Arc::clone(&self.dev),
-            typ: TransferType::AclIn,
         }
     }
 
@@ -195,7 +192,6 @@ impl Transport for UsbController {
         Self::Transfer {
             t: libusb::Transfer::new_bulk(self.ep.acl_out, buf_cap),
             dev: Arc::clone(&self.dev),
-            typ: TransferType::AclOut,
         }
     }
 }
@@ -205,16 +201,10 @@ impl Transport for UsbController {
 pub struct UsbTransfer {
     t: Box<libusb::Transfer<rusb::Context>>,
     dev: Arc<DeviceHandle>,
-    typ: TransferType,
 }
 
 impl Transfer for UsbTransfer {
     type Future = UsbTransferFuture;
-
-    #[inline]
-    fn typ(&self) -> TransferType {
-        self.typ
-    }
 
     #[inline]
     fn buf_mut(&mut self) -> &mut BytesMut {

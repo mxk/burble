@@ -61,9 +61,6 @@ pub trait Transfer: AsRef<[u8]> + Debug + Send + Sync {
 
     // TODO: Use Limit for buf_mut?
 
-    /// Returns the transfer type.
-    fn typ(&self) -> TransferType;
-
     /// Returns a mutable reference to the transfer buffer. A newly allocated
     /// transfer may start with a non-empty buffer. The header, if any, must not
     /// be modified. The buffer may be allocated in a DMA region, so the caller
@@ -80,14 +77,4 @@ pub trait Transfer: AsRef<[u8]> + Debug + Send + Sync {
 
     /// Resets the transfer to its original state, allowing it to be reused.
     fn reset(&mut self);
-}
-
-/// Asynchronous I/O transfer type.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-#[non_exhaustive]
-pub enum TransferType {
-    Command,
-    Event,
-    AclIn,
-    AclOut,
 }
