@@ -99,9 +99,6 @@ impl ConnCid {
     }
 }
 
-/// Basic L2CAP header size ([Vol 3] Part A, Section 3).
-const L2CAP_HDR: usize = 4;
-
 /// Channel manager.
 #[derive(Debug)]
 #[repr(transparent)]

@@ -2,6 +2,9 @@
 
 use crate::l2cap::Cid;
 
+/// Basic L2CAP header size ([Vol 3] Part A, Section 3).
+pub(super) const L2CAP_HDR: usize = 4;
+
 /// C-frame command type ([Vol 3] Part A, Section 4).
 #[derive(
     Clone,
