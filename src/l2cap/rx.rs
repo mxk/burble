@@ -1,7 +1,8 @@
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, VecDeque};
-use std::mem::{align_of, size_of};
+use std::mem::align_of;
 
+use bytes::Buf;
 use tracing::{trace, warn};
 
 use super::*;
@@ -50,7 +51,6 @@ impl<T: host::Transport> Queue<T> {
 
     /// Registers a new channel, allowing it to receive data.
     pub fn register_chan(&mut self, cc: ConnCid) {
-        assert!(cc.is_valid());
         assert!(!self.queue.contains_key(&cc));
         if let Entry::Vacant(e) = self.cont.entry(cc.hdl) {
             e.insert(Cid::INVALID);
@@ -95,14 +95,14 @@ impl<T: host::Transport> Queue<T> {
             };
         }
         let cc = ConnCid::new(cn, prev_cid);
-        let Some(pdu) = self.queue.get_mut(&cc).and_then(|queue| queue.back_mut()) else {
+        let Some(pdu) = self.queue.get_mut(&cc).and_then(VecDeque::back_mut) else {
             warn!("Unexpected continuation PDU fragment for {cc:?}");
             return None;
         };
         let rem_len = pdu.rem_len();
         let cmp = rem_len.cmp(&data.len());
         if cmp.is_ge() {
-            pdu.buf.extend_from_slice(data);
+            pdu.buf_mut().extend_from_slice(data);
             return cmp.is_eq().then_some(cc);
         }
         self.ensure_complete(cc);
@@ -145,15 +145,13 @@ fn acl_hdr(pkt: &[u8]) -> Option<(ConnHandle, bool, &[u8])> {
         warn!("ACL data packet with missing header: {pkt:02x?}");
         return None;
     }
-    let (hdr, data) = pkt.split_at(ACL_HDR);
-    // SAFETY: hdr is a properly aligned &[u16; 2]
-    let hdr: &[u16; ACL_HDR / size_of::<u16>()] = unsafe { &*hdr.as_ptr().cast() };
-    let (hdl, len) = (u16::from_le(hdr[0]), u16::from_le(hdr[1]));
+    let (mut hdr, data) = pkt.split_at(ACL_HDR); // TODO: Use split_at_unchecked
+    let (cn, len) = (hdr.get_u16_le(), hdr.get_u16_le());
     if data.len() != usize::from(len) {
         warn!("ACL data packet length mismatch: {pkt:02x?}");
         return None;
     }
-    let is_first = (hdl >> 12) & 0b11 != 0b01;
+    let is_first = (cn >> 12) & 0b11 != 0b01;
     if data.len() < L2CAP_HDR {
         if is_first {
             warn!("ACL data packet with missing L2CAP header: {pkt:02x?}");
@@ -163,7 +161,7 @@ fn acl_hdr(pkt: &[u8]) -> Option<(ConnHandle, bool, &[u8])> {
             return None;
         }
     }
-    Some((ConnHandle::from_raw(hdl & 0xFFF), is_first, data))
+    Some((ConnHandle::from_raw(cn & 0xFFF), is_first, data))
 }
 
 /// Parses basic L2CAP header from ACL data packet payload
@@ -171,10 +169,8 @@ fn acl_hdr(pkt: &[u8]) -> Option<(ConnHandle, bool, &[u8])> {
 #[inline]
 #[must_use]
 fn l2cap_hdr(data: &[u8]) -> Option<(usize, Cid, &[u8])> {
-    let (hdr, payload) = data.split_at(L2CAP_HDR);
-    // SAFETY: acl_hdr() validated data alignment and minimum length
-    let hdr: &[u16; L2CAP_HDR / size_of::<u16>()] = unsafe { &*hdr.as_ptr().cast() };
-    let (len, cid) = (u16::from_le(hdr[0]), u16::from_le(hdr[1]));
+    let (mut hdr, payload) = data.split_at(L2CAP_HDR);
+    let (len, cid) = (hdr.get_u16_le(), hdr.get_u16_le());
     if usize::from(len) < payload.len() {
         warn!("PDU length mismatch: {data:02x?}");
         return None;

@@ -69,7 +69,6 @@ impl Scheduler {
 
     /// Schedules a channel for sending a PDU.
     fn schedule_sender(&mut self, cc: ConnCid) -> Result<()> {
-        assert!(cc.is_valid());
         let Some(ready) = self.ready.get_mut(&cc.hdl) else {
             return Err(super::Error::InvalidConn(cc.hdl));
         };
@@ -87,10 +86,10 @@ impl Scheduler {
     /// Returns whether channel `cc` is allowed to send the next PDU fragment.
     #[inline]
     fn may_send(&self, cc: ConnCid) -> Result<bool> {
-        if !self.ready.contains_key(&cc.hdl) {
-            Err(super::Error::InvalidConn(cc.hdl))
-        } else {
+        if self.ready.contains_key(&cc.hdl) {
             Ok(!self.queue.is_full() && self.next.front() == Some(&cc))
+        } else {
+            Err(super::Error::InvalidConn(cc.hdl))
         }
     }
 
@@ -165,28 +164,23 @@ impl<T: host::Transport> TxTask<T> {
         l2cap_hdr.put_u16_le(self.pdu.cc.cid.0);
 
         // Fast path for single-fragment PDUs
-        if self.pdu.raw.xfer.is_some() {
+        if matches!(self.pdu.raw, RawPdu::Xfer(_)) {
             self.may_send().await?;
-            let xfer = self.pdu.raw.xfer.take().unwrap();
-            return (self.send_frag(xfer, false).await).map(|xfer| self.pdu.raw.xfer = Some(xfer));
+            let xfer = self.pdu.raw.take_xfer().unwrap();
+            return (self.send_frag(xfer, false).await)
+                .map(|xfer| self.pdu.raw = RawPdu::Xfer(xfer));
         }
 
         // Fragmentation path
-        let max_frag_len = {
-            self.pdu.raw.xfer = Some(self.pdu.rm.tx.alloc.xfer());
-            self.pdu.rm.tx.alloc.max_frag_len
-        };
-        let data = &self.pdu.raw.buf.as_ref()[ACL_HDR..];
-        for (i, frag) in data.chunks(max_frag_len).enumerate() {
+        let mut xfer = self.pdu.rm.tx.alloc.xfer();
+        let data = self.pdu.raw.as_ref();
+        for (i, frag) in data.chunks(self.pdu.rm.tx.alloc.max_frag_len).enumerate() {
             self.may_send().await?;
-            let mut xfer = self.xfer.take().unwrap();
             xfer.reset();
             let buf = xfer.buf_mut();
             buf.put_bytes(0, ACL_HDR);
             buf.extend_from_slice(frag);
-            self.send_frag(xfer, i != 0)
-                .await
-                .map(|xfer| self.pdu.raw.xfer = Some(xfer))?;
+            xfer = self.send_frag(xfer, i != 0).await?;
         }
         Ok(())
     }
@@ -194,8 +188,16 @@ impl<T: host::Transport> TxTask<T> {
     /// Waits until the controller has space for another ACL data packet and the
     /// current task is the next one scheduled to transmit.
     async fn may_send(&self) -> Result<()> {
-        //self.pdu.rm.tx_wait(|sched| sched.may_send(self.pdu.cc)).await
-        Ok(())
+        loop {
+            let notify = {
+                let sched = self.pdu.rm.tx.sched.lock();
+                if sched.may_send(self.pdu.cc)? {
+                    return Ok(());
+                }
+                self.pdu.rm.tx.event.notified()
+            };
+            self.pdu.rm.event(notify).await?;
+        }
     }
 
     async fn send_frag(&self, mut xfer: AclTransfer<T>, cont: bool) -> Result<AclTransfer<T>> {
@@ -296,11 +298,12 @@ impl ControllerQueue {
             }
             false
         });
-        assert!(self.complete.is_empty())
+        assert!(self.complete.is_empty());
     }
 }
 
 /// Returns the index of `v` in `q`.
+#[allow(clippy::needless_pass_by_value)]
 #[inline]
 fn find_val<V: Eq>(q: &VecDeque<V>, v: V) -> Option<usize> {
     q.iter().position(|other| *other == v)

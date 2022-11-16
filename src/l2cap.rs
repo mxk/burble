@@ -1,7 +1,9 @@
+#![allow(dead_code)] // TODO: Remove
+
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, VecDeque};
 use std::fmt::Debug;
-use std::mem::{forget, ManuallyDrop};
+use std::mem::{take, ManuallyDrop};
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
@@ -87,18 +89,13 @@ struct ConnCid {
 }
 
 impl ConnCid {
-    /// Combines connection handle with a channel ID.
+    /// Combines connection handle with a channel ID. Both must be valid.
     #[inline]
     #[must_use]
     const fn new(hdl: ConnHandle, cid: Cid) -> Self {
+        assert!(hdl.is_valid());
+        assert!(cid.is_valid());
         Self { hdl, cid }
-    }
-
-    /// Returns whether the channel is valid.
-    #[inline]
-    #[must_use]
-    const fn is_valid(self) -> bool {
-        self.hdl.is_valid() && self.cid.is_valid()
     }
 }
 
@@ -137,19 +134,6 @@ struct ResourceManager<T: host::Transport> {
 }
 
 impl<T: host::Transport> ResourceManager<T> {
-    /*async fn tx_wait<R>(&self, mut f: impl FnMut(&mut tx::Scheduler) -> Option<R>) -> Result<R> {
-        loop {
-            let notify = {
-                let mut sched = self.tx.lock();
-                if let Some(r) = f(&mut sched) {
-                    return Ok(r);
-                }
-                self.tx_event.notified()
-            };
-            self.event(notify).await?;
-        }
-    }*/
-
     /// Blocks the task until notify is signaled.
     async fn event(&self, notify: Notified<'_>) -> Result<()> {
         tokio::pin!(notify);
@@ -200,13 +184,13 @@ impl<T: host::Transport> Alloc<T> {
     /// Allocates a new ACL data transfer.
     #[inline]
     fn xfer(self: &Arc<Self>) -> AclTransfer<T> {
-        let mut free = self.free.lock();
-        let xfer = if let Some(mut xfer) = free.pop() {
-            xfer.reset();
-            xfer
-        } else {
-            self.transport.acl(self.dir, self.max_frag_len)
-        };
+        let xfer = self.free.lock().pop().map_or_else(
+            || self.transport.acl(self.dir, self.max_frag_len),
+            |mut xfer| {
+                xfer.reset();
+                xfer
+            },
+        );
         AclTransfer::new(xfer, Arc::clone(self))
     }
 
@@ -219,54 +203,31 @@ impl<T: host::Transport> Alloc<T> {
 
 /// ACL data transfer containing a PDU fragment.
 #[derive(Debug)]
-struct AclTransfer<T: host::Transport> {
-    xfer: ManuallyDrop<T::Transfer>,
-    alloc: ManuallyDrop<Arc<Alloc<T>>>,
-}
+struct AclTransfer<T: host::Transport>(ManuallyDrop<(T::Transfer, Arc<Alloc<T>>)>);
 
 impl<T: host::Transport> AclTransfer<T> {
     /// Wraps an ACL transfer obtained from `alloc`.
     #[inline]
     fn new(xfer: T::Transfer, alloc: Arc<Alloc<T>>) -> Self {
-        Self {
-            xfer: ManuallyDrop::new(xfer),
-            alloc: ManuallyDrop::new(alloc),
-        }
+        Self(ManuallyDrop::new((xfer, alloc)))
     }
 
     /// Submits the transfer for execution.
     #[inline]
     async fn submit(mut self) -> host::Result<Self> {
-        // SAFETY: self is not used again
-        let (xfer, alloc) = unsafe { Self::take(&mut self) };
-        forget(self);
+        // SAFETY: self.0 is not used again
+        let (xfer, alloc) = unsafe { ManuallyDrop::take(&mut self.0) };
         Ok(Self::new(xfer.submit()?.await, alloc))
-    }
-
-    /// Takes the transfer and allocator out of `this`.
-    ///
-    /// # Safety
-    ///
-    /// `this` must not be used again.
-    #[inline]
-    unsafe fn take(this: &mut Self) -> (T::Transfer, Arc<Alloc<T>>) {
-        (
-            ManuallyDrop::take(&mut this.xfer),
-            ManuallyDrop::take(&mut this.alloc),
-        )
     }
 }
 
 impl<T: host::Transport> Drop for AclTransfer<T> {
     fn drop(&mut self) {
-        // SAFETY: self is not used again
-        let (xfer, alloc) = unsafe { Self::take(self) };
-        forget(self);
-        {
-            let mut free = alloc.free.lock();
-            if free.len() < free.capacity() {
-                free.push(xfer);
-            }
+        // SAFETY: self.0 is not used again
+        let (xfer, alloc) = unsafe { ManuallyDrop::take(&mut self.0) };
+        let mut free = alloc.free.lock();
+        if free.len() < free.capacity() {
+            free.push(xfer);
         }
     }
 }
@@ -274,25 +235,25 @@ impl<T: host::Transport> Drop for AclTransfer<T> {
 impl<T: host::Transport> Deref for AclTransfer<T> {
     type Target = T::Transfer;
 
-    #[inline(always)]
+    #[inline]
     fn deref(&self) -> &Self::Target {
-        self.xfer.deref()
+        &self.0 .0
     }
 }
 
 impl<T: host::Transport> DerefMut for AclTransfer<T> {
-    #[inline(always)]
+    #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
-        self.xfer.deref_mut()
+        &mut self.0 .0
     }
 }
 
-/// Raw L2CAP PDU buffer optimized to avoid data copies when the PDU fits within
-/// a single ACL data packet.
-#[derive(Debug, Default)]
-struct RawPdu<T: host::Transport> {
-    xfer: Option<AclTransfer<T>>,
-    buf: BytesMut,
+/// PDU buffer optimized to avoid data copies when the PDU fits within a single
+/// ACL data packet.
+#[derive(Debug)]
+enum RawPdu<T: host::Transport> {
+    Xfer(AclTransfer<T>),
+    Buf(BytesMut),
 }
 
 impl<T: host::Transport> RawPdu<T> {
@@ -301,12 +262,10 @@ impl<T: host::Transport> RawPdu<T> {
     #[must_use]
     fn new(alloc: &Arc<Alloc<T>>, data_cap: usize) -> Self {
         let mut this = if data_cap <= alloc.max_frag_len {
-            Self {
-                xfer: Some(alloc.xfer()),
-                buf: BytesMut::new(),
-            }
+            debug_assert!(data_cap >= L2CAP_HDR);
+            Self::Xfer(alloc.xfer())
         } else {
-            Self::alloc(data_cap)
+            Self::Buf(BytesMut::with_capacity(ACL_HDR + data_cap))
         };
         this.buf_mut().put_bytes(0, ACL_HDR + L2CAP_HDR);
         this
@@ -317,10 +276,7 @@ impl<T: host::Transport> RawPdu<T> {
     #[must_use]
     fn complete(xfer: AclTransfer<T>) -> Self {
         debug_assert!(xfer.as_ref().len() >= ACL_HDR + L2CAP_HDR);
-        Self {
-            xfer: Some(xfer),
-            buf: BytesMut::new(),
-        }
+        Self::Xfer(xfer)
     }
 
     /// Allocates a PDU recombination buffer and appends the first fragment,
@@ -329,20 +285,9 @@ impl<T: host::Transport> RawPdu<T> {
     #[must_use]
     fn first(pdu_len: usize, frag: &[u8]) -> Self {
         debug_assert!(frag.len() >= ACL_HDR + L2CAP_HDR);
-        let mut pdu = Self::alloc(L2CAP_HDR + pdu_len);
-        pdu.buf.extend_from_slice(frag);
-        pdu
-    }
-
-    /// Allocates a PDU buffer, which can store `data_cap` bytes, excluding the
-    /// ACL data packet header.
-    #[inline]
-    #[must_use]
-    fn alloc(data_cap: usize) -> Self {
-        Self {
-            xfer: None,
-            buf: BytesMut::with_capacity(ACL_HDR + data_cap),
-        }
+        let mut buf = BytesMut::with_capacity(ACL_HDR + L2CAP_HDR + pdu_len);
+        buf.extend_from_slice(frag);
+        Self::Buf(buf)
     }
 
     /// Returns whether the PDU is fully recombined.
@@ -352,35 +297,60 @@ impl<T: host::Transport> RawPdu<T> {
         self.rem_len() == 0
     }
 
-    /// Returns the number of bytes remaining to complete the PDU.
+    /// Returns the number of bytes needed to complete the PDU.
     #[inline]
     #[must_use]
     fn rem_len(&self) -> usize {
-        if self.xfer.is_some() {
-            return 0;
+        match *self {
+            Self::Xfer(_) => 0,
+            Self::Buf(ref buf) => {
+                // SAFETY: buf starts with ACL and basic L2CAP headers
+                let pdu_len = u16::from_le_bytes(unsafe { *buf.as_ptr().add(ACL_HDR).cast() });
+                ACL_HDR + L2CAP_HDR + usize::from(pdu_len) - buf.len()
+            }
         }
-        // SAFETY: self.buf starts with ACL data packet and basic L2CAP headers
-        let pdu_len = u16::from_le_bytes(unsafe { *self.buf.as_ptr().add(ACL_HDR).cast() });
-        ACL_HDR + L2CAP_HDR + usize::from(pdu_len) - self.buf.len()
     }
 
     /// Returns the PDU buffer, which starts with an ACL data packet header.
     #[inline]
     #[must_use]
     fn buf_mut(&mut self) -> &mut BytesMut {
-        (self.xfer.as_mut()).map_or(&mut self.buf, |xfer| xfer.buf_mut())
+        match *self {
+            Self::Xfer(ref mut xfer) => xfer.buf_mut(),
+            Self::Buf(ref mut buf) => buf,
+        }
+    }
+
+    /// Returns the transfer containing a complete PDU or `None` if the PDU is
+    /// fragmented.
+    #[inline]
+    fn take_xfer(&mut self) -> Option<AclTransfer<T>> {
+        match take(self) {
+            Self::Xfer(xfer) => Some(xfer),
+            Self::Buf(buf) => {
+                *self = Self::Buf(buf);
+                None
+            }
+        }
+    }
+}
+
+impl<T: host::Transport> Default for RawPdu<T> {
+    #[inline]
+    fn default() -> Self {
+        Self::Buf(BytesMut::new())
     }
 }
 
 impl<T: host::Transport> AsRef<[u8]> for RawPdu<T> {
-    /// Returns the PDU bytes, starting with the basic L2CAP header.
+    /// Returns PDU bytes, starting with the basic L2CAP header.
     #[inline]
     fn as_ref(&self) -> &[u8] {
-        // SAFETY: Buffer always starts with an ACL data packet header
-        unsafe {
-            (self.xfer.as_ref())
-                .map_or(self.buf.as_ref(), |xfer| xfer.as_ref())
-                .get_unchecked(ACL_HDR..)
-        }
+        let b = match *self {
+            Self::Xfer(ref xfer) => xfer.as_ref(),
+            Self::Buf(ref buf) => buf.as_ref(),
+        };
+        // SAFETY: b always starts with an ACL data packet header
+        unsafe { b.get_unchecked(ACL_HDR..) }
     }
 }

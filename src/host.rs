@@ -77,6 +77,7 @@ pub trait Transfer: AsRef<[u8]> + Debug + Send + Sync {
 }
 
 /// Transfer direction.
+#[allow(clippy::exhaustive_enums)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Direction {
     In,

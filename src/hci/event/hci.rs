@@ -12,7 +12,7 @@ impl From<&mut Event<'_>> for NumberOfCompletedPackets {
         let n = usize::from(e.u8());
         let mut v = SmallVec::with_capacity(n);
         for _ in 0..n {
-            v.push((ConnHandle::from_raw(e.u16()), e.u16()))
+            v.push((ConnHandle::from_raw(e.u16()), e.u16()));
         }
         Self(v)
     }

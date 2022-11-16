@@ -44,6 +44,7 @@ impl Code {
     pub const fn is_allowed_on(self, cid: Cid) -> bool {
         use Code::*;
         let (signal, le_signal) = (cid.0 == Cid::SIGNAL.0, cid.0 == Cid::LE_SIGNAL.0);
+        #[allow(clippy::match_same_arms)]
         match self {
             CommandRejectRsp => signal || le_signal,
             ConnectionReq => signal,
