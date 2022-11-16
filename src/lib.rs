@@ -44,4 +44,5 @@
 pub mod gap;
 pub mod hci;
 pub mod host;
+pub mod l2cap;
 pub mod le;
