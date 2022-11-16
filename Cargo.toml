@@ -14,7 +14,6 @@ bytes = "1.2.1"
 num_enum = "0.5.7"
 parking_lot = { version = "0.12.1", features = ["hardware-lock-elision"] }
 rusb = "0.9.1"
-scopeguard = "1.1.0"
 smallvec = { version = "1.10.0", features = ["const_generics", "const_new", "union"] }
 strum = { version = "0.24.1", features = ["derive"] }
 thiserror = "1.0.36"

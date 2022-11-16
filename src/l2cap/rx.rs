@@ -2,55 +2,66 @@ use std::collections::hash_map::Entry;
 use std::collections::{HashMap, VecDeque};
 use std::mem::{align_of, size_of};
 
-use scopeguard::{guard, ScopeGuard};
 use tracing::{trace, warn};
-
-use crate::hci::ACL_HDR;
 
 use super::*;
 
-/// Received PDU fragment queue. Inbound ACL data transfers are recombined and
-/// placed into per-channel queues.
+/// Inbound PDU transfer state.
 #[derive(Debug)]
-pub(super) struct RxQueue<T: host::Transport> {
+pub(super) struct State<T: host::Transport> {
+    alloc: Arc<Alloc<T>>,
+    queue: parking_lot::Mutex<Queue<T>>,
+    event: tokio::sync::Notify,
+}
+
+impl<T: host::Transport> State<T> {
+    /// Returns a new transfer state.
+    #[must_use]
+    pub fn new(transport: T, max_frag_len: usize) -> Self {
+        Self {
+            alloc: Alloc::new(transport, host::Direction::In, max_frag_len),
+            queue: parking_lot::Mutex::new(Queue::new()),
+            event: tokio::sync::Notify::new(),
+        }
+    }
+}
+
+/// Inbound PDU queue. Inbound ACL data transfers are recombined and placed into
+/// per-channel queues.
+#[derive(Debug)]
+pub(super) struct Queue<T: host::Transport> {
     /// CID of the current PDU for each connection handle. Used to route
     /// continuation fragments to the appropriate queue.
     cont: HashMap<ConnHandle, Cid>,
     /// Per-channel PDU queue.
-    pdu: HashMap<ConnCid, VecDeque<RawPdu<T>>>,
-    /// Transfer allocator.
-    alloc: Alloc<T>,
+    queue: HashMap<ConnCid, VecDeque<RawPdu<T>>>,
 }
 
-impl<T: host::Transport> RxQueue<T> {
+impl<T: host::Transport> Queue<T> {
     /// Creates a new receive transfer queue.
     #[inline]
     #[must_use]
-    pub fn new(max_frag_len: usize) -> Self {
+    pub fn new() -> Self {
         Self {
             cont: HashMap::new(),
-            pdu: HashMap::new(),
-            alloc: Alloc::rx(max_frag_len),
+            queue: HashMap::new(),
         }
     }
 
     /// Registers a new channel, allowing it to receive data.
     pub fn register_chan(&mut self, cc: ConnCid) {
         assert!(cc.is_valid());
-        assert!(!self.pdu.contains_key(&cc));
+        assert!(!self.queue.contains_key(&cc));
         if let Entry::Vacant(e) = self.cont.entry(cc.hdl) {
             e.insert(Cid::INVALID);
         }
-        self.pdu.insert(cc, VecDeque::new());
+        self.queue.insert(cc, VecDeque::new());
     }
 
     /// Removes channel registration, dropping any unconsumed PDU fragments.
     pub fn remove_chan(&mut self, cc: ConnCid) {
-        if let Some(queue) = self.pdu.remove(&cc) {
-            self.alloc
-                .free_xfers(queue.into_iter().filter_map(|mut pdu| pdu.xfer.take()));
-        }
-        if !self.pdu.keys().any(|other| other.hdl == cc.hdl) {
+        self.queue.remove(&cc);
+        if !self.queue.keys().any(|other| other.hdl == cc.hdl) {
             self.cont.remove(&cc.hdl); // Last channel for this connection
         }
     }
@@ -58,46 +69,45 @@ impl<T: host::Transport> RxQueue<T> {
     /// Recombines a received PDU fragment. It returns `Some(ConnCid)` if a new
     /// complete PDU is ready for that channel. The channel may have other
     /// complete PDUs already available even if `None` is returned.
-    pub fn recombine(&mut self, xfer: T::Transfer) -> Option<ConnCid> {
-        let xfer = guard(xfer, |xfer| self.alloc.free_xfer(xfer));
+    pub fn recombine(&mut self, xfer: AclTransfer<T>) -> Option<ConnCid> {
         let pkt: &[u8] = xfer.as_ref();
         trace!("PDU fragment: {pkt:02x?}");
         let (cn, is_first, data) = acl_hdr(pkt)?;
-        let Entry::Occupied(mut cont) = self.cont.entry(cn) else {
+        let Some(&prev_cid) = self.cont.get(&cn) else {
             warn!("PDU fragment for an unknown {cn:?}");
             return None;
         };
         if is_first {
-            self.ensure_complete(ConnCid::new(cn, *cont.get()));
+            self.ensure_complete(ConnCid::new(cn, prev_cid));
             let (pdu_len, cid, payload) = l2cap_hdr(data)?;
-            cont.insert(cid);
+            self.cont.insert(cn, cid);
             let cc = ConnCid::new(cn, cid);
-            let Some(queue) = self.pdu.get_mut(&cc) else {
+            let Some(queue) = self.queue.get_mut(&cc) else {
                 warn!("PDU fragment for an unknown {cc:?}");
                 return None;
             };
             return if pdu_len == payload.len() {
-                queue.push_back(RawPdu::complete(ScopeGuard::into_inner(xfer)));
+                queue.push_back(RawPdu::complete(xfer));
                 Some(cc)
             } else {
                 queue.push_back(RawPdu::first(pdu_len, pkt));
                 None
             };
         }
-        let cc = ConnCid::new(cn, *cont.get());
-        let Some(pdu) = self.pdu.get_mut(&cc).and_then(|queue| queue.back_mut()) else {
+        let cc = ConnCid::new(cn, prev_cid);
+        let Some(pdu) = self.queue.get_mut(&cc).and_then(|queue| queue.back_mut()) else {
             warn!("Unexpected continuation PDU fragment for {cc:?}");
             return None;
         };
-        let rem_len = pdu.rem_len().cmp(&data.len());
-        if rem_len.is_ge() {
+        let rem_len = pdu.rem_len();
+        let cmp = rem_len.cmp(&data.len());
+        if cmp.is_ge() {
             pdu.buf.extend_from_slice(data);
-            return rem_len.is_eq().then_some(cc);
+            return cmp.is_eq().then_some(cc);
         }
         self.ensure_complete(cc);
         warn!(
-            "PDU fragment for {cc:?} exceeds expected length (want={}, have={})",
-            pdu.rem_len(),
+            "PDU fragment for {cc:?} exceeds expected length (want={rem_len}, have={})",
             data.len()
         );
         None
@@ -106,7 +116,7 @@ impl<T: host::Transport> RxQueue<T> {
     /// Returns the next complete PDU for the specified channel.
     #[inline]
     pub fn next(&mut self, cc: ConnCid) -> Option<RawPdu<T>> {
-        let queue = self.pdu.get_mut(&cc)?;
+        let queue = self.queue.get_mut(&cc)?;
         if queue.front()?.is_complete() {
             queue.pop_front()
         } else {
@@ -117,10 +127,10 @@ impl<T: host::Transport> RxQueue<T> {
     /// Removes the last PDU from the queue if it is incomplete.
     #[inline]
     fn ensure_complete(&mut self, cc: ConnCid) {
-        if let Some(queue) = self.pdu.get_mut(&cc) {
+        if let Some(queue) = self.queue.get_mut(&cc) {
             if queue.back().map_or(false, |pdu| !pdu.is_complete()) {
                 warn!("Incomplete PDU for {cc:?}");
-                queue.pop_back().map(|pdu| self.alloc.free_pdu(pdu));
+                queue.pop_back();
             }
         }
     }

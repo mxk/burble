@@ -1,31 +1,55 @@
 use super::*;
 
+/// Outbound PDU transfer state.
+#[derive(Debug)]
+pub(super) struct State<T: host::Transport> {
+    alloc: Arc<Alloc<T>>,
+    sched: parking_lot::Mutex<Scheduler>,
+    event: tokio::sync::Notify,
+}
+
+impl<T: host::Transport> State<T> {
+    /// Returns a new transfer state.
+    #[must_use]
+    pub fn new(transport: T, max_pkts: usize, max_frag_len: usize) -> Self {
+        Self {
+            alloc: Alloc::new(transport, host::Direction::Out, max_frag_len),
+            sched: parking_lot::Mutex::new(Scheduler::new(max_pkts)),
+            event: tokio::sync::Notify::new(),
+        }
+    }
+
+    /// Updates transmit queue status.
+    #[inline]
+    pub fn update(&self, complete: &NumberOfCompletedPackets) {
+        let mut sched = self.sched.lock();
+        sched.queue.pop(complete);
+        self.event.notify_waiters();
+    }
+}
+
 /// Outbound PDU scheduler. Uses round-robin scheduling to share the
 /// controller's transmit buffer among all connection handles.
 #[derive(Debug)]
-pub(super) struct TxScheduler<T: host::Transport> {
-    /// Transfer allocator.
-    alloc: Alloc<T>,
+pub(super) struct Scheduler {
     /// Channels that are blocked from sending because another channel on the
-    /// same connection is sending its PDU.
+    /// same connection is sending a PDU.
     ready: HashMap<ConnHandle, VecDeque<Cid>>,
-    /// Channels that are ready to send as soon as buffer space becomes
-    /// available.
+    /// Channels that are allowed to send PDU fragments as soon as buffer space
+    /// becomes available.
     next: VecDeque<ConnCid>,
     /// Controller's transmit queue status.
-    queue: TxQueue,
+    queue: ControllerQueue,
 }
 
-impl<T: host::Transport> TxScheduler<T> {
+impl Scheduler {
     /// Creates a new outbound PDU scheduler.
-    #[inline]
     #[must_use]
-    pub fn new(max_pkts: usize, max_frag_len: usize) -> Self {
+    pub fn new(max_pkts: usize) -> Self {
         Self {
-            alloc: Alloc::tx(max_frag_len),
             ready: HashMap::new(),
             next: VecDeque::new(),
-            queue: TxQueue::new(max_pkts),
+            queue: ControllerQueue::new(max_pkts),
         }
     }
 
@@ -43,17 +67,11 @@ impl<T: host::Transport> TxScheduler<T> {
         }
     }
 
-    /// Updates transmit queue status.
-    #[inline]
-    pub fn update(&mut self, complete: &NumberOfCompletedPackets) {
-        self.queue.pop(complete)
-    }
-
     /// Schedules a channel for sending a PDU.
     fn schedule_sender(&mut self, cc: ConnCid) -> Result<()> {
         assert!(cc.is_valid());
         let Some(ready) = self.ready.get_mut(&cc.hdl) else {
-            return Err(Error::InvalidConn(cc.hdl));
+            return Err(super::Error::InvalidConn(cc.hdl));
         };
         let Some(same_cn) = self.next.iter().find(|other| other.hdl == cc.hdl) else {
             self.next.push_back(cc); // One sender for this connection
@@ -70,7 +88,7 @@ impl<T: host::Transport> TxScheduler<T> {
     #[inline]
     fn may_send(&self, cc: ConnCid) -> Result<bool> {
         if !self.ready.contains_key(&cc.hdl) {
-            Err(Error::InvalidConn(cc.hdl))
+            Err(super::Error::InvalidConn(cc.hdl))
         } else {
             Ok(!self.queue.is_full() && self.next.front() == Some(&cc))
         }
@@ -94,16 +112,16 @@ impl<T: host::Transport> TxScheduler<T> {
 
 /// Outgoing PDU.
 #[derive(Debug)]
-pub(super) struct TxPdu<T: host::Transport> {
+pub(super) struct Pdu<T: host::Transport> {
     rm: Arc<ResourceManager<T>>,
     cc: ConnCid,
     raw: RawPdu<T>,
 }
 
-impl<T: host::Transport> TxPdu<T> {
+impl<T: host::Transport> Pdu<T> {
     /// Allocates a new PDU.
     pub fn new(rm: Arc<ResourceManager<T>>, cc: ConnCid, data_cap: usize) -> Self {
-        let mut raw = rm.tx.lock().alloc.pdu(&rm.transport, data_cap);
+        let mut raw = rm.tx.alloc.pdu(data_cap);
         raw.buf_mut().put_bytes(0, ACL_HDR + L2CAP_HDR);
         Self { rm, cc, raw }
     }
@@ -123,24 +141,18 @@ impl<T: host::Transport> TxPdu<T> {
     }
 }
 
-impl<T: host::Transport> Drop for TxPdu<T> {
-    fn drop(&mut self) {
-        (self.raw.xfer.take()).map(|xfer| self.rm.tx.lock().alloc.free_xfer(xfer));
-    }
-}
-
 /// Scheduled PDU transmit task.
 #[derive(Debug)]
 struct TxTask<T: host::Transport> {
-    pdu: TxPdu<T>,
-    xfer: Option<T::Transfer>,
+    pdu: Pdu<T>,
+    xfer: Option<AclTransfer<T>>,
 }
 
 impl<T: host::Transport> TxTask<T> {
     /// Schedules the PDU for transmission.
     #[inline]
-    fn new(pdu: TxPdu<T>) -> Result<Self> {
-        pdu.rm.tx.lock().schedule_sender(pdu.cc)?;
+    fn new(pdu: Pdu<T>) -> Result<Self> {
+        pdu.rm.tx.sched.lock().schedule_sender(pdu.cc)?;
         Ok(Self { pdu, xfer: None })
     }
 
@@ -156,17 +168,13 @@ impl<T: host::Transport> TxTask<T> {
         if self.pdu.raw.xfer.is_some() {
             self.may_send().await?;
             let xfer = self.pdu.raw.xfer.take().unwrap();
-            return (self
-                .send_frag(xfer, false)
-                .await)
-                .map(|xfer| self.pdu.raw.xfer = Some(xfer));
+            return (self.send_frag(xfer, false).await).map(|xfer| self.pdu.raw.xfer = Some(xfer));
         }
 
         // Fragmentation path
         let max_frag_len = {
-            let mut sched = self.pdu.rm.tx.lock();
-            self.pdu.raw.xfer = Some(sched.alloc.xfer(&self.pdu.rm.transport));
-            sched.alloc.max_frag_len
+            self.pdu.raw.xfer = Some(self.pdu.rm.tx.alloc.xfer());
+            self.pdu.rm.tx.alloc.max_frag_len
         };
         let data = &self.pdu.raw.buf.as_ref()[ACL_HDR..];
         for (i, frag) in data.chunks(max_frag_len).enumerate() {
@@ -176,7 +184,9 @@ impl<T: host::Transport> TxTask<T> {
             let buf = xfer.buf_mut();
             buf.put_bytes(0, ACL_HDR);
             buf.extend_from_slice(frag);
-            self.send_frag(xfer, i != 0).await.map(|xfer| self.pdu.raw.xfer = Some(xfer))?;
+            self.send_frag(xfer, i != 0)
+                .await
+                .map(|xfer| self.pdu.raw.xfer = Some(xfer))?;
         }
         Ok(())
     }
@@ -188,19 +198,19 @@ impl<T: host::Transport> TxTask<T> {
         Ok(())
     }
 
-    async fn send_frag(&self, mut xfer: T::Transfer, cont: bool) -> Result<T::Transfer> {
+    async fn send_frag(&self, mut xfer: AclTransfer<T>, cont: bool) -> Result<AclTransfer<T>> {
         // Update HCI ACL data packet header ([Vol 4] Part E, Section 5.4.2)
         let (mut hdr, data) = xfer.buf_mut().split_at_mut(ACL_HDR);
         hdr.put_u16_le(u16::from(cont) << 12 | u16::from(self.pdu.cc.hdl));
         hdr.put_u16_le(u16::try_from(data.len()).unwrap());
-        let xfer = xfer.submit()?.await;
+        let xfer = xfer.submit().await?;
 
         // Pass send permission to the next connection handle
-        let mut sched = self.pdu.rm.tx.lock();
+        let mut sched = self.pdu.rm.tx.sched.lock();
         sched.queue.push(self.pdu.cc);
         if sched.next.len() > 1 {
             sched.next.rotate_left(1);
-            self.pdu.rm.tx_event.notify_waiters();
+            self.pdu.rm.tx.event.notify_waiters();
         }
         Ok(xfer)
     }
@@ -208,22 +218,22 @@ impl<T: host::Transport> TxTask<T> {
 
 impl<T: host::Transport> Drop for TxTask<T> {
     fn drop(&mut self) {
-        let mut sched = self.pdu.rm.tx.lock();
+        let mut sched = self.pdu.rm.tx.sched.lock();
         sched.remove_sender(self.pdu.cc);
-        self.pdu.rm.tx_event.notify_waiters();
+        self.pdu.rm.tx.event.notify_waiters();
     }
 }
 
 /// Bookkeeping information about the order of ACL data packets (PDU fragments)
 /// submitted to the controller.
 #[derive(Debug, Default)]
-struct TxQueue {
+struct ControllerQueue {
     queue: VecDeque<ConnCid>,
     complete: HashMap<ConnHandle, u16>,
     max_pkts: usize,
 }
 
-impl TxQueue {
+impl ControllerQueue {
     /// Returns a new transfer queue.
     #[inline]
     #[must_use]
