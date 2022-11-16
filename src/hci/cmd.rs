@@ -11,10 +11,6 @@ mod hci_control;
 mod info_params;
 mod le;
 
-/// HCI command header and buffer sizes ([Vol 4] Part E, Section 5.4.1).
-const CMD_HDR: usize = 3;
-pub(crate) const CMD_BUF: usize = CMD_HDR + u8::MAX as usize;
-
 /// HCI command encoder.
 #[derive(Debug)]
 pub(super) struct Command<T: host::Transport> {

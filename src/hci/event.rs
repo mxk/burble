@@ -20,10 +20,6 @@ use super::*;
 
 mod le;
 
-/// HCI event header and buffer sizes ([Vol 4] Part E, Section 5.4.4).
-const EVT_HDR: usize = 2;
-pub(crate) const EVT_BUF: usize = EVT_HDR + u8::MAX as usize;
-
 /// HCI event decoder.
 #[derive(Clone, Debug, Default)]
 pub struct Event<'a> {

@@ -4,6 +4,18 @@ use bitflags::bitflags;
 
 use OpcodeGroup::*;
 
+/// HCI command header and buffer sizes ([Vol 4] Part E, Section 5.4.1).
+pub(super) const CMD_HDR: usize = 3;
+pub(crate) const CMD_BUF: usize = CMD_HDR + u8::MAX as usize;
+
+/// HCI ACL data header and buffer sizes ([Vol 4] Part E, Section 5.4.2).
+pub(crate) const ACL_HDR: usize = 4;
+pub(crate) const ACL_LE_MIN_DATA: usize = 27;
+
+/// HCI event header and buffer sizes ([Vol 4] Part E, Section 5.4.4).
+pub(super) const EVT_HDR: usize = 2;
+pub(crate) const EVT_BUF: usize = EVT_HDR + u8::MAX as usize;
+
 /// HCI command opcodes ([Vol 4] Part E, Section 7).
 #[derive(
     Clone,
