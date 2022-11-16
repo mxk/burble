@@ -48,11 +48,8 @@ pub trait Transport: Clone + Debug + Send + Sync {
     /// Returns an inbound event transfer.
     fn event(&self) -> Self::Transfer;
 
-    /// Returns an inbound Asynchronous Connection-Oriented transfer.
-    fn acl_in(&self, max_data_len: usize) -> Self::Transfer;
-
-    /// Returns an outbound Asynchronous Connection-Oriented transfer.
-    fn acl_out(&self, max_data_len: usize) -> Self::Transfer;
+    /// Returns an Asynchronous Connection-Oriented transfer.
+    fn acl(&self, dir: Direction, max_data_len: usize) -> Self::Transfer;
 }
 
 /// Asynchronous I/O transfer.
@@ -67,7 +64,7 @@ pub trait Transfer: AsRef<[u8]> + Debug + Send + Sync {
     /// must not perform any operations that result in reallocation.
     fn buf_mut(&mut self) -> &mut BytesMut;
 
-    /// Submits a transfer for execution. The transfer may be cancelled by
+    /// Submits the transfer for execution. The transfer may be cancelled by
     /// dropping the returned future.
     fn submit(self) -> Result<Self::Future>;
 
@@ -77,4 +74,11 @@ pub trait Transfer: AsRef<[u8]> + Debug + Send + Sync {
 
     /// Resets the transfer to its original state, allowing it to be reused.
     fn reset(&mut self);
+}
+
+/// Transfer direction.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Direction {
+    In,
+    Out,
 }
