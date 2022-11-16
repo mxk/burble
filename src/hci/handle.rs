@@ -13,7 +13,7 @@ impl ConnHandle {
     /// Wraps a raw connection handle.
     #[inline]
     #[must_use]
-    pub(super) const fn from_raw(h: u16) -> Self {
+    pub(crate) const fn from_raw(h: u16) -> Self {
         Self(h)
     }
 

@@ -12,12 +12,13 @@ use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, trace};
 
-pub use le::*;
+pub use {hci::*, le::*};
 
 use crate::{host, host::Transfer, le::RawAddr};
 
 use super::*;
 
+mod hci;
 mod le;
 
 /// HCI event decoder.
@@ -480,7 +481,7 @@ struct Waiter<T: host::Transport> {
 
 /// Guard that unregisters the event waiter when dropped.
 #[derive(Debug)]
-pub(super) struct EventWaiterGuard<T: host::Transport> {
+pub(crate) struct EventWaiterGuard<T: host::Transport> {
     router: Arc<EventRouter<T>>,
     id: u64,
 }
@@ -488,7 +489,7 @@ pub(super) struct EventWaiterGuard<T: host::Transport> {
 impl<T: host::Transport> EventWaiterGuard<T> {
     /// Returns the next matching event or [`None`] if the waiter is no longer
     /// registered (e.g. if the controller is lost).
-    pub async fn next(&mut self) -> Result<EventGuard<T>> {
+    pub async fn next(&self) -> Result<EventGuard<T>> {
         loop {
             let ready_or_notify = {
                 let mut ws = self.router.waiters.lock();
