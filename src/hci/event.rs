@@ -277,8 +277,8 @@ pub(super) struct EventRouter<T: host::Transport> {
 }
 
 impl<T: host::Transport> EventRouter<T> {
-    /// Register a new event waiter with filter `f`.
-    pub fn register(self: Arc<Self>, f: EventFilter) -> Result<EventWaiterGuard<T>> {
+    /// Registers an event waiter with filter `f`.
+    pub fn register(self: &Arc<Self>, f: EventFilter) -> Result<EventWaiterGuard<T>> {
         let mut ws = self.waiters.lock();
         if ws.queue.iter().any(|w| f.conflicts_with(&w.filter)) {
             return Err(Error::FilterConflict);
@@ -301,7 +301,10 @@ impl<T: host::Transport> EventRouter<T> {
             ready: None,
         });
         drop(ws);
-        Ok(EventWaiterGuard { router: self, id })
+        Ok(EventWaiterGuard {
+            router: Arc::clone(self),
+            id,
+        })
     }
 
     /// Receives the next event, notifies registered waiters, and returns the
@@ -416,22 +419,19 @@ impl Future for EventReceiverTask {
 }
 
 /// Defines event matching criteria.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum EventFilter {
     Command(Opcode),
     AdvManager,
+    ResManager,
 }
 
 impl EventFilter {
     /// Returns whether two filters would create an ambiguity in event delivery
     /// if both were registered.
+    #[inline]
     fn conflicts_with(&self, other: &Self) -> bool {
-        use EventFilter::*;
-        match (self, other) {
-            (&Command(a), &Command(b)) => a == b,
-            (&AdvManager, &AdvManager) => true,
-            _ => false,
-        }
+        self == other
     }
 
     /// Returns whether `evt` matches the filter.
@@ -446,6 +446,10 @@ impl EventFilter {
                 Le(AdvertisingSetTerminated) => true,
                 _ => false,
             },
+            ResManager => matches!(
+                evt.typ,
+                Hci(EventCode::DisconnectionComplete | EventCode::NumberOfCompletedPackets)
+            ),
         }
     }
 }

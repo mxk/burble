@@ -46,7 +46,7 @@ impl<T: host::Transport> Command<T> {
         // Event registration must happen first to ensure that the command quota
         // is not exceeded, to check for any conflicting commands, and to
         // guarantee that the completion event will not be missed.
-        let waiter = Arc::clone(&self.router).register(EventFilter::Command(self.opcode))?;
+        let waiter = self.router.register(EventFilter::Command(self.opcode))?;
         self.xfer.submit()?.await.result().unwrap().map_err(|e| {
             warn!("Failed to submit {} command: {e}", self.opcode);
             e

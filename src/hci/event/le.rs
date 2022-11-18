@@ -68,9 +68,9 @@ impl From<&mut Event<'_>> for LeAdvertisingSetTerminated {
             status: e.status(),
             adv_handle: e.adv_handle(),
             conn_handle: {
-                let h = e.u16();
+                let cn = e.u16();
                 if e.status().is_ok() {
-                    ConnHandle::from_raw(h)
+                    ConnHandle::from_raw(cn)
                 } else {
                     ConnHandle::INVALID
                 }

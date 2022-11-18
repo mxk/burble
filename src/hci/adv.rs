@@ -62,7 +62,7 @@ impl<T: host::Transport> Advertiser<T> {
 
     /// Enable advertising.
     pub async fn enable(&mut self, p: AdvEnableParams) -> Result<AdvMonitor<T>> {
-        let waiter = Arc::clone(&self.host.router).register(EventFilter::AdvManager)?;
+        let waiter = self.host.register(EventFilter::AdvManager)?;
         (self.host.le_set_extended_advertising_enable(true, &[p])).await?;
         Ok(AdvMonitor::new(waiter))
     }

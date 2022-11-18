@@ -6,7 +6,6 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use strum::IntoEnumIterator;
-use tracing::debug;
 
 pub use {adv::*, cmd::*, consts::*, event::*, handle::*};
 
@@ -92,6 +91,19 @@ impl<T: host::Transport> Host<T> {
         }
     }
 
+    /// Returns the underlying transport.
+    #[inline]
+    #[must_use]
+    pub const fn transport(&self) -> &T {
+        &self.transport
+    }
+
+    /// Registers an event waiter with filter `f`.
+    #[inline]
+    pub(crate) fn register(&self, f: EventFilter) -> Result<EventWaiterGuard<T>> {
+        self.router.register(f)
+    }
+
     /// Performs a reset and basic controller initialization
     /// ([Vol 6] Part D, Section 2.1).
     pub async fn init(&self) -> Result<()> {
@@ -107,16 +119,6 @@ impl<T: host::Transport> Host<T> {
             .await;
         self.le_set_event_mask(LeEventMask::enable(SubeventCode::iter()))
             .await?;
-
-        // [Vol 4] Part E, Section 4.1 and [Vol 4] Part E, Section 7.8.2
-        // TODO: Move to L2CAP
-        let mut buf_info = self.le_read_buffer_size().await?;
-        if buf_info.acl_max_pkts == 0 {
-            let bi = self.read_buffer_size().await?;
-            buf_info.acl_max_len = bi.acl_max_len;
-            buf_info.acl_max_pkts = bi.acl_max_pkts;
-        }
-        debug!("Controller buffers: {:?}", buf_info);
 
         let _ignore_unknown = self.write_le_host_support(true).await;
         Ok(())

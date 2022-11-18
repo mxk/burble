@@ -9,13 +9,16 @@ use std::sync::Arc;
 
 use bytes::{BufMut, BytesMut};
 use tokio::sync::futures::Notified;
+use tracing::debug;
 
-pub use consts::*;
+pub use {consts::*, handle::*};
 
+use crate::hci::ACL_HDR;
 use crate::host::Transfer;
-use crate::{hci, hci::*, host};
+use crate::{hci, host};
 
 mod consts;
+mod handle;
 mod rx;
 mod tx;
 
@@ -27,7 +30,7 @@ pub enum Error {
     #[error(transparent)]
     Hci(#[from] hci::Error),
     #[error("invalid {0:?}")]
-    InvalidConn(ConnHandle),
+    InvalidConn(hci::ConnHandle),
 }
 
 impl From<host::Error> for Error {
@@ -40,65 +43,6 @@ impl From<host::Error> for Error {
 /// Common L2CAP result type.
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// Channel identifier.
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
-#[repr(transparent)]
-pub struct Cid(u16);
-
-impl Cid {
-    /// Invalid CID.
-    pub const INVALID: Self = Self(0x0000);
-    /// BR/EDR signaling channel.
-    pub const SIGNAL: Self = Self(0x0001);
-    /// Attribute protocol channel.
-    pub const ATT: Self = Self(0x0004);
-    /// LE signaling channel.
-    pub const LE_SIGNAL: Self = Self(0x0005);
-    /// Security Manager protocol channel.
-    pub const SM: Self = Self(0x0006);
-    /// Maximum LE CID.
-    pub const LE_MAX: Self = Self(0x007F);
-
-    /// Wraps a raw CID.
-    #[inline]
-    #[must_use]
-    const fn from_raw(h: u16) -> Self {
-        Self(h)
-    }
-
-    /// Returns whether the CID is valid.
-    #[inline]
-    #[must_use]
-    pub const fn is_valid(self) -> bool {
-        self.0 != 0x0000 // [Vol 3] Part A, Section 2.1
-    }
-}
-
-impl From<Cid> for u16 {
-    #[inline]
-    fn from(h: Cid) -> Self {
-        h.0
-    }
-}
-
-/// Channel identifier associated with a specific connection.
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
-struct ConnCid {
-    hdl: ConnHandle,
-    cid: Cid,
-}
-
-impl ConnCid {
-    /// Combines connection handle with a channel ID. Both must be valid.
-    #[inline]
-    #[must_use]
-    const fn new(hdl: ConnHandle, cid: Cid) -> Self {
-        assert!(hdl.is_valid());
-        assert!(cid.is_valid());
-        Self { hdl, cid }
-    }
-}
-
 /// Channel manager.
 #[derive(Debug)]
 #[repr(transparent)]
@@ -110,7 +54,7 @@ pub struct ChanManager<T: host::Transport> {
 #[derive(Debug)]
 struct RawChan<T: host::Transport> {
     rm: Arc<ResourceManager<T>>,
-    cc: ConnCid,
+    lc: LeUCid,
     pdu_cap: usize,
 }
 
@@ -119,33 +63,53 @@ impl<T: host::Transport> RawChan<T> {
     #[inline]
     #[must_use]
     pub fn new_pdu(&self) -> tx::Pdu<T> {
-        tx::Pdu::new(Arc::clone(&self.rm), self.cc, self.pdu_cap)
+        tx::Pdu::new(Arc::clone(&self.rm), self.lc, self.pdu_cap)
     }
 }
 
 #[derive(Debug)]
 struct ResourceManager<T: host::Transport> {
-    ctl: EventWaiterGuard<T>,
+    ctl: hci::EventWaiterGuard<T>,
     rx: rx::State<T>,
     tx: tx::State<T>,
 }
 
 impl<T: host::Transport> ResourceManager<T> {
+    async fn new(host: &hci::Host<T>) -> Result<Self> {
+        // [Vol 4] Part E, Section 4.1 and [Vol 4] Part E, Section 7.8.2
+        let mut cbuf = host.le_read_buffer_size().await?;
+        if cbuf.acl_max_pkts == 0 {
+            let bi = host.read_buffer_size().await?;
+            cbuf.acl_max_len = bi.acl_max_len;
+            cbuf.acl_max_pkts = bi.acl_max_pkts;
+        }
+        debug!("Controller buffers: {:?}", cbuf);
+        Ok(Self {
+            ctl: host.register(hci::EventFilter::ResManager)?,
+            rx: rx::State::new(host.transport().clone(), cbuf.acl_max_len),
+            tx: tx::State::new(
+                host.transport().clone(),
+                cbuf.acl_max_pkts,
+                cbuf.acl_max_len,
+            ),
+        })
+    }
+
     /// Blocks the task until notify is signaled.
     async fn event(&self, notify: Notified<'_>) -> Result<()> {
         tokio::pin!(notify);
         loop {
-            let evt: EventGuard<T> = tokio::select! {
+            let evt: hci::EventGuard<T> = tokio::select! {
                 _ = &mut notify => return Ok(()),
                 evt = self.ctl.next() => evt?,
             };
             // TODO: Connection closed, etc.
             if matches!(
                 evt.typ(),
-                EventType::Hci(EventCode::NumberOfCompletedPackets)
+                hci::EventType::Hci(hci::EventCode::NumberOfCompletedPackets)
             ) {
                 self.tx
-                    .update(&NumberOfCompletedPackets::from(&mut evt.get()));
+                    .update(&hci::NumberOfCompletedPackets::from(&mut evt.get()));
             }
         }
     }
@@ -169,7 +133,7 @@ impl<T: host::Transport> Alloc<T> {
     #[inline]
     #[must_use]
     fn new(transport: T, dir: host::Direction, max_frag_len: usize) -> Arc<Self> {
-        assert!(max_frag_len >= ACL_LE_MIN_DATA);
+        assert!(max_frag_len >= hci::ACL_LE_MIN_DATA);
         Arc::new(Self {
             transport,
             free: parking_lot::Mutex::new(Vec::with_capacity(8)), // TODO: Tune

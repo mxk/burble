@@ -31,11 +31,11 @@ impl<T: host::Transport> State<T> {
 /// per-channel queues.
 #[derive(Debug)]
 pub(super) struct Queue<T: host::Transport> {
-    /// CID of the current PDU for each connection handle. Used to route
-    /// continuation fragments to the appropriate queue.
-    cont: HashMap<ConnHandle, Cid>,
+    /// CID of the current PDU for each logical link. Used to route continuation
+    /// fragments to the appropriate queue.
+    cont: HashMap<LeU, Cid>,
     /// Per-channel PDU queue.
-    queue: HashMap<ConnCid, VecDeque<RawPdu<T>>>,
+    queue: HashMap<LeUCid, VecDeque<RawPdu<T>>>,
 }
 
 impl<T: host::Transport> Queue<T> {
@@ -50,64 +50,64 @@ impl<T: host::Transport> Queue<T> {
     }
 
     /// Registers a new channel, allowing it to receive data.
-    pub fn register_chan(&mut self, cc: ConnCid) {
-        assert!(!self.queue.contains_key(&cc));
-        if let Entry::Vacant(e) = self.cont.entry(cc.hdl) {
+    pub fn register_chan(&mut self, lc: LeUCid) {
+        assert!(!self.queue.contains_key(&lc));
+        if let Entry::Vacant(e) = self.cont.entry(lc.link) {
             e.insert(Cid::INVALID);
         }
-        self.queue.insert(cc, VecDeque::new());
+        self.queue.insert(lc, VecDeque::new());
     }
 
     /// Removes channel registration, dropping any unconsumed PDU fragments.
-    pub fn remove_chan(&mut self, cc: ConnCid) {
-        self.queue.remove(&cc);
-        if !self.queue.keys().any(|other| other.hdl == cc.hdl) {
-            self.cont.remove(&cc.hdl); // Last channel for this connection
+    pub fn remove_chan(&mut self, lc: LeUCid) {
+        self.queue.remove(&lc);
+        if !self.queue.keys().any(|other| other.link == lc.link) {
+            self.cont.remove(&lc.link); // Last channel for this logical link
         }
     }
 
     /// Recombines a received PDU fragment. It returns `Some(ConnCid)` if a new
     /// complete PDU is ready for that channel. The channel may have other
     /// complete PDUs already available even if `None` is returned.
-    pub fn recombine(&mut self, xfer: AclTransfer<T>) -> Option<ConnCid> {
+    pub fn recombine(&mut self, xfer: AclTransfer<T>) -> Option<LeUCid> {
         let pkt: &[u8] = xfer.as_ref();
         trace!("PDU fragment: {pkt:02x?}");
-        let (cn, is_first, data) = acl_hdr(pkt)?;
-        let Some(&prev_cid) = self.cont.get(&cn) else {
-            warn!("PDU fragment for an unknown {cn:?}");
+        let (link, is_first, data) = acl_hdr(pkt)?;
+        let Some(&prev_cid) = self.cont.get(&link) else {
+            warn!("PDU fragment for an unknown {link:?}");
             return None;
         };
         if is_first {
-            self.ensure_complete(ConnCid::new(cn, prev_cid));
+            self.ensure_complete(LeUCid::new(link, prev_cid));
             let (pdu_len, cid, payload) = l2cap_hdr(data)?;
-            self.cont.insert(cn, cid);
-            let cc = ConnCid::new(cn, cid);
-            let Some(queue) = self.queue.get_mut(&cc) else {
-                warn!("PDU fragment for an unknown {cc:?}");
+            self.cont.insert(link, cid);
+            let lc = LeUCid::new(link, cid);
+            let Some(queue) = self.queue.get_mut(&lc) else {
+                warn!("PDU fragment for an unknown {lc:?}");
                 return None;
             };
             return if pdu_len == payload.len() {
                 queue.push_back(RawPdu::complete(xfer));
-                Some(cc)
+                Some(lc)
             } else {
                 queue.push_back(RawPdu::first(pdu_len, pkt));
                 None
             };
         }
-        let cc = ConnCid::new(cn, prev_cid);
-        let Some(pdu) = self.queue.get_mut(&cc).and_then(VecDeque::back_mut) else {
-            warn!("Unexpected continuation PDU fragment for {cc:?}");
+        let lc = LeUCid::new(link, prev_cid);
+        let Some(pdu) = self.queue.get_mut(&lc).and_then(VecDeque::back_mut) else {
+            warn!("Unexpected continuation PDU fragment for {lc:?}");
             return None;
         };
         let rem_len = pdu.rem_len();
         let cmp = rem_len.cmp(&data.len());
         if cmp.is_ge() {
             pdu.buf_mut().extend_from_slice(data);
-            return cmp.is_eq().then_some(cc);
+            return cmp.is_eq().then_some(lc);
         }
-        self.ensure_complete(cc);
+        self.ensure_complete(lc);
         warn!(
-            "PDU fragment for {cc:?} exceeds expected length (want={rem_len}, have={})",
+            "PDU fragment for {lc:?} exceeds expected length (want={rem_len}, have={})",
             data.len()
         );
         None
@@ -115,8 +115,8 @@ impl<T: host::Transport> Queue<T> {
 
     /// Returns the next complete PDU for the specified channel.
     #[inline]
-    pub fn next(&mut self, cc: ConnCid) -> Option<RawPdu<T>> {
-        let queue = self.queue.get_mut(&cc)?;
+    pub fn next(&mut self, lc: LeUCid) -> Option<RawPdu<T>> {
+        let queue = self.queue.get_mut(&lc)?;
         if queue.front()?.is_complete() {
             queue.pop_front()
         } else {
@@ -126,10 +126,10 @@ impl<T: host::Transport> Queue<T> {
 
     /// Removes the last PDU from the queue if it is incomplete.
     #[inline]
-    fn ensure_complete(&mut self, cc: ConnCid) {
-        if let Some(queue) = self.queue.get_mut(&cc) {
+    fn ensure_complete(&mut self, lc: LeUCid) {
+        if let Some(queue) = self.queue.get_mut(&lc) {
             if queue.back().map_or(false, |pdu| !pdu.is_complete()) {
-                warn!("Incomplete PDU for {cc:?}");
+                warn!("Incomplete PDU for {lc:?}");
                 queue.pop_back();
             }
         }
@@ -139,7 +139,7 @@ impl<T: host::Transport> Queue<T> {
 /// Parses ACL data packet header ([Vol 4] Part E, Section 5.4.2).
 #[inline]
 #[must_use]
-fn acl_hdr(pkt: &[u8]) -> Option<(ConnHandle, bool, &[u8])> {
+fn acl_hdr(pkt: &[u8]) -> Option<(LeU, bool, &[u8])> {
     debug_assert_eq!(pkt.as_ptr() as usize % align_of::<u16>(), 0);
     if pkt.len() < ACL_HDR {
         warn!("ACL data packet with missing header: {pkt:02x?}");
@@ -161,7 +161,7 @@ fn acl_hdr(pkt: &[u8]) -> Option<(ConnHandle, bool, &[u8])> {
             return None;
         }
     }
-    Some((ConnHandle::from_raw(cn & 0xFFF), is_first, data))
+    Some((LeU::from_raw(cn), is_first, data))
 }
 
 /// Parses basic L2CAP header from ACL data packet payload

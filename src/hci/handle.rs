@@ -7,14 +7,15 @@ pub struct ConnHandle(u16);
 
 impl ConnHandle {
     /// Invalid connection handle.
-    pub const INVALID: Self = Self(0xFFFF);
-    pub(crate) const MAX: u16 = 0xEFF; // [Vol 4] Part E, Section 5.4.2
+    pub(super) const INVALID: Self = Self(0xFFFF);
+    /// Maximum valid connection handle ([Vol 4] Part E, Section 5.4.2).
+    const MAX: u16 = 0xEFF;
 
     /// Wraps a raw connection handle.
     #[inline]
     #[must_use]
-    pub(crate) const fn from_raw(h: u16) -> Self {
-        Self(h)
+    pub(crate) const fn from_raw(cn: u16) -> Self {
+        Self(cn & 0xFFF)
     }
 
     /// Returns whether the connection handle is valid.

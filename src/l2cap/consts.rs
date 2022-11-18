@@ -1,6 +1,6 @@
 #![allow(clippy::use_self)]
 
-use crate::l2cap::Cid;
+use super::Cid;
 
 /// Basic L2CAP header size ([Vol 3] Part A, Section 3).
 pub(super) const L2CAP_HDR: usize = 4;
