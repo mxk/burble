@@ -3,7 +3,7 @@ use std::collections::{HashMap, VecDeque};
 use std::mem::align_of;
 
 use bytes::Buf;
-use tracing::{trace, warn};
+use tracing::{error, trace, warn};
 
 use super::*;
 
@@ -39,6 +39,10 @@ pub(super) struct Queue<T: host::Transport> {
 }
 
 impl<T: host::Transport> Queue<T> {
+    /// Maximum number of PDUs that may be queued per channel. Reaching this
+    /// limit likely means that the channel is broken and isn't receiving data.
+    const MAX_PDUS: usize = 128;
+
     /// Creates a new receive transfer queue.
     #[inline]
     #[must_use]
@@ -86,6 +90,10 @@ impl<T: host::Transport> Queue<T> {
                 warn!("PDU fragment for an unknown {lc:?}");
                 return None;
             };
+            if queue.len() > Self::MAX_PDUS {
+                error!("PDU queue overflow for {lc:?}");
+                return None;
+            }
             return if pdu_len == payload.len() {
                 queue.push_back(RawPdu::complete(xfer));
                 Some(lc)
