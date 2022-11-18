@@ -41,6 +41,7 @@ pub enum Opcode {
     // HCI Control and Baseband commands ([Vol 4] Part E, Section 7.3)
     SetEventMask = HciControl.ocf(0x0001),
     Reset = HciControl.ocf(0x0003),
+    SetControllerToHostFlowControl = HciControl.ocf(0x0031),
     SetEventMaskPage2 = HciControl.ocf(0x0063),
     WriteLeHostSupport = HciControl.ocf(0x006D),
 
