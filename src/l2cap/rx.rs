@@ -18,9 +18,9 @@ pub(super) struct State<T: host::Transport> {
 impl<T: host::Transport> State<T> {
     /// Returns a new transfer state.
     #[must_use]
-    pub fn new(transport: T, max_frag_len: usize) -> Self {
+    pub fn new(transport: T, acl_data_len: hci::AclDataLen) -> Self {
         Self {
-            alloc: Alloc::new(transport, host::Direction::In, max_frag_len),
+            alloc: Alloc::new(transport, host::Direction::In, acl_data_len),
             queue: parking_lot::Mutex::new(Queue::new()),
             event: tokio::sync::Notify::new(),
         }
@@ -32,7 +32,7 @@ impl<T: host::Transport> State<T> {
 #[derive(Debug)]
 pub(super) struct Queue<T: host::Transport> {
     /// CID of the current PDU for each logical link. Used to route continuation
-    /// fragments to the appropriate queue.
+    /// fragments to the appropriate queue ([Vol 3] Part A, Section 7.2.1).
     cont: HashMap<LeU, Cid>,
     /// Per-channel PDU queue.
     queue: HashMap<LeUCid, VecDeque<RawPdu<T>>>,
@@ -70,9 +70,10 @@ impl<T: host::Transport> Queue<T> {
         }
     }
 
-    /// Recombines a received PDU fragment. It returns `Some(ConnCid)` if a new
-    /// complete PDU is ready for that channel. The channel may have other
-    /// complete PDUs already available even if `None` is returned.
+    /// Recombines a received PDU fragment ([Vol 3] Part A, Section 7.2.2). It
+    /// returns `Some` if a new complete PDU is ready for that channel. The
+    /// channel may have other complete PDUs already available even if `None` is
+    /// returned.
     pub fn recombine(&mut self, xfer: AclTransfer<T>) -> Option<LeUCid> {
         let pkt: &[u8] = xfer.as_ref();
         trace!("PDU fragment: {pkt:02x?}");
@@ -91,6 +92,7 @@ impl<T: host::Transport> Queue<T> {
                 return None;
             };
             if queue.len() > Self::MAX_PDUS {
+                // TODO: Indicate that the channel is unreliable
                 error!("PDU queue overflow for {lc:?}");
                 return None;
             }
@@ -104,6 +106,7 @@ impl<T: host::Transport> Queue<T> {
         }
         let lc = LeUCid::new(link, prev_cid);
         let Some(pdu) = self.queue.get_mut(&lc).and_then(VecDeque::back_mut) else {
+            // TODO: Indicate that the channel is unreliable
             warn!("Unexpected continuation PDU fragment for {lc:?}");
             return None;
         };
@@ -114,6 +117,7 @@ impl<T: host::Transport> Queue<T> {
             return cmp.is_eq().then_some(lc);
         }
         self.ensure_complete(lc);
+        // TODO: Indicate that the channel is unreliable
         warn!(
             "PDU fragment for {lc:?} exceeds expected length (want={rem_len}, have={})",
             data.len()

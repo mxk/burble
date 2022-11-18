@@ -11,9 +11,9 @@ pub(super) struct State<T: host::Transport> {
 impl<T: host::Transport> State<T> {
     /// Returns a new transfer state.
     #[must_use]
-    pub fn new(transport: T, max_pkts: usize, max_frag_len: usize) -> Self {
+    pub fn new(transport: T, max_pkts: usize, acl_data_len: hci::AclDataLen) -> Self {
         Self {
-            alloc: Alloc::new(transport, host::Direction::Out, max_frag_len),
+            alloc: Alloc::new(transport, host::Direction::Out, acl_data_len),
             sched: parking_lot::Mutex::new(Scheduler::new(max_pkts)),
             event: tokio::sync::Notify::new(),
         }
@@ -21,9 +21,18 @@ impl<T: host::Transport> State<T> {
 
     /// Updates transmit queue status.
     #[inline]
-    pub fn update(&self, complete: &hci::NumberOfCompletedPackets) {
+    pub fn on_num_completed(&self, complete: &hci::NumberOfCompletedPackets) {
         let mut sched = self.sched.lock();
-        sched.queue.pop(complete);
+        sched.cq.pop(complete);
+        self.event.notify_waiters();
+    }
+
+    /// Updates transmit queue status after a connection is disconnected
+    /// ([Vol 4] Part E, Section 4.3).
+    #[inline]
+    pub fn on_disconnect(&self, cn: hci::ConnHandle) {
+        let mut sched = self.sched.lock();
+        sched.cq.remove_link(LeU::new(cn));
         self.event.notify_waiters();
     }
 }
@@ -33,37 +42,38 @@ impl<T: host::Transport> State<T> {
 #[derive(Debug)]
 pub(super) struct Scheduler {
     /// Channels that are blocked from sending because another channel on the
-    /// same logical link is sending a PDU ([Vol 1] Part A, Section 3.5.5.2.2).
+    /// same logical link is sending a PDU ([Vol 3] Part A, Section 7.2.1).
     ready: HashMap<LeU, VecDeque<Cid>>,
     /// Channels that are allowed to send PDU fragments as soon as buffer space
     /// becomes available.
     next: VecDeque<LeUCid>,
     /// Controller's transmit queue status.
-    queue: ControllerQueue,
+    cq: ControllerQueue,
 }
 
 impl Scheduler {
     /// Creates a new outbound PDU scheduler.
     #[must_use]
-    pub fn new(max_pkts: usize) -> Self {
+    fn new(max_pkts: usize) -> Self {
         Self {
             ready: HashMap::new(),
             next: VecDeque::new(),
-            queue: ControllerQueue::new(max_pkts),
+            cq: ControllerQueue::new(max_pkts),
         }
     }
 
     /// Registers a new LE-U logical link, allowing it to send data.
-    pub fn register_link(&mut self, link: LeU) {
+    fn register_link(&mut self, link: LeU) {
         self.ready.entry(link).or_default();
     }
 
     /// Removes LE-U logical link registration.
-    pub fn remove_link(&mut self, link: LeU) {
+    fn remove_link(&mut self, link: LeU) {
         self.ready.remove(&link);
         if let Some(i) = self.next.iter().position(|other| other.link == link) {
             self.next.remove(i);
         }
+        self.cq.remove_link(link);
     }
 
     /// Schedules a channel for sending a PDU.
@@ -82,17 +92,17 @@ impl Scheduler {
         unreachable!("One channel must not send two PDUs concurrently");
     }
 
-    /// Returns whether channel `cc` is allowed to send the next PDU fragment.
+    /// Returns whether channel `lc` is allowed to send the next PDU fragment.
     #[inline]
     fn may_send(&self, lc: LeUCid) -> Result<bool> {
         if self.ready.contains_key(&lc.link) {
-            Ok(!self.queue.is_full() && self.next.front() == Some(&lc))
+            Ok(!self.cq.is_full() && self.next.front() == Some(&lc))
         } else {
             Err(Error::InvalidConn(lc.link.0))
         }
     }
 
-    /// Removes channel `cc` from the scheduler.
+    /// Removes channel `lc` from the scheduler.
     fn remove_sender(&mut self, lc: LeUCid) {
         let Some(ready) = self.ready.get_mut(&lc.link) else { return };
         let Some(i) = find_val(&self.next, lc) else {
@@ -118,8 +128,8 @@ pub(super) struct Pdu<T: host::Transport> {
 
 impl<T: host::Transport> Pdu<T> {
     /// Allocates a new PDU.
-    pub fn new(rm: Arc<ResourceManager<T>>, lc: LeUCid, data_cap: usize) -> Self {
-        let mut raw = rm.tx.alloc.pdu(data_cap);
+    pub fn new(rm: Arc<ResourceManager<T>>, lc: LeUCid, max_frame_len: usize) -> Self {
+        let mut raw = rm.tx.alloc.pdu(max_frame_len);
         raw.buf_mut().put_bytes(0, ACL_HDR + L2CAP_HDR);
         Self { rm, lc, raw }
     }
@@ -173,7 +183,7 @@ impl<T: host::Transport> TxTask<T> {
         // Fragmentation path
         let mut xfer = self.pdu.rm.tx.alloc.xfer();
         let data = self.pdu.raw.as_ref();
-        for (i, frag) in data.chunks(self.pdu.rm.tx.alloc.max_frag_len).enumerate() {
+        for (i, frag) in data.chunks(self.pdu.rm.tx.alloc.acl_data_len).enumerate() {
             self.may_send().await?;
             xfer.reset();
             let buf = xfer.buf_mut();
@@ -208,7 +218,7 @@ impl<T: host::Transport> TxTask<T> {
 
         // Pass send permission to the next logical link
         let mut sched = self.pdu.rm.tx.sched.lock();
-        sched.queue.push(self.pdu.lc);
+        sched.cq.push(self.pdu.lc);
         if sched.next.len() > 1 {
             sched.next.rotate_left(1);
             self.pdu.rm.tx.event.notify_waiters();
@@ -254,23 +264,13 @@ impl ControllerQueue {
         self.queue.len() >= self.max_pkts
     }
 
-    /// Returns whether any packets for the specified logical link are still
-    /// queued.
+    /// Clears the queue of all packets for the specified link.
     #[inline]
-    #[must_use]
-    fn contains_link(&self, link: LeU) -> bool {
-        let (a, b) = self.queue.as_slices();
-        a.iter().any(|cc| cc.link == link) || b.iter().any(|cc| cc.link == link)
+    fn remove_link(&mut self, link: LeU) {
+        self.queue.retain(|lc| lc.link != link);
     }
 
-    /// Returns whether any packets for the specified channel are still queued.
-    #[inline]
-    #[must_use]
-    fn contains_chan(&self, lc: LeUCid) -> bool {
-        self.queue.contains(&lc)
-    }
-
-    /// Adds channel `cc` to the queue. This must be called after a successful
+    /// Adds channel `lc` to the queue. This must be called after a successful
     /// data transfer to the controller.
     #[inline]
     fn push(&mut self, lc: LeUCid) {
@@ -285,8 +285,8 @@ impl ControllerQueue {
                 self.complete.insert(LeU::new(cn), count);
             }
         }
-        self.queue.retain(|cc| {
-            let Entry::Occupied(mut e) = self.complete.entry(cc.link) else {
+        self.queue.retain(|lc| {
+            let Entry::Occupied(mut e) = self.complete.entry(lc.link) else {
                 return true;
             };
             match e.get_mut() {

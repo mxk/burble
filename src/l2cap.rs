@@ -13,7 +13,7 @@ use tracing::debug;
 
 pub use {consts::*, handle::*};
 
-use crate::hci::ACL_HDR;
+use crate::hci::{EventCode, EventType, ACL_HDR};
 use crate::host::Transfer;
 use crate::{hci, host};
 
@@ -55,7 +55,7 @@ pub struct ChanManager<T: host::Transport> {
 struct RawChan<T: host::Transport> {
     rm: Arc<ResourceManager<T>>,
     lc: LeUCid,
-    pdu_cap: usize,
+    max_frame_len: usize,
 }
 
 impl<T: host::Transport> RawChan<T> {
@@ -63,7 +63,7 @@ impl<T: host::Transport> RawChan<T> {
     #[inline]
     #[must_use]
     pub fn new_pdu(&self) -> tx::Pdu<T> {
-        tx::Pdu::new(Arc::clone(&self.rm), self.lc, self.pdu_cap)
+        tx::Pdu::new(Arc::clone(&self.rm), self.lc, self.max_frame_len)
     }
 }
 
@@ -75,23 +75,31 @@ struct ResourceManager<T: host::Transport> {
 }
 
 impl<T: host::Transport> ResourceManager<T> {
+    #[allow(clippy::similar_names)]
     async fn new(host: &hci::Host<T>) -> Result<Self> {
         // [Vol 4] Part E, Section 4.1 and [Vol 4] Part E, Section 7.8.2
         let mut cbuf = host.le_read_buffer_size().await?;
-        if cbuf.acl_max_pkts == 0 {
-            let bi = host.read_buffer_size().await?;
-            cbuf.acl_max_len = bi.acl_max_len;
-            cbuf.acl_max_pkts = bi.acl_max_pkts;
-        }
+        let acl_num_pkts = if cbuf.acl_data_len == hci::AclDataLen(0) || cbuf.acl_num_pkts == 0 {
+            let alt = host.read_buffer_size().await?; // TODO: Handle invalid params
+            cbuf.acl_data_len = alt.acl_data_len;
+            usize::from(alt.acl_num_pkts)
+        } else {
+            usize::from(cbuf.acl_num_pkts)
+        };
         debug!("Controller buffers: {:?}", cbuf);
+
+        // [Vol 4] Part E, Section 4.2
+        let hbuf = hci::BufferSize {
+            acl_data_len: cbuf.acl_data_len,
+            acl_num_pkts: 1,
+        };
+        host.host_buffer_size(hbuf).await?;
+        // TODO: Enable controller to host flow control?
+
         Ok(Self {
             ctl: host.register(hci::EventFilter::ResManager)?,
-            rx: rx::State::new(host.transport().clone(), cbuf.acl_max_len),
-            tx: tx::State::new(
-                host.transport().clone(),
-                cbuf.acl_max_pkts,
-                cbuf.acl_max_len,
-            ),
+            rx: rx::State::new(host.transport().clone(), hbuf.acl_data_len),
+            tx: tx::State::new(host.transport().clone(), acl_num_pkts, cbuf.acl_data_len),
         })
     }
 
@@ -103,13 +111,15 @@ impl<T: host::Transport> ResourceManager<T> {
                 _ = &mut notify => return Ok(()),
                 evt = self.ctl.next() => evt?,
             };
-            // TODO: Connection closed, etc.
-            if matches!(
-                evt.typ(),
-                hci::EventType::Hci(hci::EventCode::NumberOfCompletedPackets)
-            ) {
-                self.tx
-                    .update(&hci::NumberOfCompletedPackets::from(&mut evt.get()));
+            match evt.typ() {
+                EventType::Hci(EventCode::NumberOfCompletedPackets) => {
+                    let complete = hci::NumberOfCompletedPackets::from(&mut evt.get());
+                    self.tx.on_num_completed(&complete);
+                }
+                EventType::Hci(EventCode::DisconnectionComplete) => {
+                    self.tx.on_disconnect(evt.conn_handle());
+                }
+                _ => {}
             }
         }
     }
@@ -122,8 +132,8 @@ struct Alloc<T: host::Transport> {
     transport: T,
     /// Transfers that can be reused.
     free: parking_lot::Mutex<Vec<T::Transfer>>,
-    /// Maximum size of a PDU fragment.
-    max_frag_len: usize,
+    /// Maximum size of a PDU fragment in an ACL data packet.
+    acl_data_len: usize,
     /// Transfer direction.
     dir: host::Direction,
 }
@@ -132,12 +142,13 @@ impl<T: host::Transport> Alloc<T> {
     /// Returns a new transfer allocator.
     #[inline]
     #[must_use]
-    fn new(transport: T, dir: host::Direction, max_frag_len: usize) -> Arc<Self> {
-        assert!(max_frag_len >= hci::ACL_LE_MIN_DATA);
+    fn new(transport: T, dir: host::Direction, acl_data_len: hci::AclDataLen) -> Arc<Self> {
+        let acl_data_len = usize::from(acl_data_len);
+        assert!(acl_data_len >= hci::ACL_LE_MIN_DATA_LEN);
         Arc::new(Self {
             transport,
             free: parking_lot::Mutex::new(Vec::with_capacity(8)), // TODO: Tune
-            max_frag_len,
+            acl_data_len,
             dir,
         })
     }
@@ -146,7 +157,7 @@ impl<T: host::Transport> Alloc<T> {
     #[inline]
     fn xfer(self: &Arc<Self>) -> AclTransfer<T> {
         let xfer = self.free.lock().pop().map_or_else(
-            || self.transport.acl(self.dir, self.max_frag_len),
+            || self.transport.acl(self.dir, self.acl_data_len),
             |mut xfer| {
                 xfer.reset();
                 xfer
@@ -157,8 +168,8 @@ impl<T: host::Transport> Alloc<T> {
 
     /// Allocates a new PDU buffer.
     #[inline]
-    fn pdu(self: &Arc<Self>, data_cap: usize) -> RawPdu<T> {
-        RawPdu::new(self, data_cap)
+    fn pdu(self: &Arc<Self>, max_frame_len: usize) -> RawPdu<T> {
+        RawPdu::new(self, max_frame_len)
     }
 }
 
@@ -221,12 +232,12 @@ impl<T: host::Transport> RawPdu<T> {
     /// Allocates a new PDU.
     #[inline]
     #[must_use]
-    fn new(alloc: &Arc<Alloc<T>>, data_cap: usize) -> Self {
-        let mut this = if data_cap <= alloc.max_frag_len {
-            debug_assert!(data_cap >= L2CAP_HDR);
+    fn new(alloc: &Arc<Alloc<T>>, max_frame_len: usize) -> Self {
+        let mut this = if max_frame_len <= alloc.acl_data_len {
+            debug_assert!(max_frame_len >= L2CAP_HDR);
             Self::Xfer(alloc.xfer())
         } else {
-            Self::Buf(BytesMut::with_capacity(ACL_HDR + data_cap))
+            Self::Buf(BytesMut::with_capacity(ACL_HDR + max_frame_len))
         };
         this.buf_mut().put_bytes(0, ACL_HDR + L2CAP_HDR);
         this
