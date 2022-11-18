@@ -118,7 +118,7 @@ impl<T: host::Transport> Host<T> {
     /// supported by the controller.
     pub async fn le_read_maximum_advertising_data_length(&self) -> Result<usize> {
         let r = self.exec(Opcode::LeReadMaximumAdvertisingDataLength);
-        Ok(r.await?.ok()?.u16() as _)
+        Ok(usize::from(r.await?.ok()?.u16()))
     }
 
     /// Returns the maximum number of advertising sets supported by the
@@ -220,16 +220,16 @@ impl From<&mut Event<'_>> for LeBufferInfo {
     fn from(e: &mut Event) -> Self {
         if e.opcode() == Opcode::LeReadBufferSize {
             Self {
-                acl_max_len: e.u16() as _,
-                acl_max_pkts: e.u8() as _,
+                acl_max_len: usize::from(e.u16()),
+                acl_max_pkts: usize::from(e.u8()),
                 ..Self::default()
             }
         } else {
             Self {
-                acl_max_len: e.u16() as _,
-                acl_max_pkts: e.u8() as _,
-                iso_max_len: e.u16() as _,
-                iso_max_pkts: e.u8() as _,
+                acl_max_len: usize::from(e.u16()),
+                acl_max_pkts: usize::from(e.u8()),
+                iso_max_len: usize::from(e.u16()),
+                iso_max_pkts: usize::from(e.u8()),
             }
         }
     }

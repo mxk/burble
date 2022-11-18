@@ -145,7 +145,7 @@ impl<'a> TryFrom<&'a [u8]> for Event<'a> {
         }
         let mut tail = orig;
         let (code, len) = (tail.get_u8(), tail.get_u8());
-        if tail.len() != len as usize {
+        if tail.len() != usize::from(len) {
             return Err(Error::InvalidEvent(Bytes::copy_from_slice(orig)));
         }
         let typ = match EventCode::try_from(code) {
@@ -157,7 +157,7 @@ impl<'a> TryFrom<&'a [u8]> for Event<'a> {
                     Ok(subevent) => EventType::Le(subevent),
                     Err(_) => {
                         return Err(Error::UnknownEvent {
-                            code: code as _,
+                            code,
                             subevent,
                             params: Bytes::copy_from_slice(tail),
                         })

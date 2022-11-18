@@ -315,3 +315,12 @@ impl<T: host::Transport> AsRef<[u8]> for RawPdu<T> {
         unsafe { b.get_unchecked(ACL_HDR..) }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #[allow(clippy::assertions_on_constants)]
+    #[test]
+    fn usize_bits() {
+        assert!(usize::BITS > u16::BITS); // TODO: Remove this assumption
+    }
+}

@@ -54,10 +54,10 @@ pub struct BufferInfo {
 impl From<&mut Event<'_>> for BufferInfo {
     fn from(e: &mut Event) -> Self {
         Self {
-            acl_max_len: e.u16() as _,
-            sco_max_len: e.u8() as _,
-            acl_max_pkts: e.u16() as _,
-            sco_max_pkts: e.u16() as _,
+            acl_max_len: usize::from(e.u16()),
+            sco_max_len: usize::from(e.u8()),
+            acl_max_pkts: usize::from(e.u16()),
+            sco_max_pkts: usize::from(e.u16()),
         }
     }
 }
