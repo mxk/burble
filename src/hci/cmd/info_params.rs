@@ -9,7 +9,7 @@ impl<T: host::Transport> Host<T> {
     }
 
     /// Returns the controller's ACL and SCO packet size and count limits.
-    pub async fn read_buffer_size(&self) -> Result<BufferInfo> {
+    pub async fn read_buffer_size(&self) -> Result<BufferSize> {
         self.exec(Opcode::ReadBufferSize).await?.into()
     }
 
@@ -44,20 +44,38 @@ impl From<&mut Event<'_>> for LocalVersion {
 
 /// `HCI_Read_Buffer_Size` return parameters.
 #[derive(Clone, Copy, Debug, Default)]
-pub struct BufferInfo {
-    pub acl_max_len: usize,
-    pub acl_max_pkts: usize,
-    pub sco_max_len: usize,
-    pub sco_max_pkts: usize,
+pub struct BufferSize {
+    pub acl_data_len: AclDataLen,
+    pub acl_num_pkts: u16,
 }
 
-impl From<&mut Event<'_>> for BufferInfo {
+impl From<&mut Event<'_>> for BufferSize {
     fn from(e: &mut Event) -> Self {
+        let acl_data_len = AclDataLen(e.u16());
+        let _sco_data_len = e.u8();
+        let acl_num_pkts = e.u16();
+        let _sco_num_pkts = e.u16();
         Self {
-            acl_max_len: usize::from(e.u16()),
-            sco_max_len: usize::from(e.u8()),
-            acl_max_pkts: usize::from(e.u16()),
-            sco_max_pkts: usize::from(e.u16()),
+            acl_data_len,
+            acl_num_pkts,
         }
+    }
+}
+
+/// Maximum size of data in an ACL data packet excluding the header.
+#[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
+pub struct AclDataLen(pub(crate) u16);
+
+impl From<AclDataLen> for u16 {
+    #[inline]
+    fn from(v: AclDataLen) -> Self {
+        v.0
+    }
+}
+
+impl From<AclDataLen> for usize {
+    #[inline]
+    fn from(v: AclDataLen) -> Self {
+        Self::from(v.0)
     }
 }

@@ -14,7 +14,7 @@ impl<T: host::Transport> Host<T> {
     /// Returns the controller's ACL and ISO packet size and count limits. ISO
     /// limits may be missing if the controller does not support v2 of this
     /// command.
-    pub async fn le_read_buffer_size(&self) -> Result<LeBufferInfo> {
+    pub async fn le_read_buffer_size(&self) -> Result<LeBufferSize> {
         // TODO: Use supported features to determine which version to use?
         {
             let r = self.exec(Opcode::LeReadBufferSizeV2).await?;
@@ -207,31 +207,49 @@ impl LeEventMask {
     }
 }
 
-/// `HCI_LE_Read_Buffer_Size [v2]` return parameters.
+/// `HCI_LE_Read_Buffer_Size` return parameters.
 #[derive(Clone, Copy, Debug, Default)]
-pub struct LeBufferInfo {
-    pub acl_max_len: usize,
-    pub acl_max_pkts: usize,
-    pub iso_max_len: usize,
-    pub iso_max_pkts: usize,
+pub struct LeBufferSize {
+    pub acl_data_len: AclDataLen,
+    pub acl_num_pkts: u8,
+    pub iso_data_len: IsoDataLen,
+    pub iso_num_pkts: u8,
 }
 
-impl From<&mut Event<'_>> for LeBufferInfo {
+impl From<&mut Event<'_>> for LeBufferSize {
     fn from(e: &mut Event) -> Self {
         if e.opcode() == Opcode::LeReadBufferSize {
             Self {
-                acl_max_len: usize::from(e.u16()),
-                acl_max_pkts: usize::from(e.u8()),
+                acl_data_len: AclDataLen(e.u16()),
+                acl_num_pkts: e.u8(),
                 ..Self::default()
             }
         } else {
             Self {
-                acl_max_len: usize::from(e.u16()),
-                acl_max_pkts: usize::from(e.u8()),
-                iso_max_len: usize::from(e.u16()),
-                iso_max_pkts: usize::from(e.u8()),
+                acl_data_len: AclDataLen(e.u16()),
+                acl_num_pkts: e.u8(),
+                iso_data_len: IsoDataLen(e.u16()),
+                iso_num_pkts: e.u8(),
             }
         }
+    }
+}
+
+/// Maximum size of data in an ISO data packet excluding the header.
+#[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
+pub struct IsoDataLen(u16);
+
+impl From<IsoDataLen> for u16 {
+    #[inline]
+    fn from(v: IsoDataLen) -> Self {
+        v.0
+    }
+}
+
+impl From<IsoDataLen> for usize {
+    #[inline]
+    fn from(v: IsoDataLen) -> Self {
+        Self::from(v.0)
     }
 }
 

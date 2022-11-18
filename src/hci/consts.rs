@@ -10,7 +10,7 @@ pub(crate) const CMD_BUF: usize = CMD_HDR + u8::MAX as usize;
 
 /// HCI ACL data header and buffer sizes ([Vol 4] Part E, Section 5.4.2).
 pub(crate) const ACL_HDR: usize = 4;
-pub(crate) const ACL_LE_MIN_DATA: usize = 27;
+pub(crate) const ACL_LE_MIN_DATA_LEN: usize = 27;
 
 /// HCI event header and buffer sizes ([Vol 4] Part E, Section 5.4.4).
 pub(super) const EVT_HDR: usize = 2;
@@ -42,6 +42,7 @@ pub enum Opcode {
     SetEventMask = HciControl.ocf(0x0001),
     Reset = HciControl.ocf(0x0003),
     SetControllerToHostFlowControl = HciControl.ocf(0x0031),
+    HostBufferSize = HciControl.ocf(0x0033),
     SetEventMaskPage2 = HciControl.ocf(0x0063),
     WriteLeHostSupport = HciControl.ocf(0x006D),
 
