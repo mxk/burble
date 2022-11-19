@@ -54,9 +54,9 @@ impl Debug for Uuid {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         #[allow(clippy::cast_possible_truncation)]
         if let Some(v) = self.as_u16() {
-            write!(f, "0x{:04X}", v)
+            write!(f, "{:#06X}", v)
         } else if let Some(v) = self.as_u32() {
-            write!(f, "0x{:08X}", v)
+            write!(f, "{:#010X}", v)
         } else {
             write!(
                 f,
@@ -74,7 +74,7 @@ impl Debug for Uuid {
 impl Display for Uuid {
     #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        <Self as Debug>::fmt(self, f)
+        Debug::fmt(self, f)
     }
 }
 

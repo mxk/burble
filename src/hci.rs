@@ -34,7 +34,7 @@ pub enum Error {
     },
     #[error("invalid event: {0:?}")]
     InvalidEvent(Bytes),
-    #[error("unknown event [code={code:02x}, subevent={subevent:02x}]: {params:?}")]
+    #[error("unknown event [code={code:#04X}, subevent={subevent:#04X}]: {params:?}")]
     UnknownEvent {
         code: u8,
         subevent: u8,

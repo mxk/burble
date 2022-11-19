@@ -42,7 +42,7 @@ impl<T: host::Transport> Command<T> {
     pub async fn exec(mut self) -> Result<EventGuard<T>> {
         let buf = &mut self.xfer.buf_mut()[self.hdr..];
         buf[CMD_HDR - 1] = u8::try_from(buf.len() - CMD_HDR).expect("command too long");
-        trace!("Command: {:02x?}", buf);
+        trace!("Command: {:02X?}", buf);
         // Event registration must happen first to ensure that the command quota
         // is not exceeded, to check for any conflicting commands, and to
         // guarantee that the completion event will not be missed.

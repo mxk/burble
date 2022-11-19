@@ -1,20 +1,22 @@
-// TODO: Display
+use std::fmt::{Debug, Display, Formatter};
+
+use nameof::name_of_type;
 
 /// Connection handle.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
 #[repr(transparent)]
 pub struct ConnHandle(u16);
 
 impl ConnHandle {
     /// Invalid connection handle.
-    pub(super) const INVALID: Self = Self(0xFFFF);
+    pub(super) const INVALID: Self = Self(0xFFF);
     /// Maximum valid connection handle ([Vol 4] Part E, Section 5.4.2).
     const MAX: u16 = 0xEFF;
 
     /// Wraps a raw connection handle.
     #[inline]
     #[must_use]
-    pub(crate) const fn from_raw(cn: u16) -> Self {
+    pub const fn from_raw(cn: u16) -> Self {
         Self(cn & 0xFFF)
     }
 
@@ -40,8 +42,22 @@ impl From<ConnHandle> for u16 {
     }
 }
 
+impl Debug for ConnHandle {
+    #[allow(clippy::use_self)]
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}({:#05X})", name_of_type!(ConnHandle), self.0)
+    }
+}
+
+impl Display for ConnHandle {
+    #[inline]
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        Debug::fmt(self, f)
+    }
+}
+
 /// Advertising set handle.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
 #[repr(transparent)]
 pub struct AdvHandle(u8);
 
@@ -76,5 +92,19 @@ impl From<AdvHandle> for u8 {
     #[inline]
     fn from(h: AdvHandle) -> Self {
         h.0
+    }
+}
+
+impl Debug for AdvHandle {
+    #[allow(clippy::use_self)]
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}({:#04X})", name_of_type!(AdvHandle), self.0)
+    }
+}
+
+impl Display for AdvHandle {
+    #[inline]
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        Debug::fmt(self, f)
     }
 }

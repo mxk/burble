@@ -76,10 +76,10 @@ impl<T: host::Transport> Queue<T> {
     /// returned.
     pub fn recombine(&mut self, xfer: AclTransfer<T>) -> Option<LeUCid> {
         let pkt: &[u8] = xfer.as_ref();
-        trace!("PDU fragment: {pkt:02x?}");
+        trace!("PDU fragment: {pkt:02X?}");
         let (link, is_first, data) = acl_hdr(pkt)?;
         let Some(&prev_cid) = self.cont.get(&link) else {
-            warn!("PDU fragment for an unknown {link:?}");
+            warn!("PDU fragment for an unknown {link}");
             return None;
         };
         if is_first {
@@ -88,12 +88,12 @@ impl<T: host::Transport> Queue<T> {
             self.cont.insert(link, cid);
             let lc = LeUCid::new(link, cid);
             let Some(queue) = self.queue.get_mut(&lc) else {
-                warn!("PDU fragment for an unknown {lc:?}");
+                warn!("PDU fragment for an unknown {lc}");
                 return None;
             };
             if queue.len() > Self::MAX_PDUS {
                 // TODO: Indicate that the channel is unreliable
-                error!("PDU queue overflow for {lc:?}");
+                error!("PDU queue overflow for {lc}");
                 return None;
             }
             return if pdu_len == payload.len() {
@@ -107,7 +107,7 @@ impl<T: host::Transport> Queue<T> {
         let lc = LeUCid::new(link, prev_cid);
         let Some(pdu) = self.queue.get_mut(&lc).and_then(VecDeque::back_mut) else {
             // TODO: Indicate that the channel is unreliable
-            warn!("Unexpected continuation PDU fragment for {lc:?}");
+            warn!("Unexpected continuation PDU fragment for {lc}");
             return None;
         };
         let rem_len = pdu.rem_len();
@@ -119,7 +119,7 @@ impl<T: host::Transport> Queue<T> {
         self.ensure_complete(lc);
         // TODO: Indicate that the channel is unreliable
         warn!(
-            "PDU fragment for {lc:?} exceeds expected length (want={rem_len}, have={})",
+            "PDU fragment for {lc} exceeds expected length (want={rem_len}, have={})",
             data.len()
         );
         None
@@ -141,7 +141,7 @@ impl<T: host::Transport> Queue<T> {
     fn ensure_complete(&mut self, lc: LeUCid) {
         if let Some(queue) = self.queue.get_mut(&lc) {
             if queue.back().map_or(false, |pdu| !pdu.is_complete()) {
-                warn!("Incomplete PDU for {lc:?}");
+                warn!("Incomplete PDU for {lc}");
                 queue.pop_back();
             }
         }
@@ -154,22 +154,22 @@ impl<T: host::Transport> Queue<T> {
 fn acl_hdr(pkt: &[u8]) -> Option<(LeU, bool, &[u8])> {
     debug_assert_eq!(pkt.as_ptr() as usize % align_of::<u16>(), 0);
     if pkt.len() < ACL_HDR {
-        warn!("ACL data packet with missing header: {pkt:02x?}");
+        warn!("ACL data packet with missing header: {pkt:02X?}");
         return None;
     }
     let (mut hdr, data) = pkt.split_at(ACL_HDR); // TODO: Use split_at_unchecked
     let (cn, len) = (hdr.get_u16_le(), hdr.get_u16_le());
     if data.len() != usize::from(len) {
-        warn!("ACL data packet length mismatch: {pkt:02x?}");
+        warn!("ACL data packet length mismatch: {pkt:02X?}");
         return None;
     }
     let is_first = (cn >> 12) & 0b11 != 0b01;
     if data.len() < L2CAP_HDR {
         if is_first {
-            warn!("ACL data packet with missing L2CAP header: {pkt:02x?}");
+            warn!("ACL data packet with missing L2CAP header: {pkt:02X?}");
             return None;
         } else if data.is_empty() {
-            warn!("ACL data packet without payload: {pkt:02x?}");
+            warn!("ACL data packet without payload: {pkt:02X?}");
             return None;
         }
     }
@@ -184,7 +184,7 @@ fn l2cap_hdr(data: &[u8]) -> Option<(usize, Cid, &[u8])> {
     let (mut hdr, payload) = data.split_at(L2CAP_HDR);
     let (len, cid) = (hdr.get_u16_le(), hdr.get_u16_le());
     if usize::from(len) < payload.len() {
-        warn!("PDU length mismatch: {data:02x?}");
+        warn!("PDU length mismatch: {data:02X?}");
         return None;
     }
     Some((usize::from(len), Cid::from_raw(cid), payload))
