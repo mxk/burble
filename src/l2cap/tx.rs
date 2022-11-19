@@ -11,7 +11,7 @@ pub(super) struct State<T: host::Transport> {
 impl<T: host::Transport> State<T> {
     /// Returns a new transfer state.
     #[must_use]
-    pub fn new(transport: T, max_pkts: usize, acl_data_len: hci::AclDataLen) -> Self {
+    pub fn new(transport: T, max_pkts: usize, acl_data_len: u16) -> Self {
         Self {
             alloc: Alloc::new(transport, host::Direction::Out, acl_data_len),
             sched: parking_lot::Mutex::new(Scheduler::new(max_pkts)),

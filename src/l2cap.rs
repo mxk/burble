@@ -22,6 +22,10 @@ mod handle;
 mod rx;
 mod tx;
 
+// TODO: Remove this assumption
+#[allow(clippy::assertions_on_constants)]
+const _: () = assert!(usize::BITS > u16::BITS, "usize too small");
+
 /// Error type returned by the L2CAP layer.
 #[derive(Clone, Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -79,7 +83,7 @@ impl<T: host::Transport> ResourceManager<T> {
     async fn new(host: &hci::Host<T>) -> Result<Self> {
         // [Vol 4] Part E, Section 4.1 and [Vol 4] Part E, Section 7.8.2
         let mut cbuf = host.le_read_buffer_size().await?;
-        let acl_num_pkts = if cbuf.acl_data_len == hci::AclDataLen(0) || cbuf.acl_num_pkts == 0 {
+        let acl_num_pkts = if cbuf.acl_data_len == 0 || cbuf.acl_num_pkts == 0 {
             let alt = host.read_buffer_size().await?; // TODO: Handle invalid params
             cbuf.acl_data_len = alt.acl_data_len;
             usize::from(alt.acl_num_pkts)
@@ -89,6 +93,7 @@ impl<T: host::Transport> ResourceManager<T> {
         debug!("Controller buffers: {:?}", cbuf);
 
         // [Vol 4] Part E, Section 4.2
+        // TODO: Check supported features first
         let hbuf = hci::BufferSize {
             acl_data_len: cbuf.acl_data_len,
             acl_num_pkts: 1,
@@ -142,7 +147,7 @@ impl<T: host::Transport> Alloc<T> {
     /// Returns a new transfer allocator.
     #[inline]
     #[must_use]
-    fn new(transport: T, dir: host::Direction, acl_data_len: hci::AclDataLen) -> Arc<Self> {
+    fn new(transport: T, dir: host::Direction, acl_data_len: u16) -> Arc<Self> {
         let acl_data_len = usize::from(acl_data_len);
         assert!(acl_data_len >= hci::ACL_LE_MIN_DATA_LEN);
         Arc::new(Self {
@@ -166,10 +171,18 @@ impl<T: host::Transport> Alloc<T> {
         AclTransfer::new(xfer, Arc::clone(self))
     }
 
-    /// Allocates a new PDU buffer.
+    /// Allocates a new PDU buffer. The ACL data packet and basic L2CAP headers
+    /// are initialized with zeros.
     #[inline]
     fn pdu(self: &Arc<Self>, max_frame_len: usize) -> RawPdu<T> {
-        RawPdu::new(self, max_frame_len)
+        let mut pdu = if max_frame_len <= self.acl_data_len {
+            debug_assert!(max_frame_len >= L2CAP_HDR);
+            RawPdu::Xfer(self.xfer())
+        } else {
+            RawPdu::Buf(BytesMut::with_capacity(ACL_HDR + max_frame_len))
+        };
+        pdu.buf_mut().put_bytes(0, ACL_HDR + L2CAP_HDR);
+        pdu
     }
 }
 
@@ -229,20 +242,6 @@ enum RawPdu<T: host::Transport> {
 }
 
 impl<T: host::Transport> RawPdu<T> {
-    /// Allocates a new PDU.
-    #[inline]
-    #[must_use]
-    fn new(alloc: &Arc<Alloc<T>>, max_frame_len: usize) -> Self {
-        let mut this = if max_frame_len <= alloc.acl_data_len {
-            debug_assert!(max_frame_len >= L2CAP_HDR);
-            Self::Xfer(alloc.xfer())
-        } else {
-            Self::Buf(BytesMut::with_capacity(ACL_HDR + max_frame_len))
-        };
-        this.buf_mut().put_bytes(0, ACL_HDR + L2CAP_HDR);
-        this
-    }
-
     /// Creates a PDU from a single ACL data packet.
     #[inline]
     #[must_use]
@@ -324,14 +323,5 @@ impl<T: host::Transport> AsRef<[u8]> for RawPdu<T> {
         };
         // SAFETY: b always starts with an ACL data packet header
         unsafe { b.get_unchecked(ACL_HDR..) }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    #[allow(clippy::assertions_on_constants)]
-    #[test]
-    fn usize_bits() {
-        assert!(usize::BITS > u16::BITS); // TODO: Remove this assumption
     }
 }

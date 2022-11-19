@@ -11,9 +11,8 @@ impl<T: host::Transport> Host<T> {
         r.await?.into()
     }
 
-    /// Returns the controller's ACL and ISO packet size and count limits. ISO
-    /// limits may be missing if the controller does not support v2 of this
-    /// command.
+    /// Returns the controller's packet size and count limits. ISO limits will
+    /// be missing if the controller does not support v2 of this command.
     pub async fn le_read_buffer_size(&self) -> Result<LeBufferSize> {
         // TODO: Use supported features to determine which version to use?
         {
@@ -210,46 +209,21 @@ impl LeEventMask {
 /// `HCI_LE_Read_Buffer_Size` return parameters.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct LeBufferSize {
-    pub acl_data_len: AclDataLen,
+    pub acl_data_len: u16,
     pub acl_num_pkts: u8,
-    pub iso_data_len: IsoDataLen,
+    pub iso_data_len: u16,
     pub iso_num_pkts: u8,
 }
 
 impl From<&mut Event<'_>> for LeBufferSize {
     fn from(e: &mut Event) -> Self {
-        if e.opcode() == Opcode::LeReadBufferSize {
-            Self {
-                acl_data_len: AclDataLen(e.u16()),
-                acl_num_pkts: e.u8(),
-                ..Self::default()
-            }
-        } else {
-            Self {
-                acl_data_len: AclDataLen(e.u16()),
-                acl_num_pkts: e.u8(),
-                iso_data_len: IsoDataLen(e.u16()),
-                iso_num_pkts: e.u8(),
-            }
+        let v2 = e.opcode() == Opcode::LeReadBufferSizeV2;
+        Self {
+            acl_data_len: e.u16(),
+            acl_num_pkts: e.u8(),
+            iso_data_len: v2.then(|| e.u16()).unwrap_or_default(),
+            iso_num_pkts: v2.then(|| e.u8()).unwrap_or_default(),
         }
-    }
-}
-
-/// Maximum size of data in an ISO data packet excluding the header.
-#[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
-pub struct IsoDataLen(u16);
-
-impl From<IsoDataLen> for u16 {
-    #[inline]
-    fn from(v: IsoDataLen) -> Self {
-        v.0
-    }
-}
-
-impl From<IsoDataLen> for usize {
-    #[inline]
-    fn from(v: IsoDataLen) -> Self {
-        Self::from(v.0)
     }
 }
 
