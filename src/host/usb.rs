@@ -27,7 +27,7 @@ pub struct Usb {
 }
 
 impl Usb {
-    /// Returns an interface for accessing USB Bluetooth controllers.
+    /// Creates an interface for accessing USB Bluetooth controllers.
     pub fn new() -> Result<Self> {
         let ctx = libusb::new_ctx()?;
         let run = Arc::new(AtomicBool::new(true));
@@ -244,8 +244,8 @@ pub struct UsbTransferFuture {
 impl Future for UsbTransferFuture {
     type Output = UsbTransfer;
 
-    fn poll(mut self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.fut.poll(ctx).map(|t| Self::Output {
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.fut.poll(cx).map(|t| Self::Output {
             t,
             dev: Arc::clone(&self.dev),
         })
@@ -388,7 +388,7 @@ mod libusb {
     unsafe impl<T: UsbContext> Sync for Transfer<T> {}
 
     impl<T: UsbContext> Transfer<T> {
-        /// Returns a new control transfer.
+        /// Creates a new control transfer.
         pub fn new_control(buf_cap: usize) -> Box<Self> {
             let buf_cap = LIBUSB_CONTROL_SETUP_SIZE + buf_cap;
             let mut t = Self::new(LIBUSB_TRANSFER_TYPE_CONTROL, 0, buf_cap);
@@ -396,18 +396,18 @@ mod libusb {
             t
         }
 
-        /// Returns a new interrupt transfer.
+        /// Creates a new interrupt transfer.
         pub fn new_interrupt(endpoint: u8, buf_cap: usize) -> Box<Self> {
             assert_eq!(endpoint & LIBUSB_ENDPOINT_DIR_MASK, LIBUSB_ENDPOINT_IN);
             Self::new(LIBUSB_TRANSFER_TYPE_INTERRUPT, endpoint, buf_cap)
         }
 
-        /// Returns a new bulk transfer.
+        /// Creates a new bulk transfer.
         pub fn new_bulk(endpoint: u8, buf_cap: usize) -> Box<Self> {
             Self::new(LIBUSB_TRANSFER_TYPE_BULK, endpoint, buf_cap)
         }
 
-        /// Allocates new transfer state and buffer.
+        /// Creates new transfer state and buffer.
         fn new(typ: u8, endpoint: u8, buf_cap: usize) -> Box<Self> {
             // SAFETY: C API call
             let inner = NonNull::new(unsafe { libusb_alloc_transfer(0) })
@@ -618,10 +618,10 @@ mod libusb {
 
     impl<T: UsbContext> TransferFuture<T> {
         /// `Future::poll()` implementation.
-        pub fn poll(&mut self, ctx: &mut std::task::Context<'_>) -> Poll<Box<Transfer<T>>> {
+        pub fn poll(&mut self, cx: &mut std::task::Context<'_>) -> Poll<Box<Transfer<T>>> {
             let (mut waker, t) = Transfer::lock(self.0).expect("poll of a finished transfer");
             if t.callback_pending() {
-                *waker = Some(ctx.waker().clone());
+                *waker = Some(cx.waker().clone());
                 return Poll::Pending;
             }
             // SAFETY: We have the only valid pointer
@@ -678,7 +678,7 @@ mod libusb {
         }
     }
 
-    /// Returns a new libusb context.
+    /// Creates a new libusb context.
     pub(super) fn new_ctx() -> Result<Context> {
         init_lib();
         let ctx = Context::new()?;

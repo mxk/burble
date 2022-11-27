@@ -1,4 +1,4 @@
-//! Device addressing.
+//! LE-specific types.
 
 use std::fmt::{Debug, Display, Formatter};
 
@@ -93,7 +93,7 @@ impl TxPower {
     /// ([Vol 4] Part E, Sections 7.5.4 and 7.8.53).
     pub(crate) const NONE: i8 = 0x7F;
 
-    /// Returns a power level of `v` dBm.
+    /// Creates a power level of `v` dBm.
     #[inline]
     #[must_use]
     pub const fn new(v: i8) -> Self {

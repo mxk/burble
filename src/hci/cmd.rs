@@ -21,7 +21,7 @@ pub(super) struct Command<T: host::Transport> {
 }
 
 impl<T: host::Transport> Command<T> {
-    /// Allocates a new HCI command.
+    /// Creates a new HCI command.
     #[must_use]
     pub fn new(host: &Host<T>, opcode: Opcode) -> Self {
         // TODO: Transfer reuse

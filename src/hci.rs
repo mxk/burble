@@ -81,7 +81,7 @@ pub struct Host<T: host::Transport> {
 }
 
 impl<T: host::Transport> Host<T> {
-    /// Returns an HCI host using transport layer `t`.
+    /// Creates an HCI host using transport layer `t`.
     #[inline]
     #[must_use]
     pub fn new(transport: T) -> Self {

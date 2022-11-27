@@ -10,7 +10,7 @@ impl<T: host::Transport> Host<T> {
         r.await?.into()
     }
 
-    /// Reset the controller's link manager, baseband, and link layer.
+    /// Resets the controller's link manager, baseband, and link layer.
     pub async fn reset(&self) -> Result<()> {
         self.exec(Opcode::Reset).await?.into()
     }

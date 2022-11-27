@@ -22,7 +22,7 @@ use super::*;
 pub struct ResponseDataMut(BytesMut);
 
 impl ResponseDataMut {
-    /// Allocates a new response data buffer.
+    /// Creates a new response data buffer.
     #[inline]
     #[must_use]
     pub fn new() -> Self {
