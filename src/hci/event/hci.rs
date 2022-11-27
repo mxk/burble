@@ -2,6 +2,25 @@ use smallvec::SmallVec;
 
 use super::*;
 
+/// `HCI_Disconnection_Complete` event parameters.
+#[derive(Clone, Copy, Debug)]
+pub struct DisconnectionComplete {
+    pub status: Status,
+    pub handle: ConnHandle,
+    pub reason: Status,
+}
+
+#[allow(clippy::fallible_impl_from)]
+impl From<&mut Event<'_>> for DisconnectionComplete {
+    fn from(e: &mut Event<'_>) -> Self {
+        Self {
+            status: e.status(),
+            handle: e.conn_handle().unwrap(),
+            reason: Status::from(e.u8()),
+        }
+    }
+}
+
 /// `HCI_Number_Of_Completed_Packets` event parameters.
 #[derive(Clone, Debug)]
 #[repr(transparent)]
