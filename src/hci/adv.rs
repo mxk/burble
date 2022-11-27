@@ -94,7 +94,8 @@ impl<T: host::Transport> Advertiser<T> {
     /// Allocates an unused advertising handle.
     fn alloc_handle(&self) -> Result<AdvHandle> {
         for i in 0..=AdvHandle::MAX {
-            let h = AdvHandle::from_raw(i);
+            // SAFETY: `i` is always valid
+            let h = unsafe { AdvHandle::new(i).unwrap_unchecked() };
             if !self.handles.contains(&h) {
                 return Ok(h);
             }
@@ -139,7 +140,7 @@ pub struct AdvMonitor<T: host::Transport> {
 }
 
 impl<T: host::Transport> AdvMonitor<T> {
-    /// Returns a new advertising monitor.
+    /// Creates a new advertising monitor.
     #[inline]
     #[must_use]
     fn new(waiter: EventWaiterGuard<T>) -> Self {
@@ -169,10 +170,11 @@ impl<T: host::Transport> AdvMonitor<T> {
         };
 
         // Handle AdvertisingSetTerminated event
-        if !term.status.is_ok() {
+        if !term.status.is_ok() || term.conn_handle.is_none() {
             return Ok(AdvEvent::Term(term));
         }
-        if let Some(conn) = self.conn.remove(&term.conn_handle) {
+        let cn = term.conn_handle.unwrap();
+        if let Some(conn) = self.conn.remove(&cn) {
             return Ok(AdvEvent::Conn { conn, term });
         }
         // The spec says that when a connection is created, the controller must
@@ -186,7 +188,7 @@ impl<T: host::Transport> AdvMonitor<T> {
         {
             if let EventType::Le(ConnectionComplete | EnhancedConnectionComplete) = evt.typ() {
                 let conn = LeConnectionComplete::from(&mut evt.get());
-                if conn.handle == term.conn_handle {
+                if conn.handle == cn {
                     return Ok(AdvEvent::Conn { conn, term });
                 }
                 self.conn.insert(conn.handle, conn);

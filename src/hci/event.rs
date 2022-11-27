@@ -66,28 +66,28 @@ impl Event<'_> {
         self.opcode
     }
 
-    /// Returns the associated advertising handle or an invalid handle for
-    /// non-advertising events.
+    /// Returns the associated advertising handle or `None` for non-advertising
+    /// events.
     #[inline]
     #[must_use]
-    pub const fn adv_handle(&self) -> AdvHandle {
+    pub fn adv_handle(&self) -> Option<AdvHandle> {
         #[allow(clippy::cast_possible_truncation)]
         if self.typ.param_fmt().contains(EventFmt::ADV_HANDLE) {
-            AdvHandle::from_raw(self.handle as u8)
+            AdvHandle::new(self.handle as u8)
         } else {
-            AdvHandle::INVALID
+            None
         }
     }
 
-    /// Returns the associated connection handle or an invalid handle for
-    /// non-connection events.
+    /// Returns the associated connection handle or `None` for non-connection
+    /// events.
     #[inline]
     #[must_use]
-    pub const fn conn_handle(&self) -> ConnHandle {
+    pub fn conn_handle(&self) -> Option<ConnHandle> {
         if self.typ.param_fmt().contains(EventFmt::CONN_HANDLE) {
-            ConnHandle::from_raw(self.handle)
+            ConnHandle::new(self.handle)
         } else {
-            ConnHandle::INVALID
+            None
         }
     }
 
@@ -265,7 +265,7 @@ pub struct CommandStatus {
 /// the event asynchronously before the next receive operation can happen.
 #[derive(Debug)]
 pub(super) struct EventRouter<T: host::Transport> {
-    waiters: parking_lot::Mutex<Waiters<T>>,
+    waiters: parking_lot::Mutex<Waiters<T>>, // TODO: Switch to Condvar
     recv: tokio::sync::Mutex<SharedEventReceiver<T>>,
 
     // Notification should ideally be limited to each waiter, but we need
@@ -374,7 +374,7 @@ pub struct EventReceiverTask {
 }
 
 impl EventReceiverTask {
-    /// Returns a new event monitor.
+    /// Creates a new event receiver task.
     pub(super) fn new<T: host::Transport + 'static>(host: Host<T>) -> Self {
         let c = CancellationToken::new();
         Self {
@@ -413,8 +413,8 @@ impl EventReceiverTask {
 impl Future for EventReceiverTask {
     type Output = Result<()>;
 
-    fn poll(mut self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Self::Output> {
-        Poll::Ready(ready!(Pin::new(&mut self.h).poll(ctx)).unwrap())
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        Poll::Ready(ready!(Pin::new(&mut self.h).poll(cx)).unwrap())
     }
 }
 
@@ -487,12 +487,12 @@ struct Waiter<T: host::Transport> {
 #[derive(Debug)]
 pub(crate) struct EventWaiterGuard<T: host::Transport> {
     router: Arc<EventRouter<T>>,
-    id: u64,
+    id: u64, // TODO: Use direct pointer registration rather than ids
 }
 
 impl<T: host::Transport> EventWaiterGuard<T> {
-    /// Returns the next matching event or [`None`] if the waiter is no longer
-    /// registered (e.g. if the controller is lost).
+    /// Returns the next matching event or an error if the waiter is no longer
+    /// registered (e.g. if the controller is lost). This method is cancel safe.
     pub async fn next(&self) -> Result<EventGuard<T>> {
         loop {
             let ready_or_notify = {
@@ -531,7 +531,7 @@ pub struct EventGuard<T: host::Transport> {
 }
 
 impl<T: host::Transport> EventGuard<T> {
-    /// Returns a read lock that is !Send and !Sync.
+    /// Creates a read lock that is !Send and !Sync.
     #[inline]
     #[must_use]
     fn new(r: tokio::sync::OwnedRwLockReadGuard<EventReceiver<T>>) -> Self {

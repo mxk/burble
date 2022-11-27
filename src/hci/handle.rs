@@ -1,51 +1,45 @@
 use std::fmt::{Debug, Display, Formatter};
+use std::num::{NonZeroU16, NonZeroU8};
 
 use nameof::name_of_type;
 
-/// Connection handle.
+/// Connection handle ([Vol 4] Part E, Section 5.4.2).
 #[derive(Clone, Copy, Eq, Hash, PartialEq)]
 #[repr(transparent)]
-pub struct ConnHandle(u16);
+pub struct ConnHandle(NonZeroU16);
 
 impl ConnHandle {
-    /// Invalid connection handle.
-    pub(super) const INVALID: Self = Self(0xFFF);
-    /// Maximum valid connection handle ([Vol 4] Part E, Section 5.4.2).
+    /// Number of meaningful bits.
+    pub(crate) const BITS: u16 = 12;
+    /// Maximum valid connection handle.
     const MAX: u16 = 0xEFF;
 
-    /// Wraps a raw connection handle.
+    /// Wraps a raw connection handle. Returns `None` if the handle is invalid.
     #[inline]
     #[must_use]
-    pub const fn from_raw(cn: u16) -> Self {
-        Self(cn & 0xFFF)
-    }
-
-    /// Returns whether the connection handle is valid.
-    #[inline]
-    #[must_use]
-    pub const fn is_valid(self) -> bool {
-        self.0 <= Self::MAX
-    }
-}
-
-impl Default for ConnHandle {
-    #[inline]
-    fn default() -> Self {
-        Self::INVALID
+    pub(crate) fn new(mut v: u16) -> Option<Self> {
+        v &= (1 << Self::BITS) - 1;
+        // SAFETY: v can't be 0xFFFF, so !v is never 0
+        (v <= Self::MAX).then_some(Self(unsafe { NonZeroU16::new_unchecked(!v) }))
     }
 }
 
 impl From<ConnHandle> for u16 {
     #[inline]
-    fn from(h: ConnHandle) -> Self {
-        h.0
+    fn from(cn: ConnHandle) -> Self {
+        !cn.0.get()
     }
 }
 
 impl Debug for ConnHandle {
     #[allow(clippy::use_self)]
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}({:#05X})", name_of_type!(ConnHandle), self.0)
+        write!(
+            f,
+            "{}({:#05X})",
+            name_of_type!(ConnHandle),
+            u16::from(*self)
+        )
     }
 }
 
@@ -56,49 +50,35 @@ impl Display for ConnHandle {
     }
 }
 
-/// Advertising set handle.
+/// Advertising set handle ([Vol 4] Part E, Section 7.8.53).
 #[derive(Clone, Copy, Eq, Hash, PartialEq)]
 #[repr(transparent)]
-pub struct AdvHandle(u8);
+pub struct AdvHandle(NonZeroU8);
 
 impl AdvHandle {
-    /// Invalid advertising handle.
-    pub const INVALID: Self = Self(0xFF);
-    pub(crate) const MAX: u8 = 0xEF; // [Vol 4] Part E, Section 7.8.53
+    /// Maximum valid advertising handle.
+    pub(super) const MAX: u8 = 0xEF;
 
-    /// Wraps a raw advertising handle.
+    /// Wraps a raw advertising handle. Returns `None` if the handle is invalid.
     #[inline]
     #[must_use]
-    pub(super) const fn from_raw(h: u8) -> Self {
-        Self(h)
-    }
-
-    /// Returns whether the connection handle is valid.
-    #[inline]
-    #[must_use]
-    pub const fn is_valid(self) -> bool {
-        self.0 <= Self::MAX
-    }
-}
-
-impl Default for AdvHandle {
-    #[inline]
-    fn default() -> Self {
-        Self::INVALID
+    pub(super) fn new(v: u8) -> Option<Self> {
+        // SAFETY: v can't be 0xFF, so !v is never 0
+        (v <= Self::MAX).then_some(Self(unsafe { NonZeroU8::new_unchecked(!v) }))
     }
 }
 
 impl From<AdvHandle> for u8 {
     #[inline]
     fn from(h: AdvHandle) -> Self {
-        h.0
+        !h.0.get()
     }
 }
 
 impl Debug for AdvHandle {
     #[allow(clippy::use_self)]
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}({:#04X})", name_of_type!(AdvHandle), self.0)
+        write!(f, "{}({:#04X})", name_of_type!(AdvHandle), u8::from(*self))
     }
 }
 

@@ -245,7 +245,7 @@ pub struct AdvParams {
 }
 
 /// `HCI_LE_Set_Extended_Advertising_Enable` command parameters.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AdvEnableParams {
     pub handle: AdvHandle,
     pub duration: Duration,
@@ -257,7 +257,8 @@ impl From<AdvHandle> for AdvEnableParams {
     fn from(h: AdvHandle) -> Self {
         Self {
             handle: h,
-            ..Self::default()
+            duration: Duration::default(),
+            max_events: 0,
         }
     }
 }

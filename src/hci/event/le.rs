@@ -30,7 +30,7 @@ impl From<&mut Event<'_>> for LeConnectionComplete {
         };
         Self {
             status: e.status(),
-            handle: e.conn_handle(),
+            handle: e.conn_handle().unwrap(),
             role,
             peer_addr,
             local_rpa,
@@ -58,21 +58,22 @@ impl From<&mut Event<'_>> for LeConnectionComplete {
 pub struct LeAdvertisingSetTerminated {
     pub status: Status,
     pub adv_handle: AdvHandle,
-    pub conn_handle: ConnHandle,
+    pub conn_handle: Option<ConnHandle>,
     pub num_events: u8,
 }
 
+#[allow(clippy::fallible_impl_from)]
 impl From<&mut Event<'_>> for LeAdvertisingSetTerminated {
     fn from(e: &mut Event<'_>) -> Self {
         Self {
             status: e.status(),
-            adv_handle: e.adv_handle(),
+            adv_handle: e.adv_handle().unwrap(),
             conn_handle: {
                 let cn = e.u16();
                 if e.status().is_ok() {
-                    ConnHandle::from_raw(cn)
+                    ConnHandle::new(cn)
                 } else {
-                    ConnHandle::INVALID
+                    None
                 }
             },
             num_events: e.u8(),
