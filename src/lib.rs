@@ -19,6 +19,7 @@
 #![allow(clippy::redundant_pub_crate)]
 #![warn(clippy::pedantic)]
 #![allow(clippy::enum_glob_use)]
+#![allow(clippy::inline_always)]
 #![allow(clippy::match_wild_err_arm)]
 #![allow(clippy::missing_errors_doc)]
 #![allow(clippy::missing_panics_doc)]
@@ -41,6 +42,7 @@
 #![warn(clippy::undocumented_unsafe_blocks)]
 #![warn(clippy::unseparated_literal_suffix)]
 
+mod condvar;
 pub mod gap;
 pub mod hci;
 pub mod host;
