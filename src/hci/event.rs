@@ -331,15 +331,14 @@ impl<T: host::Transport> EventRouter<T> {
 
         // Lock router before downgrading to a read lock
         let mut waiters = self.waiters.lock();
-        let guard = EventGuard::new(recv.downgrade());
+        let evt = EventGuard::new(recv.downgrade());
 
         // Provide EventGuards to registered waiters and notify them
-        let evt = guard.get();
         if evt.typ.is_cmd() {
             waiters.cmd_quota = evt.cmd_quota;
         }
         let mut notify = false;
-        for w in waiters.queue.iter_mut().filter(|w| w.filter.matches(&evt)) {
+        for w in waiters.queue.iter_mut().filter(|w| evt.matches(&w.filter)) {
             // try_read_owned() is guaranteed to succeed since we are
             // holding our own read lock and there are no writers waiting.
             w.ready = Some(Arc::clone(&rwlock).try_read_owned().unwrap());
@@ -350,7 +349,7 @@ impl<T: host::Transport> EventRouter<T> {
         } else {
             trace!("Ignored event: {evt:?}");
         }
-        Ok(guard)
+        Ok(evt)
     }
 }
 
@@ -423,7 +422,7 @@ impl Future for EventReceiverTask {
 pub(crate) enum EventFilter {
     Command(Opcode),
     AdvManager,
-    ResManager,
+    ChanManager,
 }
 
 impl EventFilter {
@@ -432,25 +431,6 @@ impl EventFilter {
     #[inline]
     fn conflicts_with(&self, other: &Self) -> bool {
         self == other
-    }
-
-    /// Returns whether `evt` matches the filter.
-    fn matches(&self, evt: &Event) -> bool {
-        use {EventFilter::*, EventType::*, SubeventCode::*};
-        match *self {
-            Command(opcode) => evt.opcode == opcode && evt.typ.is_cmd(),
-            AdvManager => match evt.typ {
-                Le(ConnectionComplete | EnhancedConnectionComplete) => {
-                    LeConnectionComplete::from(&mut evt.clone()).role == Role::Peripheral
-                }
-                Le(AdvertisingSetTerminated) => true,
-                _ => false,
-            },
-            ResManager => matches!(
-                evt.typ,
-                Hci(EventCode::DisconnectionComplete | EventCode::NumberOfCompletedPackets)
-            ),
-        }
     }
 }
 
@@ -563,6 +543,30 @@ impl<T: host::Transport> EventGuard<T> {
             });
         }
         Ok(self.get())
+    }
+
+    /// Returns whether the event matches filter `f`.
+    fn matches(&self, f: &EventFilter) -> bool {
+        use {EventFilter::*, EventType::*};
+        match self.typ {
+            Hci(EventCode::DisconnectionComplete | EventCode::NumberOfCompletedPackets) => {
+                *f == ChanManager
+            }
+            Hci(EventCode::CommandComplete | EventCode::CommandStatus) => {
+                matches!(*f, Command(op) if op == self.opcode)
+            }
+            Le(SubeventCode::ConnectionComplete | SubeventCode::EnhancedConnectionComplete) => {
+                match *f {
+                    Command(_) => false,
+                    AdvManager => {
+                        LeConnectionComplete::from(&mut self.get()).role == Role::Peripheral
+                    }
+                    ChanManager => true,
+                }
+            }
+            Le(SubeventCode::AdvertisingSetTerminated) => *f == AdvManager,
+            _ => false,
+        }
     }
 }
 

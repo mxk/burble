@@ -1,6 +1,4 @@
-use std::collections::hash_map::Entry;
-use std::collections::{HashMap, VecDeque};
-use std::mem::align_of;
+//! Receive side of the Resource Manager.
 
 use bytes::Buf;
 use tracing::{error, trace, warn};
@@ -10,182 +8,318 @@ use super::*;
 /// Inbound PDU transfer state.
 #[derive(Debug)]
 pub(super) struct State<T: host::Transport> {
-    alloc: Arc<Alloc<T>>,
-    queue: parking_lot::Mutex<Queue<T>>,
-    event: tokio::sync::Notify,
+    xfer: tokio::sync::mpsc::Receiver<host::Result<AclTransfer<T>>>,
+    recv: parking_lot::Mutex<Receiver<T>>, // TODO: Get rid of Mutex
 }
 
-impl<T: host::Transport> State<T> {
-    /// Returns a new transfer state.
+impl<T: host::Transport + 'static> State<T> {
+    /// Creates a new inbound transfer state.
     #[must_use]
     pub fn new(transport: T, acl_data_len: u16) -> Self {
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        tokio::task::spawn(Self::recv_task(transport, acl_data_len, tx));
         Self {
-            alloc: Alloc::new(transport, host::Direction::In, acl_data_len),
-            queue: parking_lot::Mutex::new(Queue::new()),
-            event: tokio::sync::Notify::new(),
+            xfer: rx,
+            recv: parking_lot::Mutex::new(Receiver::new()),
+        }
+    }
+
+    /// Receives one or more PDU fragments, and returns the CID of the channel
+    /// that has a new complete PDU. This method is cancel safe.
+    #[inline]
+    pub async fn recv(&mut self) -> Result<LeCid> {
+        loop {
+            let xfer = self.xfer.recv().await.unwrap()?;
+            if let Some(cid) = self.recv.lock().recombine(xfer) {
+                return Ok(cid);
+            }
+        }
+    }
+
+    /// Registers a new LE-U channel.
+    #[inline]
+    pub fn register_chan(&self, ch: &Arc<RawChan<T>>) {
+        self.recv.lock().register_chan(Arc::clone(ch));
+    }
+
+    /// Removes LE-U channel registration.
+    #[inline]
+    pub fn remove_chan(&self, cid: LeCid) {
+        self.recv.lock().remove_chan(cid);
+    }
+
+    /// Receives ACL data packets and sends them via a channel. This makes
+    /// `recv()` cancel safe.
+    async fn recv_task(
+        transport: T,
+        acl_data_len: u16,
+        ch: tokio::sync::mpsc::Sender<host::Result<AclTransfer<T>>>,
+    ) {
+        let alloc = Alloc::new(transport, host::Direction::In, acl_data_len);
+        loop {
+            let r = tokio::select! {
+                r = alloc.xfer().submit() => r,
+                _ = ch.closed() => break,
+            };
+            if ch.send(r).await.is_err() {
+                break;
+            }
         }
     }
 }
 
-/// Inbound PDU queue. Inbound ACL data transfers are recombined and placed into
-/// per-channel queues.
+/// Received PDU.
 #[derive(Debug)]
-pub(super) struct Queue<T: host::Transport> {
-    /// CID of the current PDU for each logical link. Used to route continuation
-    /// fragments to the appropriate queue ([Vol 3] Part A, Section 7.2.1).
-    cont: HashMap<LeU, Cid>,
-    /// Per-channel PDU queue.
-    queue: HashMap<LeUCid, VecDeque<RawPdu<T>>>,
+#[repr(transparent)]
+pub(crate) struct Pdu<T: host::Transport>(RawBuf<T>);
+
+// Could implement Deref to &[u8] for Pdu, but RawBuf::as_ref() isn't zero-cost,
+// so sticking with AsRef is preferable.
+
+impl<T: host::Transport> AsRef<[u8]> for Pdu<T> {
+    /// Returns PDU bytes, starting with the basic L2CAP header.
+    #[inline]
+    fn as_ref(&self) -> &[u8] {
+        self.0.as_ref()
+    }
 }
 
-impl<T: host::Transport> Queue<T> {
-    /// Maximum number of PDUs that may be queued per channel. Reaching this
-    /// limit likely means that the channel is broken and isn't receiving data.
-    const MAX_PDUS: usize = 128;
+/// Inbound PDU receiver. Recombines PDU fragments and routes the PDUs to their
+/// channels.
+#[derive(Debug)]
+pub(super) struct Receiver<T: host::Transport> {
+    /// CID of the current PDU for each logical link. Used to route continuation
+    /// fragments to the appropriate channel ([Vol 3] Part A, Section 7.2.1).
+    cont: HashMap<LeU, Option<Cid>>,
+    /// Registered channels.
+    chans: HashMap<LeCid, Chan<T>>,
+}
 
-    /// Creates a new receive transfer queue.
+impl<T: host::Transport> Receiver<T> {
+    /// Creates a new PDU receiver.
     #[inline]
     #[must_use]
     pub fn new() -> Self {
         Self {
             cont: HashMap::new(),
-            queue: HashMap::new(),
+            chans: HashMap::new(),
         }
     }
 
-    /// Registers a new channel, allowing it to receive data.
-    pub fn register_chan(&mut self, lc: LeUCid) {
-        assert!(!self.queue.contains_key(&lc));
-        if let Entry::Vacant(e) = self.cont.entry(lc.link) {
-            e.insert(Cid::INVALID);
-        }
-        self.queue.insert(lc, VecDeque::new());
+    /// Registers a new LE-U channel, allowing it to receive data.
+    fn register_chan(&mut self, ch: Arc<RawChan<T>>) {
+        trace!("Adding channel: {}", ch.cid);
+        self.cont.entry(ch.cid.link).or_default();
+        assert!(self.chans.insert(ch.cid, Chan::new(ch)).is_none());
     }
 
-    /// Removes channel registration, dropping any unconsumed PDU fragments.
-    pub fn remove_chan(&mut self, lc: LeUCid) {
-        self.queue.remove(&lc);
-        if !self.queue.keys().any(|other| other.link == lc.link) {
-            self.cont.remove(&lc.link); // Last channel for this logical link
+    /// Removes channel registration. Any incomplete PDU is discarded.
+    fn remove_chan(&mut self, cid: LeCid) {
+        let Some(_) = self.chans.remove(&cid) else { return };
+        trace!("Removing channel: {}", cid);
+        if !self.chans.keys().any(|other| other.link == cid.link) {
+            self.cont.remove(&cid.link); // Last channel for this logical link
+            return;
+        }
+        let cont = self.cont.get_mut(&cid.link).unwrap();
+        if *cont == Some(cid.chan) {
+            *cont = None;
         }
     }
 
-    /// Recombines a received PDU fragment ([Vol 3] Part A, Section 7.2.2). It
-    /// returns `Some` if a new complete PDU is ready for that channel. The
-    /// channel may have other complete PDUs already available even if `None` is
-    /// returned.
-    pub fn recombine(&mut self, xfer: AclTransfer<T>) -> Option<LeUCid> {
-        let pkt: &[u8] = xfer.as_ref();
-        trace!("PDU fragment: {pkt:02X?}");
-        let (link, is_first, data) = acl_hdr(pkt)?;
-        let Some(&prev_cid) = self.cont.get(&link) else {
-            warn!("PDU fragment for an unknown {link}");
+    /// Recombines a received PDU fragment, and returns the CID of the channel
+    /// that has a new complete PDU ([Vol 3] Part A, Section 7.2.2).
+    fn recombine(&mut self, xfer: AclTransfer<T>) -> Option<LeCid> {
+        let pkt = xfer.as_ref();
+        let Some((link, l2cap_hdr, data)) = parse_hdr(pkt) else { return None };
+        let Some(cont_cid) = self.cont.get_mut(&link) else {
+            warn!("PDU fragment for an unknown {link}: {pkt:02X?}");
             return None;
         };
-        if is_first {
-            self.ensure_complete(LeUCid::new(link, prev_cid));
-            let (pdu_len, cid, payload) = l2cap_hdr(data)?;
-            self.cont.insert(link, cid);
-            let lc = LeUCid::new(link, cid);
-            let Some(queue) = self.queue.get_mut(&lc) else {
-                warn!("PDU fragment for an unknown {lc}");
-                return None;
-            };
-            if queue.len() > Self::MAX_PDUS {
-                // TODO: Indicate that the channel is unreliable
-                error!("PDU queue overflow for {lc}");
+        if let Some((pdu_len, cid)) = l2cap_hdr {
+            if let Some(cid) = *cont_cid {
+                // TODO: ChanManager will not notice this in handle_signal()
+                (self.chans.get_mut(&link.chan(cid)).unwrap()).ensure_complete();
+                *cont_cid = None;
+            }
+            if !cid.is_le() {
+                // [Vol 3] Part A, Section 3
+                warn!("PDU fragment for an invalid {cid}: {pkt:02X?}");
                 return None;
             }
-            return if pdu_len == payload.len() {
-                queue.push_back(RawPdu::complete(xfer));
-                Some(lc)
-            } else {
-                queue.push_back(RawPdu::first(pdu_len, pkt));
-                None
+            let cid = link.chan(cid);
+            let Some(ch) = self.chans.get_mut(&cid) else {
+                warn!("PDU fragment for an unknown {cid}: {pkt:02X?}");
+                return None;
             };
+            trace!("PDU fragment for {cid}: {pkt:02X?}");
+            return ch.first(pdu_len, xfer).or_else(|| {
+                if ch.rem > 0 {
+                    *cont_cid = Some(cid.chan);
+                }
+                None
+            });
         }
-        let lc = LeUCid::new(link, prev_cid);
-        let Some(pdu) = self.queue.get_mut(&lc).and_then(VecDeque::back_mut) else {
-            // TODO: Indicate that the channel is unreliable
-            warn!("Unexpected continuation PDU fragment for {lc}");
+        let Some(cid) = *cont_cid else {
+            warn!("Unexpected continuation PDU fragment for {link}: {pkt:02X?}");
             return None;
         };
-        let rem_len = pdu.rem_len();
-        let cmp = rem_len.cmp(&data.len());
-        if cmp.is_ge() {
-            pdu.buf_mut().extend_from_slice(data);
-            return cmp.is_eq().then_some(lc);
+        trace!("Cont. PDU fragment for {cid}: {pkt:02X?}");
+        let ch = self.chans.get_mut(&link.chan(cid)).unwrap();
+        let r = ch.cont(data);
+        if ch.rem == 0 {
+            *cont_cid = None;
         }
-        self.ensure_complete(lc);
-        // TODO: Indicate that the channel is unreliable
-        warn!(
-            "PDU fragment for {lc} exceeds expected length (want={rem_len}, have={})",
-            data.len()
-        );
+        r
+    }
+}
+
+/// Channel PDU recombination state.
+#[derive(Debug)]
+struct Chan<T: host::Transport> {
+    /// Destination channel.
+    raw: Arc<RawChan<T>>,
+    /// PDU recombination buffer.
+    buf: BytesMut,
+    /// Number of bytes needed to finish recombining the current PDU.
+    rem: usize,
+}
+
+impl<T: host::Transport> Chan<T> {
+    /// Maximum number of PDUs that may be queued. Reaching this limit likely
+    /// means that the channel is broken and isn't receiving data.
+    const MAX_PDUS: usize = 64;
+
+    /// Creates PDU receive state for channel `ch`.
+    #[inline]
+    #[must_use]
+    pub fn new(ch: Arc<RawChan<T>>) -> Self {
+        Self {
+            raw: ch,
+            buf: BytesMut::new(),
+            rem: 0,
+        }
+    }
+
+    /// Sets the channel error flag if the most recent PDU is incomplete.
+    #[inline]
+    fn ensure_complete(&mut self) {
+        if self.rem > 0 {
+            self.buf.clear();
+            self.rem = 0;
+            error!("Incomplete PDU for {}", self.raw.cid);
+            self.raw.set_error();
+        }
+    }
+
+    /// Receives the first, possibly complete, PDU fragment.
+    pub fn first(&mut self, pdu_len: u16, xfer: AclTransfer<T>) -> Option<LeCid> {
+        self.ensure_complete();
+        let cs = self.raw.state.lock();
+        if !cs.is_ok() {
+            return None;
+        }
+        let frame_len = L2CAP_HDR + usize::from(pdu_len);
+        if frame_len > cs.max_frame_len {
+            error!(
+                "PDU for {} exceeds maximum frame size ({} > {})",
+                self.raw.cid, frame_len, cs.max_frame_len
+            );
+            chan::State::set_fatal(cs, Status::ERROR);
+            return None;
+        }
+        let complete_len = ACL_HDR + frame_len;
+        if xfer.as_ref().len() == complete_len {
+            return self.complete(RawBuf::Transfer(xfer));
+        }
+        self.buf.reserve(complete_len);
+        self.buf.extend_from_slice(xfer.as_ref());
+        self.rem = complete_len - self.buf.len();
         None
     }
 
-    /// Returns the next complete PDU for the specified channel.
-    #[inline]
-    pub fn next(&mut self, lc: LeUCid) -> Option<RawPdu<T>> {
-        let queue = self.queue.get_mut(&lc)?;
-        if queue.front()?.is_complete() {
-            queue.pop_front()
-        } else {
-            None
+    /// Receives a continuation PDU fragment.
+    pub fn cont(&mut self, acl_data: &[u8]) -> Option<LeCid> {
+        let Some(rem) = self.rem.checked_sub(acl_data.len()) else {
+            error!(
+                "PDU fragment for {} exceeds expected length ({} > {})",
+                self.raw.cid, acl_data.len(), self.rem
+            );
+            self.buf.clear();
+            self.rem = 0;
+            self.raw.set_error();
+            return None;
+        };
+        self.rem = rem;
+        self.buf.extend_from_slice(acl_data);
+        if rem > 0 {
+            return None;
         }
+        let raw = RawBuf::Buf(self.buf.split());
+        self.complete(raw)
     }
 
-    /// Removes the last PDU from the queue if it is incomplete.
-    #[inline]
-    fn ensure_complete(&mut self, lc: LeUCid) {
-        if let Some(queue) = self.queue.get_mut(&lc) {
-            if queue.back().map_or(false, |pdu| !pdu.is_complete()) {
-                warn!("Incomplete PDU for {lc}");
-                queue.pop_back();
-            }
+    /// Adds a complete PDU to the channel queue and notifies any waiters.
+    pub fn complete(&self, raw: RawBuf<T>) -> Option<LeCid> {
+        let mut cs = self.raw.state.lock();
+        if !cs.is_ok() {
+            return None;
         }
+        if cs.rx.len() == Self::MAX_PDUS {
+            error!("PDU queue overflow for {}", self.raw.cid);
+            chan::State::set_fatal(cs, Status::ERROR);
+            return None;
+        }
+        trace!("New PDU for {}", self.raw.cid);
+        cs.rx.push_back(Pdu(raw));
+        if cs.rx.len() == 1 {
+            cs.notify_all();
+        }
+        Some(self.raw.cid)
     }
 }
 
-/// Parses ACL data packet header ([Vol 4] Part E, Section 5.4.2).
-#[inline]
+/// Parses and validates ACL data packet and basic L2CAP headers
+/// ([Vol 4] Part E, Section 5.4.2 and [Vol 3] Part A, Section 3.1).
+#[allow(clippy::type_complexity)]
 #[must_use]
-fn acl_hdr(pkt: &[u8]) -> Option<(LeU, bool, &[u8])> {
-    debug_assert_eq!(pkt.as_ptr() as usize % align_of::<u16>(), 0);
+fn parse_hdr(pkt: &[u8]) -> Option<(LeU, Option<(u16, Cid)>, &[u8])> {
     if pkt.len() < ACL_HDR {
-        warn!("ACL data packet with missing header: {pkt:02X?}");
+        error!("ACL data packet with missing header: {pkt:02X?}");
         return None;
     }
     let (mut hdr, data) = pkt.split_at(ACL_HDR); // TODO: Use split_at_unchecked
-    let (cn, len) = (hdr.get_u16_le(), hdr.get_u16_le());
-    if data.len() != usize::from(len) {
-        warn!("ACL data packet length mismatch: {pkt:02X?}");
+    let cn_flag = hdr.get_u16_le();
+    let Some(cn) = hci::ConnHandle::new(cn_flag) else {
+        error!("ACL data packet for an invalid connection handle: {pkt:02X?}");
+        return None;
+    };
+    if data.len() != usize::from(hdr.get_u16_le()) {
+        error!("ACL data packet length mismatch: {pkt:02X?}");
         return None;
     }
-    let is_first = (cn >> 12) & 0b11 != 0b01;
-    if data.len() < L2CAP_HDR {
-        if is_first {
-            warn!("ACL data packet with missing L2CAP header: {pkt:02X?}");
+    let is_first = (cn_flag >> hci::ConnHandle::BITS) & 0b11 != 0b01;
+    let l2cap_hdr = if is_first {
+        if data.len() < L2CAP_HDR {
+            error!("ACL data packet with missing L2CAP header: {pkt:02X?}");
             return None;
-        } else if data.is_empty() {
-            warn!("ACL data packet without payload: {pkt:02X?}");
+        };
+        let (mut hdr, payload) = data.split_at(L2CAP_HDR);
+        let pdu_len = hdr.get_u16_le();
+        if usize::from(pdu_len) < payload.len() {
+            error!("ACL data packet with an invalid PDU length: {pkt:02X?}");
             return None;
         }
-    }
-    Some((LeU::from_raw(cn), is_first, data))
-}
-
-/// Parses basic L2CAP header from ACL data packet payload
-/// ([Vol 3] Part A, Section 3.1).
-#[inline]
-#[must_use]
-fn l2cap_hdr(data: &[u8]) -> Option<(usize, Cid, &[u8])> {
-    let (mut hdr, payload) = data.split_at(L2CAP_HDR);
-    let (len, cid) = (hdr.get_u16_le(), hdr.get_u16_le());
-    if usize::from(len) < payload.len() {
-        warn!("PDU length mismatch: {data:02X?}");
+        let Some(cid) = Cid::new(hdr.get_u16_le()) else {
+            error!("ACL data packet for an invalid CID: {pkt:02X?}");
+            return None;
+        };
+        Some((pdu_len, cid))
+    } else if data.is_empty() {
+        warn!("ACL data packet without payload: {pkt:02X?}");
         return None;
-    }
-    Some((usize::from(len), Cid::from_raw(cid), payload))
+    } else {
+        None
+    };
+    Some((LeU::new(cn), l2cap_hdr, data))
 }

@@ -1,140 +1,69 @@
+//! Transmit side of the Resource Manager.
+
+use tracing::{trace, warn};
+
 use super::*;
 
 /// Outbound PDU transfer state.
 #[derive(Debug)]
 pub(super) struct State<T: host::Transport> {
     alloc: Arc<Alloc<T>>,
-    sched: parking_lot::Mutex<Scheduler>,
-    event: tokio::sync::Notify,
+    sched: parking_lot::Mutex<Scheduler<T>>,
 }
 
 impl<T: host::Transport> State<T> {
-    /// Returns a new transfer state.
+    /// Creates a new outbound transfer state.
     #[must_use]
-    pub fn new(transport: T, max_pkts: usize, acl_data_len: u16) -> Self {
-        Self {
+    #[inline]
+    pub fn new(transport: T, max_pkts: u16, acl_data_len: u16) -> Arc<Self> {
+        Arc::new(Self {
             alloc: Alloc::new(transport, host::Direction::Out, acl_data_len),
             sched: parking_lot::Mutex::new(Scheduler::new(max_pkts)),
-            event: tokio::sync::Notify::new(),
+        })
+    }
+
+    /// Creates a new outbound PDU.
+    pub fn new_pdu(self: &Arc<Self>, ch: &Arc<RawChan<T>>, max_frame_len: usize) -> Pdu<T> {
+        let mut raw = self.alloc.pdu(max_frame_len);
+        raw.buf_mut().put_bytes(0, ACL_HDR + L2CAP_HDR);
+        Pdu {
+            tx: Arc::clone(self),
+            ch: Arc::clone(ch),
+            raw,
         }
     }
 
-    /// Updates transmit queue status.
-    #[inline]
-    pub fn on_num_completed(&self, complete: &hci::NumberOfCompletedPackets) {
-        let mut sched = self.sched.lock();
-        sched.cq.pop(complete);
-        self.event.notify_waiters();
-    }
-
-    /// Updates transmit queue status after a connection is disconnected
-    /// ([Vol 4] Part E, Section 4.3).
-    #[inline]
-    pub fn on_disconnect(&self, cn: hci::ConnHandle) {
-        let mut sched = self.sched.lock();
-        sched.cq.remove_link(LeU::new(cn));
-        self.event.notify_waiters();
-    }
-}
-
-/// Outbound PDU scheduler. Uses round-robin scheduling to share the
-/// controller's transmit buffer among all logical links.
-#[derive(Debug)]
-pub(super) struct Scheduler {
-    /// Channels that are blocked from sending because another channel on the
-    /// same logical link is sending a PDU ([Vol 3] Part A, Section 7.2.1).
-    ready: HashMap<LeU, VecDeque<Cid>>,
-    /// Channels that are allowed to send PDU fragments as soon as buffer space
-    /// becomes available.
-    next: VecDeque<LeUCid>,
-    /// Controller's transmit queue status.
-    cq: ControllerQueue,
-}
-
-impl Scheduler {
-    /// Creates a new outbound PDU scheduler.
-    #[must_use]
-    fn new(max_pkts: usize) -> Self {
-        Self {
-            ready: HashMap::new(),
-            next: VecDeque::new(),
-            cq: ControllerQueue::new(max_pkts),
-        }
-    }
-
-    /// Registers a new LE-U logical link, allowing it to send data.
-    fn register_link(&mut self, link: LeU) {
-        self.ready.entry(link).or_default();
+    /// Registers a new LE-U logical link.
+    pub fn register_link(&self, link: LeU) {
+        self.sched.lock().register_link(link);
     }
 
     /// Removes LE-U logical link registration.
-    fn remove_link(&mut self, link: LeU) {
-        self.ready.remove(&link);
-        if let Some(i) = self.next.iter().position(|other| other.link == link) {
-            self.next.remove(i);
-        }
-        self.cq.remove_link(link);
+    pub fn on_disconnect(&self, evt: hci::DisconnectionComplete) {
+        self.sched.lock().disconnect_link(LeU::new(evt.handle));
     }
 
-    /// Schedules a channel for sending a PDU.
-    fn schedule_sender(&mut self, lc: LeUCid) -> Result<()> {
-        let Some(ready) = self.ready.get_mut(&lc.link) else {
-            return Err(Error::InvalidConn(lc.link.0));
-        };
-        let Some(same_cn) = self.next.iter().find(|other| other.link == lc.link) else {
-            self.next.push_back(lc); // One sender for this logical link
-            return Ok(());
-        };
-        if same_cn.cid != lc.cid && !ready.contains(&lc.cid) {
-            ready.push_back(lc.cid); // Multiple senders for this logical link
-            return Ok(());
-        }
-        unreachable!("One channel must not send two PDUs concurrently");
+    /// Updates controller's buffer status.
+    pub fn on_num_completed(&self, evt: &hci::NumberOfCompletedPackets) {
+        let pkts = (evt.as_ref().iter()).map(|&(cn, complete)| (LeU::new(cn), complete));
+        self.sched.lock().ack(pkts);
     }
 
-    /// Returns whether channel `lc` is allowed to send the next PDU fragment.
-    #[inline]
-    fn may_send(&self, lc: LeUCid) -> Result<bool> {
-        if self.ready.contains_key(&lc.link) {
-            Ok(!self.cq.is_full() && self.next.front() == Some(&lc))
-        } else {
-            Err(Error::InvalidConn(lc.link.0))
-        }
-    }
-
-    /// Removes channel `lc` from the scheduler.
-    fn remove_sender(&mut self, lc: LeUCid) {
-        let Some(ready) = self.ready.get_mut(&lc.link) else { return };
-        let Some(i) = find_val(&self.next, lc) else {
-            find_val(ready, lc.cid).map(|i| ready.remove(i));
-            return;
-        };
-        match ready.pop_front() {
-            Some(next) => self.next[i].cid = next,
-            None => {
-                self.next.remove(i);
-            }
-        }
-    }
+    // TODO: Handle Data Buffer Overflow event?
 }
 
-/// Outgoing PDU.
+/// Outbound PDU.
 #[derive(Debug)]
-pub(super) struct Pdu<T: host::Transport> {
-    rm: Arc<ResourceManager<T>>,
-    lc: LeUCid,
-    raw: RawPdu<T>,
+#[must_use]
+pub(crate) struct Pdu<T: host::Transport> {
+    tx: Arc<State<T>>,
+    ch: Arc<RawChan<T>>,
+    raw: RawBuf<T>,
 }
 
 impl<T: host::Transport> Pdu<T> {
-    /// Allocates a new PDU.
-    pub fn new(rm: Arc<ResourceManager<T>>, lc: LeUCid, max_frame_len: usize) -> Self {
-        let mut raw = rm.tx.alloc.pdu(max_frame_len);
-        raw.buf_mut().put_bytes(0, ACL_HDR + L2CAP_HDR);
-        Self { rm, lc, raw }
-    }
-
-    /// Returns the PDU buffer, which starts with an ACL data packet header.
+    /// Returns the PDU buffer, padded with space for the ACL data packet and
+    /// basic L2CAP headers.
     #[inline]
     #[must_use]
     pub fn buf_mut(&mut self) -> &mut BytesMut {
@@ -145,172 +74,336 @@ impl<T: host::Transport> Pdu<T> {
     /// the controller.
     #[inline]
     pub async fn send(self) -> Result<()> {
-        TxTask::new(self)?.send().await
+        self.tx.sched.lock().schedule(Arc::clone(&self.ch))?;
+        SchedulerGuard(self).send().await
     }
 }
 
-/// Scheduled PDU transmit task.
+/// Outbound PDU scheduler. Ensures that the controller's transmit buffer is
+/// shared fairly between all logical links. Within each logical link, PDUs are
+/// transmitted in FIFO order.
 #[derive(Debug)]
-struct TxTask<T: host::Transport> {
-    pdu: Pdu<T>,
-    xfer: Option<AclTransfer<T>>,
+struct Scheduler<T: host::Transport> {
+    /// Channels that are blocked from sending because another channel on the
+    /// same logical link is sending a PDU ([Vol 3] Part A, Section 7.2.1).
+    blocked: HashMap<LeU, VecDeque<Arc<RawChan<T>>>>,
+    /// Channels from distinct logical links that are ready to send PDU
+    /// fragments as soon as controller buffer space is available.
+    ready: VecDeque<Arc<RawChan<T>>>,
+    /// Current channel with permission to send.
+    active: Option<Arc<RawChan<T>>>,
+    /// Number of PDU fragments sent to the controller for each logical link,
+    /// but not yet acknowledged by `HCI_Number_Of_Completed_Packets` event.
+    sent: HashMap<LeU, u16>,
+    /// Number of new PDU fragments that the controller can accept immediately.
+    quota: u16,
 }
 
-impl<T: host::Transport> TxTask<T> {
-    /// Schedules the PDU for transmission.
+impl<T: host::Transport> Scheduler<T> {
+    /// Creates a new outbound PDU scheduler. This assumes that the controller
+    /// is ready to accept `max_pkts` data packets.
     #[inline]
-    fn new(pdu: Pdu<T>) -> Result<Self> {
-        pdu.rm.tx.sched.lock().schedule_sender(pdu.lc)?;
-        Ok(Self { pdu, xfer: None })
+    #[must_use]
+    fn new(max_pkts: u16) -> Self {
+        Self {
+            blocked: HashMap::new(),
+            ready: VecDeque::new(),
+            active: None,
+            sent: HashMap::new(),
+            quota: max_pkts,
+        }
     }
 
-    /// Performs PDU fragmentation and submits each fragment to the controller.
-    async fn send(mut self) -> Result<()> {
-        // Update basic L2CAP header ([Vol 3] Part A, Section 3.1)
-        let data = &mut self.pdu.raw.buf_mut()[ACL_HDR..];
-        let (mut l2cap_hdr, payload) = data.split_at_mut(L2CAP_HDR);
-        l2cap_hdr.put_u16_le(u16::try_from(payload.len()).unwrap());
-        l2cap_hdr.put_u16_le(self.pdu.lc.cid.0);
+    /// Registers a new LE-U logical link, allowing it to send data.
+    #[inline]
+    fn register_link(&mut self, link: LeU) {
+        trace!("Adding logical link: {link}");
+        self.blocked.entry(link).or_default();
+        self.sent.entry(link).or_default();
+    }
 
-        // Fast path for single-fragment PDUs
-        if matches!(self.pdu.raw, RawPdu::Xfer(_)) {
-            self.may_send().await?;
-            let xfer = self.pdu.raw.take_xfer().unwrap();
-            return (self.send_frag(xfer, false).await)
-                .map(|xfer| self.pdu.raw = RawPdu::Xfer(xfer));
+    /// Removes an LE-U logical link after an `HCI_Disconnection_Complete`
+    /// event. This does not change the status of any affected channels, so
+    /// [`SchedulerGuard`]s will block indefinitely until the channels are
+    /// closed.
+    #[inline]
+    fn disconnect_link(&mut self, link: LeU) {
+        self.remove_link(link);
+        if let Some(sent) = self.sent.remove(&link) {
+            self.quota += sent; // [Vol 4] Part E, Section 4.3
+            self.reschedule();
         }
+    }
 
-        // Fragmentation path
-        let mut xfer = self.pdu.rm.tx.alloc.xfer();
-        let data = self.pdu.raw.as_ref();
-        for (i, frag) in data.chunks(self.pdu.rm.tx.alloc.acl_data_len).enumerate() {
-            self.may_send().await?;
-            xfer.reset();
-            let buf = xfer.buf_mut();
-            buf.put_bytes(0, ACL_HDR);
-            buf.extend_from_slice(frag);
-            xfer = self.send_frag(xfer, i != 0).await?;
+    /// Removes an LE-U logical link without assuming that any unacknowledged
+    /// packets were flushed from the controller's buffer.
+    #[inline]
+    fn remove_link(&mut self, link: LeU) {
+        #[inline]
+        fn update<T: host::Transport>(ch: &Arc<RawChan<T>>) {
+            ch.state.lock().status -= Status::SCHEDULED;
+        }
+        trace!("Removing TX logical link: {link}");
+        let Some(blocked) = self.blocked.remove(&link) else { return };
+        for ch in blocked {
+            update(&ch);
+        }
+        let mut is_active = false;
+        if let Some(ch) = self.active.as_ref() {
+            if ch.cid.link == link {
+                // The channel may be in the process of sending a fragment, and
+                // we don't want another channel to start a new transfer before
+                // the current one is finished. We stop this channel from
+                // sending any more fragments, but keep it active until it is
+                // closed and its SchedulerGuard is dropped.
+                // TODO: Use an explicit SENDING Status?
+                ch.deny_send();
+                is_active = true;
+            }
+        }
+        if !is_active {
+            if let Some(i) = self.ready.iter().position(|other| other.cid.link == link) {
+                update(&self.ready.remove(i).unwrap());
+            }
+        }
+        if let Entry::Occupied(sent) = self.sent.entry(link) {
+            if *sent.get() == 0 {
+                sent.remove();
+            }
+        }
+    }
+
+    /// Updates controller's buffer status.
+    #[inline]
+    fn ack(&mut self, pkts: impl Iterator<Item = (LeU, u16)>) {
+        for (link, mut complete) in pkts {
+            let Entry::Occupied(mut sent) = self.sent.entry(link) else {
+                warn!("ACL data packet completion for an unknown {link} ({complete})");
+                continue;
+            };
+            let rem = sent.get().checked_sub(complete).unwrap_or_else(|| {
+                let sent = *sent.get();
+                warn!("ACL data packet completion mismatch for {link} (sent={sent}, acked={complete})");
+                complete = sent;
+                0
+            });
+            self.quota += complete;
+            if self.blocked.contains_key(&link) || rem > 0 {
+                sent.insert(rem);
+            } else {
+                sent.remove(); // remove_link was called
+            }
+        }
+        self.reschedule();
+    }
+
+    /// Allows the next ready channel to send its PDU fragment. The caller must
+    /// not be holding a lock on any channel.
+    fn reschedule(&mut self) {
+        if self.quota == 0 || self.active.is_some() {
+            return;
+        }
+        self.active = match self.ready.len() {
+            0 => return,
+            1 => self.ready.pop_front(),
+            // Pick the logical link with the fewest unacknowledged packets to
+            // maximize physical link utilization and prevent a stalled link
+            // from filling up the controller's buffer. Channels are removed
+            // from the front and pushed to the back after sending, resulting in
+            // round-robin scheduling when the number of unacknowledged packets
+            // is equal.
+            _ => self.ready.remove(
+                (self.ready.iter().map(|ch| self.sent[&ch.cid.link]))
+                    .enumerate()
+                    .reduce(|min, cur| if min.1 <= cur.1 { min } else { cur })
+                    .map_or(0, |min| min.0),
+            ),
+        };
+        self.active.as_ref().unwrap().allow_send();
+    }
+
+    /// Returns whether channel `ch` is the current sender. This is done by
+    /// comparing pointers because connection handles can be reused before the
+    /// channel is removed from the scheduler ([Vol 4] Part E, Section 5.3).
+    #[inline]
+    fn is_active(&self, ch: &Arc<RawChan<T>>) -> bool {
+        (self.active.as_ref()).map_or(false, |act| Arc::ptr_eq(act, ch))
+    }
+
+    /// Schedules channel `ch` for sending a PDU.
+    fn schedule(&mut self, ch: Arc<RawChan<T>>) -> Result<()> {
+        let Some(blocked) = self.blocked.get_mut(&ch.cid.link) else {
+            return Err(Error::InvalidConn(ch.cid.link.into()));
+        };
+        let mut cs = ch.state.lock();
+        assert!(
+            !cs.status.contains(Status::SCHEDULED),
+            "A channel may not send two PDUs concurrently"
+        );
+        cs.err(ch.cid)?;
+        if self.quota > 0 && self.active.is_none() {
+            // Fast path for the only sender, no notification needed
+            cs.status |= Status::SCHEDULED.union(Status::MAY_SEND);
+            drop(cs);
+            self.active = Some(ch);
+            return Ok(());
+        }
+        cs.status |= Status::SCHEDULED;
+        drop(cs);
+        if blocked.is_empty()
+            && (self.active.iter().chain(self.ready.iter()))
+                .all(|other| other.cid.link != ch.cid.link)
+        {
+            self.ready.push_back(ch); // First sender for this logical link
+        } else {
+            blocked.push_back(ch); // Multiple senders for this logical link
         }
         Ok(())
     }
 
-    /// Waits until the controller has space for another ACL data packet and the
-    /// current task is the next one scheduled to transmit.
-    async fn may_send(&self) -> Result<()> {
-        loop {
-            let notify = {
-                let sched = self.pdu.rm.tx.sched.lock();
-                if sched.may_send(self.pdu.lc)? {
-                    return Ok(());
-                }
-                self.pdu.rm.tx.event.notified()
-            };
-            self.pdu.rm.event(notify).await?;
+    /// Updates scheduler state after a PDU fragment is sent to the controller.
+    fn sent(&mut self, ch: &Arc<RawChan<T>>, more: bool) {
+        debug_assert!(self.is_active(ch));
+        if !self.blocked.contains_key(&ch.cid.link) {
+            // remove_link was called. The channel already can't send, but keep
+            // it active until it is closed and removed by SchedulerGuard.
+            // TODO: Will `HCI_Number_Of_Completed_Packets` be sent? If so,
+            // update quota. May need to restore self.sent entry.
+            return;
+        }
+        self.quota -= 1; // [Vol 4] Part E, Section 4.1.1
+        *self.sent.get_mut(&ch.cid.link).unwrap() += 1;
+        if !more {
+            // Keep the channel active so that remove() takes the fast path
+            ch.deny_send();
+        } else if self.quota == 0 || !self.ready.is_empty() {
+            ch.deny_send();
+            self.ready.push_back(self.active.take().unwrap());
+            self.reschedule();
+        } else {
+            // Channel is the only sender and can send another PDU fragment
         }
     }
 
-    async fn send_frag(&self, mut xfer: AclTransfer<T>, cont: bool) -> Result<AclTransfer<T>> {
-        // Update HCI ACL data packet header ([Vol 4] Part E, Section 5.4.2)
+    /// Removes channel `ch` from the scheduler.
+    fn remove(&mut self, ch: &Arc<RawChan<T>>) {
+        #[inline]
+        fn position<V>(q: &VecDeque<Arc<V>>, v: &Arc<V>) -> Option<usize> {
+            q.iter().position(|other| Arc::ptr_eq(other, v))
+        }
+        if self.is_active(ch) {
+            // Fast path for the active channel
+            self.active = None;
+            ch.state.lock().status -= Status::SCHEDULED.union(Status::MAY_SEND);
+            if let Some(next) = (self.blocked.get_mut(&ch.cid.link)).and_then(VecDeque::pop_front) {
+                self.ready.push_back(next);
+            }
+            self.reschedule();
+            return;
+        }
+        let Some(blocked) = self.blocked.get_mut(&ch.cid.link) else { return };
+        let mut cs = ch.state.lock();
+        debug_assert!(cs.status.contains(Status::SCHEDULED));
+        cs.status -= Status::SCHEDULED;
+        let Some(i) = position(&self.ready, ch) else {
+            blocked.remove(position(blocked, ch).unwrap());
+            return;
+        };
+        match blocked.pop_front() {
+            Some(next) => self.ready[i] = next,
+            None => {
+                self.ready.remove(i);
+            }
+        }
+    }
+}
+
+/// Scheduled PDU send task. Ensures that the channel is removed from the
+/// Scheduler when the send operation is done (or dropped).
+#[derive(Debug)]
+#[repr(transparent)]
+struct SchedulerGuard<T: host::Transport>(Pdu<T>);
+
+impl<T: host::Transport> SchedulerGuard<T> {
+    /// Performs PDU fragmentation and submits each fragment to the controller.
+    async fn send(mut self) -> Result<()> {
+        // Update basic L2CAP header ([Vol 3] Part A, Section 3.1)
+        let cid = u16::from(self.ch.cid.chan);
+        let data = &mut self.raw.buf_mut()[ACL_HDR..];
+        let (mut l2cap_hdr, payload) = data.split_at_mut(L2CAP_HDR);
+        l2cap_hdr.put_u16_le(u16::try_from(payload.len()).unwrap());
+        l2cap_hdr.put_u16_le(cid);
+
+        if let Some(xfer) = self.raw.take_xfer() {
+            // Fast path for single-fragment PDUs
+            return self.send_frag(xfer, false, false).await.map(|_xfer| ());
+        }
+
+        let mut xfer = self.tx.alloc.xfer();
+        let frags = self.raw.as_ref().chunks(self.tx.alloc.acl_data_len);
+        let last = frags.len() - 1;
+        for (i, frag) in frags.enumerate() {
+            let buf = xfer.buf_mut();
+            buf.put_bytes(0, ACL_HDR);
+            buf.extend_from_slice(frag);
+            xfer = self.send_frag(xfer, i != 0, i != last).await?;
+            if i != last {
+                xfer.reset();
+            }
+        }
+        Ok(())
+    }
+
+    /// Sends a single PDU fragment.
+    async fn send_frag(
+        &self,
+        mut xfer: AclTransfer<T>,
+        is_cont: bool,
+        more: bool,
+    ) -> Result<AclTransfer<T>> {
+        // Update ACL data packet header ([Vol 4] Part E, Section 5.4.2)
         let (mut hdr, data) = xfer.buf_mut().split_at_mut(ACL_HDR);
-        hdr.put_u16_le(u16::from(cont) << 12 | u16::from(self.pdu.lc.link));
+        hdr.put_u16_le(u16::from(is_cont) << hci::ConnHandle::BITS | u16::from(self.ch.cid.link));
         hdr.put_u16_le(u16::try_from(data.len()).unwrap());
-        let xfer = xfer.submit().await?;
-
-        // Pass send permission to the next logical link
-        let mut sched = self.pdu.rm.tx.sched.lock();
-        sched.cq.push(self.pdu.lc);
-        if sched.next.len() > 1 {
-            sched.next.rotate_left(1);
-            self.pdu.rm.tx.event.notify_waiters();
+        self.ch.may_send().await?;
+        trace!(
+            "{}PDU fragment from {}: {:02X?}",
+            if is_cont { "Cont. " } else { "" },
+            self.ch.cid,
+            xfer.as_ref()
+        );
+        match xfer.submit().await {
+            Ok(xfer) => {
+                self.tx.sched.lock().sent(&self.ch, more);
+                Ok(xfer)
+            }
+            Err(e) => {
+                self.ch.set_error();
+                Err(e.into())
+            }
         }
-        Ok(xfer)
     }
 }
 
-impl<T: host::Transport> Drop for TxTask<T> {
+impl<T: host::Transport> Drop for SchedulerGuard<T> {
+    #[inline]
     fn drop(&mut self) {
-        let mut sched = self.pdu.rm.tx.sched.lock();
-        sched.remove_sender(self.pdu.lc);
-        self.pdu.rm.tx.event.notify_waiters();
+        self.tx.sched.lock().remove(&self.ch);
     }
 }
 
-/// Bookkeeping information about the order of ACL data packets (PDU fragments)
-/// submitted to the controller.
-#[derive(Debug, Default)]
-struct ControllerQueue {
-    queue: VecDeque<LeUCid>,
-    complete: HashMap<LeU, u16>,
-    max_pkts: usize,
-}
+impl<T: host::Transport> Deref for SchedulerGuard<T> {
+    type Target = Pdu<T>;
 
-impl ControllerQueue {
-    /// Returns a new transfer queue.
-    #[inline]
-    #[must_use]
-    fn new(max_pkts: usize) -> Self {
-        assert!(max_pkts > 0);
-        Self {
-            queue: VecDeque::with_capacity(max_pkts),
-            complete: HashMap::with_capacity(4),
-            max_pkts,
-        }
-    }
-
-    /// Returns whether the transfer queue is full.
-    #[inline]
-    #[must_use]
-    fn is_full(&self) -> bool {
-        self.queue.len() >= self.max_pkts
-    }
-
-    /// Clears the queue of all packets for the specified link.
-    #[inline]
-    fn remove_link(&mut self, link: LeU) {
-        self.queue.retain(|lc| lc.link != link);
-    }
-
-    /// Adds channel `lc` to the queue. This must be called after a successful
-    /// data transfer to the controller.
-    #[inline]
-    fn push(&mut self, lc: LeUCid) {
-        assert!(!self.is_full());
-        self.queue.push_back(lc);
-    }
-
-    /// Removes completed packets from the queue.
-    fn pop(&mut self, complete: &hci::NumberOfCompletedPackets) {
-        for &(cn, count) in complete.as_ref() {
-            if count > 0 {
-                self.complete.insert(LeU::new(cn), count);
-            }
-        }
-        self.queue.retain(|lc| {
-            let Entry::Occupied(mut e) = self.complete.entry(lc.link) else {
-                return true;
-            };
-            match e.get_mut() {
-                &mut 1 => {
-                    e.remove();
-                }
-                count => *count -= 1,
-            }
-            false
-        });
-        assert!(self.complete.is_empty());
+    #[inline(always)]
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 
-/// Returns the index of `v` in `q`.
-#[allow(clippy::needless_pass_by_value)]
-#[inline]
-fn find_val<V: Eq>(q: &VecDeque<V>, v: V) -> Option<usize> {
-    q.iter().position(|other| *other == v)
-}
-
-// TODO: Remove
-/// Removes value `v` from `q` and returns its index.
-#[inline]
-fn remove_val<V: Eq>(q: &mut VecDeque<V>, v: V) {
-    find_val(q, v).map(|i| q.remove(i));
+impl<T: host::Transport> DerefMut for SchedulerGuard<T> {
+    #[inline(always)]
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
 }

@@ -3,20 +3,22 @@
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, VecDeque};
 use std::fmt::Debug;
-use std::mem::{take, ManuallyDrop};
+use std::mem;
+use std::mem::ManuallyDrop;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
 use bytes::{BufMut, BytesMut};
-use tokio::sync::futures::Notified;
 use tracing::debug;
 
+pub(crate) use chan::*;
 pub use {consts::*, handle::*};
 
-use crate::hci::{EventCode, EventType, ACL_HDR};
+use crate::hci::ACL_HDR;
 use crate::host::Transfer;
 use crate::{hci, host};
 
+mod chan;
 mod consts;
 mod handle;
 mod rx;
@@ -35,6 +37,10 @@ pub enum Error {
     Hci(#[from] hci::Error),
     #[error("invalid {0:?}")]
     InvalidConn(hci::ConnHandle),
+    #[error("channel is closed ({0})")]
+    ChanClosed(LeCid),
+    #[error("channel is broken ({0})")]
+    ChanBroken(LeCid),
 }
 
 impl From<host::Error> for Error {
@@ -47,86 +53,187 @@ impl From<host::Error> for Error {
 /// Common L2CAP result type.
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// Channel manager.
+/// Channel manager responsible for maintaining connection and channel state
+/// information.
 #[derive(Debug)]
-#[repr(transparent)]
 pub struct ChanManager<T: host::Transport> {
-    chans: HashMap<Cid, Arc<RawChan<T>>>,
+    ctl: hci::EventWaiterGuard<T>,
+    conns: HashMap<LeU, Conn<T>>,
+    rm: ResManager<T>,
 }
 
-/// L2CAP channel.
-#[derive(Debug)]
-struct RawChan<T: host::Transport> {
-    rm: Arc<ResourceManager<T>>,
-    lc: LeUCid,
-    max_frame_len: usize,
-}
+impl<T: host::Transport + 'static> ChanManager<T> {
+    /// Creates a new Channel Manager.
+    pub async fn new(host: &hci::Host<T>) -> Result<Self> {
+        let ctl = host.register(hci::EventFilter::ChanManager)?;
+        let rm = ResManager::new(host).await?;
+        Ok(Self {
+            ctl,
+            rm,
+            conns: HashMap::new(),
+        })
+    }
 
-impl<T: host::Transport> RawChan<T> {
-    /// Allocates a new outbound PDU.
-    #[inline]
-    #[must_use]
-    pub fn new_pdu(&self) -> tx::Pdu<T> {
-        tx::Pdu::new(Arc::clone(&self.rm), self.lc, self.max_frame_len)
+    /// Receives HCI events and ACL data packets until a new connection is
+    /// established. This method is cancel safe.
+    pub async fn recv(&mut self) -> Result<LeU> {
+        loop {
+            tokio::select! {
+                r = self.ctl.next() => {
+                    if let Some(link) = self.handle_event(&mut r?.get()) {
+                        return Ok(link);
+                    }
+                }
+                r = self.rm.rx.recv() => self.handle_signal(r?),
+            };
+        }
+    }
+
+    /// Returns the Attribute Protocol (ATT) fixed channel for the specified
+    /// LE-U logical link.
+    pub(crate) fn att_chan(&mut self, link: LeU) -> Option<BasicChan<T>> {
+        self.conns.get_mut(&link).and_then(|cn| cn.att_opt.take())
+    }
+
+    /// Returns the Security Manager (SM) fixed channel for the specified LE-U
+    /// logical link.
+    pub(crate) fn sm_chan(&mut self, link: LeU) -> Option<BasicChan<T>> {
+        self.conns.get_mut(&link).and_then(|cn| cn.sm_opt.take())
+    }
+
+    /// Handles HCI control events.
+    fn handle_event(&mut self, evt: &mut hci::Event) -> Option<LeU> {
+        use hci::{EventCode, EventType::*, SubeventCode};
+        match evt.typ() {
+            Le(SubeventCode::ConnectionComplete | SubeventCode::EnhancedConnectionComplete) => {
+                return self.on_connect(&hci::LeConnectionComplete::from(evt));
+            }
+            Hci(EventCode::DisconnectionComplete) => {
+                self.on_disconnect(hci::DisconnectionComplete::from(evt));
+            }
+            Hci(EventCode::NumberOfCompletedPackets) => {
+                self.rm
+                    .tx
+                    .on_num_completed(&hci::NumberOfCompletedPackets::from(evt));
+            }
+            _ => unreachable!("Unhandled Channel Manager event: {}", evt.typ()),
+        }
+        None
+    }
+
+    /// Handles signaling channel communications.
+    fn handle_signal(&mut self, cid: LeCid) {
+        if cid.chan != Cid::LE_SIGNAL {
+            return;
+        }
+        let _ = self;
+        // TODO: Implement
+        // TODO: This will miss signal channel errors
+    }
+
+    /// Handles the creation of a new LE-U logical link.
+    fn on_connect(&mut self, evt: &hci::LeConnectionComplete) -> Option<LeU> {
+        if !evt.status.is_ok() {
+            return None;
+        }
+        let link = LeU::new(evt.handle);
+
+        // [Vol 3] Part A, Section 4
+        let sig = BasicChan::new(link.chan(Cid::LE_SIGNAL), &self.rm.tx, 23);
+        // [Vol 3] Part G, Section 5.2
+        let att = BasicChan::new(link.chan(Cid::ATT), &self.rm.tx, 23);
+        // [Vol 3] Part H, Section 3.2
+        // TODO: MTU is 23 when LE Secure Connections is not supported
+        let sm = BasicChan::new(link.chan(Cid::SM), &self.rm.tx, 65);
+
+        // [Vol 3] Part A, Section 2.2
+        self.rm.tx.register_link(LeU::new(evt.handle));
+        self.rm.rx.register_chan(&sig.raw);
+        self.rm.rx.register_chan(&att.raw);
+        self.rm.rx.register_chan(&sm.raw);
+        let cn = Conn {
+            sig,
+            att: Arc::clone(&att.raw),
+            att_opt: Some(att),
+            sm: Arc::clone(&sm.raw),
+            sm_opt: Some(sm),
+        };
+        assert!(self.conns.insert(link, cn).is_none());
+        Some(link)
+    }
+
+    fn on_disconnect(&mut self, evt: hci::DisconnectionComplete) {
+        if !evt.status.is_ok() {
+            return;
+        }
+        let Some(mut cn) = self.conns.remove(&LeU::new(evt.handle)) else { return };
+        self.rm.rx.remove_chan(cn.sig.raw.cid);
+        self.rm.rx.remove_chan(cn.att.cid);
+        self.rm.rx.remove_chan(cn.sm.cid);
+        self.rm.tx.on_disconnect(evt);
+        cn.set_closed();
     }
 }
 
+/// Resource manager responsible for routing Service/Protocol Data Units between
+/// logical channels and host transport.
 #[derive(Debug)]
-struct ResourceManager<T: host::Transport> {
-    ctl: hci::EventWaiterGuard<T>,
+struct ResManager<T: host::Transport> {
     rx: rx::State<T>,
-    tx: tx::State<T>,
+    tx: Arc<tx::State<T>>,
 }
 
-impl<T: host::Transport> ResourceManager<T> {
+impl<T: host::Transport + 'static> ResManager<T> {
+    /// Creates a new resource manager after configuring the ACL data packet
+    /// parameters ([Vol 3] Part A, Section 1.1).
     #[allow(clippy::similar_names)]
     async fn new(host: &hci::Host<T>) -> Result<Self> {
         // [Vol 4] Part E, Section 4.1 and [Vol 4] Part E, Section 7.8.2
         let mut cbuf = host.le_read_buffer_size().await?;
         let acl_num_pkts = if cbuf.acl_data_len == 0 || cbuf.acl_num_pkts == 0 {
-            let alt = host.read_buffer_size().await?; // TODO: Handle invalid params
-            cbuf.acl_data_len = alt.acl_data_len;
-            usize::from(alt.acl_num_pkts)
+            let shared = host.read_buffer_size().await?; // TODO: Handle invalid params
+            cbuf.acl_data_len = shared.acl_data_len;
+            shared.acl_num_pkts
         } else {
-            usize::from(cbuf.acl_num_pkts)
+            u16::from(cbuf.acl_num_pkts)
         };
         debug!("Controller buffers: {:?}", cbuf);
 
-        // [Vol 4] Part E, Section 4.2
+        // [Vol 4] Part E, Section 4.2 and [Vol 4] Part E, Section 7.3.39
         // TODO: Check supported features first
+        // TODO: Enable controller to host flow control?
         let hbuf = hci::BufferSize {
             acl_data_len: cbuf.acl_data_len,
             acl_num_pkts: 1,
         };
         host.host_buffer_size(hbuf).await?;
-        // TODO: Enable controller to host flow control?
 
         Ok(Self {
-            ctl: host.register(hci::EventFilter::ResManager)?,
             rx: rx::State::new(host.transport().clone(), hbuf.acl_data_len),
             tx: tx::State::new(host.transport().clone(), acl_num_pkts, cbuf.acl_data_len),
         })
     }
+}
 
-    /// Blocks the task until notify is signaled.
-    async fn event(&self, notify: Notified<'_>) -> Result<()> {
-        tokio::pin!(notify);
-        loop {
-            let evt: hci::EventGuard<T> = tokio::select! {
-                _ = &mut notify => return Ok(()),
-                evt = self.ctl.next() => evt?,
-            };
-            match evt.typ() {
-                EventType::Hci(EventCode::NumberOfCompletedPackets) => {
-                    let complete = hci::NumberOfCompletedPackets::from(&mut evt.get());
-                    self.tx.on_num_completed(&complete);
-                }
-                EventType::Hci(EventCode::DisconnectionComplete) => {
-                    self.tx.on_disconnect(evt.conn_handle());
-                }
-                _ => {}
-            }
-        }
+/// Established connection over an LE-U logical link.
+#[derive(Debug)]
+struct Conn<T: host::Transport> {
+    /// LE Signaling fiexed channel.
+    sig: BasicChan<T>,
+    /// Attribute Protocol fixed channel.
+    att: Arc<RawChan<T>>,
+    att_opt: Option<BasicChan<T>>,
+    /// Security Manager fixed channel.
+    sm: Arc<RawChan<T>>,
+    sm_opt: Option<BasicChan<T>>,
+}
+
+impl<T: host::Transport> Conn<T> {
+    /// Marks all channels as closed.
+    fn set_closed(&mut self) {
+        self.sig.raw.set_closed();
+        self.att.set_closed();
+        self.sm.set_closed();
     }
 }
 
@@ -144,7 +251,7 @@ struct Alloc<T: host::Transport> {
 }
 
 impl<T: host::Transport> Alloc<T> {
-    /// Returns a new transfer allocator.
+    /// Creates a new transfer allocator.
     #[inline]
     #[must_use]
     fn new(transport: T, dir: host::Direction, acl_data_len: u16) -> Arc<Self> {
@@ -158,8 +265,8 @@ impl<T: host::Transport> Alloc<T> {
         })
     }
 
-    /// Allocates a new ACL data transfer.
-    #[inline]
+    /// Allocates an empty ACL data transfer.
+    #[must_use]
     fn xfer(self: &Arc<Self>) -> AclTransfer<T> {
         let xfer = self.free.lock().pop().map_or_else(
             || self.transport.acl(self.dir, self.acl_data_len),
@@ -171,18 +278,15 @@ impl<T: host::Transport> Alloc<T> {
         AclTransfer::new(xfer, Arc::clone(self))
     }
 
-    /// Allocates a new PDU buffer. The ACL data packet and basic L2CAP headers
-    /// are initialized with zeros.
+    /// Allocates an empty PDU buffer.
     #[inline]
-    fn pdu(self: &Arc<Self>, max_frame_len: usize) -> RawPdu<T> {
-        let mut pdu = if max_frame_len <= self.acl_data_len {
-            debug_assert!(max_frame_len >= L2CAP_HDR);
-            RawPdu::Xfer(self.xfer())
-        } else {
-            RawPdu::Buf(BytesMut::with_capacity(ACL_HDR + max_frame_len))
-        };
-        pdu.buf_mut().put_bytes(0, ACL_HDR + L2CAP_HDR);
-        pdu
+    #[must_use]
+    fn pdu(self: &Arc<Self>, max_frame_len: usize) -> RawBuf<T> {
+        if max_frame_len <= self.acl_data_len {
+            return RawBuf::Transfer(self.xfer());
+        }
+        // TODO: Reuse buffers
+        RawBuf::Buf(BytesMut::with_capacity(ACL_HDR + max_frame_len))
     }
 }
 
@@ -236,18 +340,18 @@ impl<T: host::Transport> DerefMut for AclTransfer<T> {
 /// PDU buffer optimized to avoid data copies when the PDU fits within a single
 /// ACL data packet.
 #[derive(Debug)]
-enum RawPdu<T: host::Transport> {
-    Xfer(AclTransfer<T>),
+enum RawBuf<T: host::Transport> {
+    Transfer(AclTransfer<T>),
     Buf(BytesMut),
 }
 
-impl<T: host::Transport> RawPdu<T> {
+impl<T: host::Transport> RawBuf<T> {
     /// Creates a PDU from a single ACL data packet.
     #[inline]
     #[must_use]
     fn complete(xfer: AclTransfer<T>) -> Self {
         debug_assert!(xfer.as_ref().len() >= ACL_HDR + L2CAP_HDR);
-        Self::Xfer(xfer)
+        Self::Transfer(xfer)
     }
 
     /// Allocates a PDU recombination buffer and appends the first fragment,
@@ -259,6 +363,15 @@ impl<T: host::Transport> RawPdu<T> {
         let mut buf = BytesMut::with_capacity(ACL_HDR + L2CAP_HDR + pdu_len);
         buf.extend_from_slice(frag);
         Self::Buf(buf)
+    }
+
+    /// Returns whether the buffer has been allocated.
+    #[inline]
+    fn is_some(&self) -> bool {
+        match *self {
+            Self::Transfer(_) => true,
+            Self::Buf(ref buf) => buf.capacity() != 0,
+        }
     }
 
     /// Returns whether the PDU is fully recombined.
@@ -273,7 +386,7 @@ impl<T: host::Transport> RawPdu<T> {
     #[must_use]
     fn rem_len(&self) -> usize {
         match *self {
-            Self::Xfer(_) => 0,
+            Self::Transfer(_) => 0,
             Self::Buf(ref buf) => {
                 // SAFETY: buf starts with ACL and basic L2CAP headers
                 let pdu_len = u16::from_le_bytes(unsafe { *buf.as_ptr().add(ACL_HDR).cast() });
@@ -287,7 +400,7 @@ impl<T: host::Transport> RawPdu<T> {
     #[must_use]
     fn buf_mut(&mut self) -> &mut BytesMut {
         match *self {
-            Self::Xfer(ref mut xfer) => xfer.buf_mut(),
+            Self::Transfer(ref mut xfer) => xfer.buf_mut(),
             Self::Buf(ref mut buf) => buf,
         }
     }
@@ -296,8 +409,8 @@ impl<T: host::Transport> RawPdu<T> {
     /// fragmented.
     #[inline]
     fn take_xfer(&mut self) -> Option<AclTransfer<T>> {
-        match take(self) {
-            Self::Xfer(xfer) => Some(xfer),
+        match mem::take(self) {
+            Self::Transfer(xfer) => Some(xfer),
             Self::Buf(buf) => {
                 *self = Self::Buf(buf);
                 None
@@ -306,19 +419,19 @@ impl<T: host::Transport> RawPdu<T> {
     }
 }
 
-impl<T: host::Transport> Default for RawPdu<T> {
+impl<T: host::Transport> Default for RawBuf<T> {
     #[inline]
     fn default() -> Self {
         Self::Buf(BytesMut::new())
     }
 }
 
-impl<T: host::Transport> AsRef<[u8]> for RawPdu<T> {
+impl<T: host::Transport> AsRef<[u8]> for RawBuf<T> {
     /// Returns PDU bytes, starting with the basic L2CAP header.
     #[inline]
     fn as_ref(&self) -> &[u8] {
         let b = match *self {
-            Self::Xfer(ref xfer) => xfer.as_ref(),
+            Self::Transfer(ref xfer) => xfer.as_ref(),
             Self::Buf(ref buf) => buf.as_ref(),
         };
         // SAFETY: b always starts with an ACL data packet header
