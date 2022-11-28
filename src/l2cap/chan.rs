@@ -132,7 +132,7 @@ bitflags::bitflags! {
 #[derive(Debug)]
 pub(super) struct State<T: host::Transport> {
     /// Channel status flags.
-    pub status: Status,
+    status: Status,
     /// Maximum PDU length, including the basic L2CAP header.
     pub max_frame_len: usize,
     /// Received PDU queue.
@@ -155,6 +155,29 @@ impl<T: host::Transport> State<T> {
     #[inline]
     pub const fn is_ok(&self) -> bool {
         !self.status.intersects(Status::CLOSED.union(Status::ERROR))
+    }
+
+    /// Returns whether the channel is registered with the Scheduler.
+    #[inline]
+    pub const fn is_scheduled(&self) -> bool {
+        self.status.contains(Status::SCHEDULED)
+    }
+
+    /// Sets the channel scheduled flag.
+    #[inline]
+    pub fn set_scheduled(&mut self, scheduled: bool) {
+        self.status = if scheduled {
+            self.status.union(Status::SCHEDULED)
+        } else {
+            debug_assert!(self.is_scheduled(), "Channel must be scheduled");
+            (self.status).difference(Status::SCHEDULED.union(Status::MAY_SEND))
+        }
+    }
+
+    /// Sets the channel scheduled flag with immediate permission to send.
+    #[inline]
+    pub fn set_scheduled_active(&mut self) {
+        self.status |= Status::SCHEDULED.union(Status::MAY_SEND);
     }
 
     /// Returns the channel error, if any.

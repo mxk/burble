@@ -139,14 +139,10 @@ impl<T: host::Transport> Scheduler<T> {
     /// packets were flushed from the controller's buffer.
     #[inline]
     fn remove_link(&mut self, link: LeU) {
-        #[inline]
-        fn update<T: host::Transport>(ch: &Arc<RawChan<T>>) {
-            ch.state.lock().status -= Status::SCHEDULED;
-        }
-        trace!("Removing TX logical link: {link}");
+        trace!("Removing logical link: {link}");
         let Some(blocked) = self.blocked.remove(&link) else { return };
         for ch in blocked {
-            update(&ch);
+            ch.state.lock().set_scheduled(false);
         }
         let mut is_active = false;
         if let Some(ch) = self.active.as_ref() {
@@ -163,7 +159,7 @@ impl<T: host::Transport> Scheduler<T> {
         }
         if !is_active {
             if let Some(i) = self.ready.iter().position(|other| other.cid.link == link) {
-                update(&self.ready.remove(i).unwrap());
+                (self.ready.remove(i).unwrap().state.lock()).set_scheduled(false);
             }
         }
         if let Entry::Occupied(sent) = self.sent.entry(link) {
@@ -237,18 +233,18 @@ impl<T: host::Transport> Scheduler<T> {
         };
         let mut cs = ch.state.lock();
         assert!(
-            !cs.status.contains(Status::SCHEDULED),
+            !cs.is_scheduled(),
             "A channel may not send two PDUs concurrently"
         );
         cs.err(ch.cid)?;
         if self.quota > 0 && self.active.is_none() {
             // Fast path for the only sender, no notification needed
-            cs.status |= Status::SCHEDULED.union(Status::MAY_SEND);
+            cs.set_scheduled_active();
             drop(cs);
             self.active = Some(ch);
             return Ok(());
         }
-        cs.status |= Status::SCHEDULED;
+        cs.set_scheduled(true);
         drop(cs);
         if blocked.is_empty()
             && (self.active.iter().chain(self.ready.iter()))
@@ -294,7 +290,7 @@ impl<T: host::Transport> Scheduler<T> {
         if self.is_active(ch) {
             // Fast path for the active channel
             self.active = None;
-            ch.state.lock().status -= Status::SCHEDULED.union(Status::MAY_SEND);
+            ch.state.lock().set_scheduled(false);
             if let Some(next) = (self.blocked.get_mut(&ch.cid.link)).and_then(VecDeque::pop_front) {
                 self.ready.push_back(next);
             }
@@ -303,8 +299,12 @@ impl<T: host::Transport> Scheduler<T> {
         }
         let Some(blocked) = self.blocked.get_mut(&ch.cid.link) else { return };
         let mut cs = ch.state.lock();
-        debug_assert!(cs.status.contains(Status::SCHEDULED));
-        cs.status -= Status::SCHEDULED;
+        if !cs.is_scheduled() {
+            // The channel was already removed by remove_link() and a new link
+            // was created with the same connection handle.
+            return;
+        }
+        cs.set_scheduled(false);
         let Some(i) = position(&self.ready, ch) else {
             blocked.remove(position(blocked, ch).unwrap());
             return;
