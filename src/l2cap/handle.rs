@@ -80,6 +80,7 @@ impl Cid {
     #[inline]
     #[must_use]
     pub(super) const fn new(v: u16) -> Option<Self> {
+        // TODO: Use map() when it is const stable
         match NonZeroU16::new(v) {
             Some(nz) => Some(Self(nz)),
             None => None,
@@ -87,11 +88,15 @@ impl Cid {
     }
 
     /// Returns whether the CID is valid for an LE-U logical link
-    /// ([Vol 3] Part A, Section 2.1, Table 2.3).
+    /// ([Vol 3] Part A, Section 2.1, Table 2.3 and
+    /// [Assigned Numbers] Section 2.9).
     #[inline]
     #[must_use]
     pub(super) const fn is_le(self) -> bool {
-        matches!(self.0.get(), 0x0004 | 0x0005 | 0x0006 | 0x0020..=0x003E | 0x0040..=0x007F)
+        matches!(
+            self.0.get(),
+            0x0004 | 0x0005 | 0x0006 /* | 0x0020..=0x003E */ | 0x0040..=0x007F
+        )
     }
 }
 
