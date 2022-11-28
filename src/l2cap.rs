@@ -306,6 +306,7 @@ impl<T: host::Transport> AclTransfer<T> {
     async fn submit(mut self) -> host::Result<Self> {
         // SAFETY: self.0 is not used again
         let (xfer, alloc) = unsafe { ManuallyDrop::take(&mut self.0) };
+        mem::forget(self);
         Ok(Self::new(xfer.submit()?.await, alloc))
     }
 }
