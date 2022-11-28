@@ -148,8 +148,8 @@ impl<T: host::Transport + 'static> ChanManager<T> {
 
         // [Vol 3] Part A, Section 2.2
         self.rm.tx.register_link(LeU::new(evt.handle));
-        self.rm.rx.register_chan(&sig.raw);
         self.rm.rx.register_chan(&att.raw);
+        self.rm.rx.register_chan(&sig.raw);
         self.rm.rx.register_chan(&sm.raw);
         let cn = Conn {
             sig,

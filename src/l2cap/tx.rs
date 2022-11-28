@@ -263,8 +263,9 @@ impl<T: host::Transport> Scheduler<T> {
         if !self.blocked.contains_key(&ch.cid.link) {
             // remove_link was called. The channel already can't send, but keep
             // it active until it is closed and removed by SchedulerGuard.
-            // TODO: Will `HCI_Number_Of_Completed_Packets` be sent? If so,
-            // update quota. May need to restore self.sent entry.
+            // Testing shows that at least one controller does not report
+            // invalid connection handles in HCI_Number_Of_Completed_Packets
+            // events, so we do not change self.quota or self.sent.
             return;
         }
         self.quota -= 1; // [Vol 4] Part E, Section 4.1.1

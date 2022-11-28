@@ -17,9 +17,7 @@ async fn main() -> Result<()> {
     info!("Local version: {:?}", host.read_local_version().await?);
     info!("Device address: {:?}", host.read_bd_addr().await?);
 
-    // TODO: Test HCI_Number_Of_Completed_Packets
-
-    //let _rm = l2cap::ResManager::new(&host).await?;
+    let mut _cm = l2cap::ChanManager::new(&host).await?;
     let mut adv = hci::Advertiser::new(host.clone()).await?;
     info!("Max len: {}", adv.max_data_len());
     let (h, power) = (adv.create(hci::AdvParams {
