@@ -14,7 +14,7 @@ impl LeU {
     /// Creates an LE-U logical link from an HCI connection handle.
     #[inline]
     #[must_use]
-    pub const fn new(cn: hci::ConnHandle) -> Self {
+    pub(super) const fn new(cn: hci::ConnHandle) -> Self {
         Self(cn)
     }
 

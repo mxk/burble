@@ -42,6 +42,7 @@
 #![warn(clippy::undocumented_unsafe_blocks)]
 #![warn(clippy::unseparated_literal_suffix)]
 
+pub mod att;
 mod condvar;
 pub mod gap;
 pub mod hci;
