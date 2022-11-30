@@ -2,9 +2,9 @@ use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::sync::Arc;
 
-use crate::condvar::{Condvar, CondvarGuard};
 use crate::hci::ACL_LE_MIN_DATA_LEN;
 use crate::host;
+use crate::util::{Condvar, CondvarGuard};
 
 use super::*;
 
