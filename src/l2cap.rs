@@ -340,8 +340,34 @@ impl<T: host::Transport> DerefMut for AclTransfer<T> {
     }
 }
 
-/// PDU buffer optimized to avoid data copies when the PDU fits within a single
-/// ACL data packet.
+/// Inbound or outbound service data unit.
+#[derive(Debug)]
+#[must_use]
+pub(crate) struct Sdu<T: host::Transport> {
+    raw: RawBuf<T>,
+    off: usize,
+}
+
+impl<T: host::Transport> Sdu<T> {
+    /// Returns the SDU buffer, which always starts with ACL and L2CAP packet
+    /// headers that must not be modified.
+    #[inline]
+    #[must_use]
+    pub fn buf_mut(&mut self) -> &mut BytesMut {
+        self.raw.buf_mut()
+    }
+}
+
+impl<T: host::Transport> AsRef<[u8]> for Sdu<T> {
+    /// Returns SDU bytes after the ACL and L2CAP packet headers.
+    #[inline]
+    fn as_ref(&self) -> &[u8] {
+        &self.raw.as_ref()[self.off..]
+    }
+}
+
+/// PDU/SDU buffer optimized to avoid data copies when the data fits within a
+/// single ACL data packet.
 #[derive(Debug)]
 enum RawBuf<T: host::Transport> {
     Transfer(AclTransfer<T>),

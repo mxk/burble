@@ -22,15 +22,21 @@ impl<T: host::Transport> State<T> {
         })
     }
 
-    /// Creates a new outbound PDU.
-    pub fn new_pdu(self: &Arc<Self>, ch: &Arc<RawChan<T>>, max_frame_len: usize) -> Pdu<T> {
+    /// Creates a new outbound PDU, padded with space for the ACL data packet
+    /// and basic L2CAP headers.
+    pub fn new_pdu(&self, max_frame_len: usize) -> RawBuf<T> {
         let mut raw = self.alloc.pdu(max_frame_len);
         raw.buf_mut().put_bytes(0, ACL_HDR + L2CAP_HDR);
-        Pdu {
-            tx: Arc::clone(self),
-            ch: Arc::clone(ch),
-            raw,
-        }
+        raw
+    }
+
+    /// Sends the PDU, returning as soon as the last fragment is submitted to
+    /// the controller.
+    #[inline]
+    pub async fn send(self: &Arc<Self>, ch: &Arc<RawChan<T>>, raw: RawBuf<T>) -> Result<()> {
+        let (tx, ch) = (Arc::clone(self), Arc::clone(ch));
+        self.sched.lock().schedule(Arc::clone(&ch))?;
+        SchedulerGuard { raw, tx, ch }.send().await
     }
 
     /// Registers a new LE-U logical link.
@@ -50,33 +56,6 @@ impl<T: host::Transport> State<T> {
     }
 
     // TODO: Handle Data Buffer Overflow event?
-}
-
-/// Outbound PDU.
-#[derive(Debug)]
-#[must_use]
-pub(crate) struct Pdu<T: host::Transport> {
-    tx: Arc<State<T>>,
-    ch: Arc<RawChan<T>>,
-    raw: RawBuf<T>,
-}
-
-impl<T: host::Transport> Pdu<T> {
-    /// Returns the PDU buffer, padded with space for the ACL data packet and
-    /// basic L2CAP headers.
-    #[inline]
-    #[must_use]
-    pub fn buf_mut(&mut self) -> &mut BytesMut {
-        self.raw.buf_mut()
-    }
-
-    /// Sends the PDU, returning as soon as the last fragment is submitted to
-    /// the controller.
-    #[inline]
-    pub async fn send(self) -> Result<()> {
-        self.tx.sched.lock().schedule(Arc::clone(&self.ch))?;
-        SchedulerGuard(self).send().await
-    }
 }
 
 /// Outbound PDU scheduler. Ensures that the controller's transmit buffer is
@@ -322,8 +301,11 @@ impl<T: host::Transport> Scheduler<T> {
 /// Scheduled PDU send task. Ensures that the channel is removed from the
 /// Scheduler when the send operation is done (or dropped).
 #[derive(Debug)]
-#[repr(transparent)]
-struct SchedulerGuard<T: host::Transport>(Pdu<T>);
+struct SchedulerGuard<T: host::Transport> {
+    raw: RawBuf<T>,
+    tx: Arc<State<T>>,
+    ch: Arc<RawChan<T>>,
+}
 
 impl<T: host::Transport> SchedulerGuard<T> {
     /// Performs PDU fragmentation and submits each fragment to the controller.
@@ -367,6 +349,7 @@ impl<T: host::Transport> SchedulerGuard<T> {
         hdr.put_u16_le(u16::from(is_cont) << hci::ConnHandle::BITS | u16::from(self.ch.cid.link));
         hdr.put_u16_le(u16::try_from(data.len()).unwrap());
         self.ch.may_send().await?;
+        // TODO: Verify that xfer is an outbound ACL transfer
         trace!(
             "{}PDU fragment from {}: {:02X?}",
             if is_cont { "Cont. " } else { "" },
@@ -389,22 +372,7 @@ impl<T: host::Transport> SchedulerGuard<T> {
 impl<T: host::Transport> Drop for SchedulerGuard<T> {
     #[inline]
     fn drop(&mut self) {
+        // TODO: Mark the channel as broken if the entire PDU was not sent?
         self.tx.sched.lock().remove(&self.ch);
-    }
-}
-
-impl<T: host::Transport> Deref for SchedulerGuard<T> {
-    type Target = Pdu<T>;
-
-    #[inline(always)]
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl<T: host::Transport> DerefMut for SchedulerGuard<T> {
-    #[inline(always)]
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
     }
 }

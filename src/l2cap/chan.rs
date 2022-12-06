@@ -29,22 +29,35 @@ impl<T: host::Transport> BasicChan<T> {
         }
     }
 
-    /// Creates a new outbound PDU.
+    /// Creates a new outbound SDU.
     #[inline]
-    pub fn new_pdu(&self) -> tx::Pdu<T> {
-        self.tx.new_pdu(&self.raw, L2CAP_HDR + self.mtu)
+    pub fn new_sdu(&self) -> Sdu<T> {
+        Sdu {
+            raw: self.tx.new_pdu(L2CAP_HDR + self.mtu),
+            off: ACL_HDR + L2CAP_HDR,
+        }
     }
 
-    /// Receives the next inbound PDU. This method is cancel safe.
-    pub async fn recv(&self) -> Result<rx::Pdu<T>> {
+    /// Receives the next inbound SDU. This method is cancel safe.
+    pub async fn recv(&self) -> Result<Sdu<T>> {
         let mut cs = self.raw.state.lock();
         loop {
             cs.err(self.raw.cid)?;
-            if let Some(pdu) = cs.rx.pop_front() {
-                return Ok(pdu);
+            if let Some(raw) = cs.rx.pop_front() {
+                return Ok(Sdu {
+                    raw,
+                    off: ACL_HDR + L2CAP_HDR,
+                });
             }
             cs.notified().await;
         }
+    }
+
+    /// Sends an outbound SDU, returning as soon as the last fragment is
+    /// submitted to the controller.
+    #[inline]
+    pub async fn send(&self, sdu: Sdu<T>) -> Result<()> {
+        self.tx.send(&self.raw, sdu.raw).await
     }
 }
 
@@ -136,7 +149,7 @@ pub(super) struct State<T: host::Transport> {
     /// Maximum PDU length, including the basic L2CAP header.
     pub max_frame_len: usize,
     /// Received PDU queue.
-    pub rx: VecDeque<rx::Pdu<T>>,
+    pub rx: VecDeque<RawBuf<T>>,
 }
 
 impl<T: host::Transport> State<T> {

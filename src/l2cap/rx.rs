@@ -68,22 +68,6 @@ impl<T: host::Transport + 'static> State<T> {
     }
 }
 
-/// Received PDU.
-#[derive(Debug)]
-#[repr(transparent)]
-pub(crate) struct Pdu<T: host::Transport>(RawBuf<T>);
-
-// Could implement Deref to &[u8] for Pdu, but RawBuf::as_ref() isn't zero-cost,
-// so sticking with AsRef is preferable.
-
-impl<T: host::Transport> AsRef<[u8]> for Pdu<T> {
-    /// Returns PDU bytes, starting with the basic L2CAP header.
-    #[inline]
-    fn as_ref(&self) -> &[u8] {
-        self.0.as_ref()
-    }
-}
-
 /// Inbound PDU receiver. Recombines PDU fragments and routes the PDUs to their
 /// channels.
 #[derive(Debug)]
@@ -271,7 +255,7 @@ impl<T: host::Transport> Chan<T> {
             return None;
         }
         trace!("New PDU for {}", self.raw.cid);
-        cs.rx.push_back(Pdu(raw));
+        cs.rx.push_back(raw);
         if cs.rx.len() == 1 {
             cs.notify_all();
         }
