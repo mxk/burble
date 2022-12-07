@@ -1,6 +1,7 @@
 #![allow(clippy::use_self)]
 
 use std::fmt::{Debug, Display, Formatter};
+use std::num::{NonZeroU128, NonZeroU16};
 
 const SHIFT: u32 = u128::BITS - u32::BITS;
 const BASE: u128 = 0x00000000_0000_1000_8000_00805F9B34FB;
@@ -8,9 +9,9 @@ const MASK_16: u128 = !((u16::MAX as u128) << SHIFT);
 const MASK_32: u128 = !((u32::MAX as u128) << SHIFT);
 
 /// 16-, 32-, or 128-bit UUID ([Vol 3] Part B, Section 2.5.1).
-#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[repr(transparent)]
-pub struct Uuid(u128);
+pub struct Uuid(NonZeroU128);
 
 impl Uuid {
     /// Converts an assigned 16-bit Bluetooth SIG UUID to `u16`. This is
@@ -19,8 +20,8 @@ impl Uuid {
     #[must_use]
     pub fn as_u16(self) -> Option<u16> {
         #[allow(clippy::cast_possible_truncation)]
-        let v = (self.0 >> SHIFT) as u16;
-        (self.0 & MASK_16 == BASE && v > 0).then_some(v)
+        let v = (self.0.get() >> SHIFT) as u16;
+        (self.0.get() & MASK_16 == BASE && v > 0).then_some(v)
     }
 
     /// Converts an assigned 32-bit Bluetooth SIG UUID to `u32`. This is
@@ -28,8 +29,8 @@ impl Uuid {
     #[inline]
     #[must_use]
     pub fn as_u32(self) -> Option<u32> {
-        let v = (self.0 >> SHIFT) as u32;
-        (self.0 & MASK_32 == BASE && v > u32::from(u16::MAX)).then_some(v)
+        let v = (self.0.get() >> SHIFT) as u32;
+        (self.0.get() & MASK_32 == BASE && v > u32::from(u16::MAX)).then_some(v)
     }
 
     /// Converts an unassigned UUID to `u128`. This is mutually exclusive with
@@ -37,7 +38,7 @@ impl Uuid {
     #[inline]
     #[must_use]
     pub fn as_u128(self) -> Option<u128> {
-        (self.0 & MASK_32 != BASE).then_some(self.0)
+        (self.0.get() & MASK_32 != BASE).then_some(self.0.get())
     }
 }
 
@@ -46,7 +47,18 @@ impl<T: Into<u16>> From<T> for Uuid {
     /// Creates a UUID from a raw 16-bit Bluetooth SIG assigned number.
     #[inline]
     fn from(v: T) -> Self {
-        Self(u128::from(v.into()) << SHIFT | BASE)
+        let v = v.into();
+        assert_ne!(v, 0, "Invalid UUID");
+        // SAFETY: Always non-zero
+        Self(unsafe { NonZeroU128::new_unchecked(u128::from(v) << SHIFT | BASE) })
+    }
+}
+
+impl From<Uuid16> for Uuid {
+    #[inline]
+    fn from(u: Uuid16) -> Self {
+        // SAFETY: Always non-zero
+        Self(unsafe { NonZeroU128::new_unchecked(u128::from(u.0.get()) << SHIFT | BASE) })
     }
 }
 
@@ -58,20 +70,48 @@ impl Debug for Uuid {
         } else if let Some(v) = self.as_u32() {
             write!(f, "{:#010X}", v)
         } else {
+            let v = self.0.get();
             write!(
                 f,
                 "{:08X}-{:04X}-{:04X}-{:04X}-{:012X}",
-                (self.0 >> 96) as u32,
-                (self.0 >> 80) as u16,
-                (self.0 >> 64) as u16,
-                (self.0 >> 48) as u16,
-                (self.0 & ((1 << 48) - 1)) as u64
+                (v >> 96) as u32,
+                (v >> 80) as u16,
+                (v >> 64) as u16,
+                (v >> 48) as u16,
+                (v & ((1 << 48) - 1)) as u64
             )
         }
     }
 }
 
 impl Display for Uuid {
+    #[inline]
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        // TODO: Translate
+        Debug::fmt(self, f)
+    }
+}
+
+/// 16-bit Bluetooth SIG UUID.
+#[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[repr(transparent)]
+pub struct Uuid16(NonZeroU16);
+
+impl Uuid16 {
+    #[inline]
+    const fn new(v: u16) -> Self {
+        // SAFETY: v is not 0
+        Self(unsafe { NonZeroU16::new_unchecked(v) })
+    }
+}
+
+impl Debug for Uuid16 {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:#06X}", self.0.get())
+    }
+}
+
+impl Display for Uuid16 {
     #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         Debug::fmt(self, f)
