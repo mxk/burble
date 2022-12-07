@@ -13,38 +13,38 @@ pub(crate) struct Access(Perm);
 impl Access {
     /// Creates read access permission/request.
     #[inline]
-    const fn read() -> Self {
+    pub const fn read() -> Self {
         Self(Perm::READ)
     }
 
     /// Creates write access permission/request.
     #[inline]
-    const fn write() -> Self {
+    pub const fn write() -> Self {
         Self(Perm::WRITE)
     }
 
     /// Creates read/write access permission/request.
     #[inline]
-    const fn read_write() -> Self {
+    pub const fn read_write() -> Self {
         Self(Perm::READ_WRITE)
     }
 
     /// Sets the authentication flag.
     #[inline]
-    const fn authn(self) -> Self {
+    pub const fn authn(self) -> Self {
         Self(self.0.union(Perm::AUTHN))
     }
 
     /// Sets the authorization flag.
     #[inline]
-    const fn authz(self) -> Self {
+    pub const fn authz(self) -> Self {
         Self(self.0.union(Perm::AUTHZ))
     }
 
     /// Sets encryption key length between 56 and 128 bits in 8 bit increments.
     /// A key length of 0 clears encryption requirement/status.
     #[inline]
-    const fn key_len(self, n: u8) -> Self {
+    pub const fn key_len(self, n: u8) -> Self {
         assert!(
             Perm::KEY_MIN <= n && n <= Perm::KEY_MAX && n % 8 == 0 || n == 0,
             "Invalid encryption key length"
@@ -183,8 +183,8 @@ impl Perm {
         let fail = want.intersection(self.access().symmetric_difference(want));
         if !fail.is_empty() || want.is_empty() {
             return Err(match fail {
-                Perm::READ => ReadNotPermitted,
-                Perm::WRITE => WriteNotPermitted,
+                Self::READ => ReadNotPermitted,
+                Self::WRITE => WriteNotPermitted,
                 _ => RequestNotSupported,
             });
         }
@@ -193,9 +193,9 @@ impl Perm {
         let fail = need.intersection(req.security().symmetric_difference(need));
         if !fail.is_empty() {
             // Order matches ATT_READ_REQ ([Vol 3] Part F, Section 3.4.4.3)
-            Err(if fail.contains(Perm::AUTHZ) {
+            Err(if fail.contains(Self::AUTHZ) {
                 InsufficientAuthorization
-            } else if fail.contains(Perm::AUTHN) {
+            } else if fail.contains(Self::AUTHN) {
                 InsufficientAuthentication
             } else {
                 InsufficientEncryption

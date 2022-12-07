@@ -1,8 +1,183 @@
 #![allow(clippy::use_self)]
 
-/// ATT error codes ([Vol 3] Part F, Section 3.4.1.1).
+use std::fmt::Debug;
+
+use super::Access;
+
+/// Attribute opcode ([Vol 3] Part F, Section 3.3.1 and
+/// [Vol 3] Part F, Section 3.4.8).
 #[derive(
-    Clone, Copy, Debug, Eq, PartialEq, num_enum::TryFromPrimitive, strum::Display, thiserror::Error,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    PartialEq,
+    num_enum::IntoPrimitive,
+    num_enum::TryFromPrimitive,
+    strum::Display,
+)]
+#[non_exhaustive]
+#[repr(u8)]
+pub enum Opcode {
+    ErrorRsp = 0x01,
+    ExchangeMtuReq = 0x02,
+    ExchangeMtuRsp = 0x03,
+    FindInformationReq = 0x04,
+    FindInformationRsp = 0x05,
+    FindByTypeValueReq = 0x06,
+    FindByTypeValueRsp = 0x07,
+    ReadByTypeReq = 0x08,
+    ReadByTypeRsp = 0x09,
+    ReadReq = 0x0A,
+    ReadRsp = 0x0B,
+    ReadBlobReq = 0x0C,
+    ReadBlobRsp = 0x0D,
+    ReadMultipleReq = 0x0E,
+    ReadMultipleRsp = 0x0F,
+    ReadByGroupTypeReq = 0x10,
+    ReadByGroupTypeRsp = 0x11,
+    WriteReq = 0x12,
+    WriteRsp = 0x13,
+    WriteCmd = 0x52,
+    PrepareWriteReq = 0x16,
+    PrepareWriteRsp = 0x17,
+    ExecuteWriteReq = 0x18,
+    ExecuteWriteRsp = 0x19,
+    ReadMultipleVariableReq = 0x20,
+    ReadMultipleVariableRsp = 0x21,
+    MultipleHandleValueNtf = 0x23,
+    HandleValueNtf = 0x1B,
+    HandleValueInd = 0x1D,
+    HandleValueCfm = 0x1E,
+    SignedWriteCmd = 0xD2,
+}
+
+impl Opcode {
+    /// Returns whether the raw opcode has the Command Flag set.
+    #[inline]
+    pub const fn is_cmd(op: u8) -> bool {
+        op & (1 << 6) != 0
+    }
+
+    /// Returns whether the Authentication Signature Flag is set.
+    #[inline]
+    pub const fn is_signed(self) -> bool {
+        self as u8 & (1 << 7) != 0
+    }
+
+    /// Returns the PDU type.
+    pub(crate) const fn typ(self) -> PduType {
+        use {Opcode::*, PduType::*};
+        #[allow(clippy::match_same_arms)]
+        match self {
+            ErrorRsp => Rsp,
+            ExchangeMtuReq => Req,
+            ExchangeMtuRsp => Rsp,
+            FindInformationReq => Req,
+            FindInformationRsp => Rsp,
+            FindByTypeValueReq => Req,
+            FindByTypeValueRsp => Rsp,
+            ReadByTypeReq => Req,
+            ReadByTypeRsp => Rsp,
+            ReadReq => Req,
+            ReadRsp => Rsp,
+            ReadBlobReq => Req,
+            ReadBlobRsp => Rsp,
+            ReadMultipleReq => Req,
+            ReadMultipleRsp => Rsp,
+            ReadByGroupTypeReq => Req,
+            ReadByGroupTypeRsp => Rsp,
+            WriteReq => Req,
+            WriteRsp => Rsp,
+            WriteCmd => Cmd,
+            PrepareWriteReq => Req,
+            PrepareWriteRsp => Rsp,
+            ExecuteWriteReq => Req,
+            ExecuteWriteRsp => Rsp,
+            ReadMultipleVariableReq => Req,
+            ReadMultipleVariableRsp => Rsp,
+            MultipleHandleValueNtf => Ntf,
+            HandleValueNtf => Ntf,
+            HandleValueInd => Ind,
+            HandleValueCfm => Cfm,
+            SignedWriteCmd => Cmd,
+        }
+    }
+
+    /// Returns read/write access type being performed
+    /// ([Vol 3] Part F, Section 3.4.9).
+    pub(crate) const fn access(self) -> Option<Access> {
+        use Opcode::*;
+        const READ: Option<Access> = Some(Access::read());
+        const WRITE: Option<Access> = Some(Access::write());
+        #[allow(clippy::match_same_arms)]
+        match self {
+            ErrorRsp => None,
+            ExchangeMtuReq => None,
+            ExchangeMtuRsp => None,
+            FindInformationReq => None,
+            FindInformationRsp => None,
+            FindByTypeValueReq => None,
+            FindByTypeValueRsp => None,
+            ReadByTypeReq => READ,
+            ReadByTypeRsp => None,
+            ReadReq => READ,
+            ReadRsp => None,
+            ReadBlobReq => READ,
+            ReadBlobRsp => None,
+            ReadMultipleReq => READ,
+            ReadMultipleRsp => None,
+            ReadByGroupTypeReq => READ,
+            ReadByGroupTypeRsp => None,
+            WriteReq => WRITE,
+            WriteRsp => None,
+            WriteCmd => WRITE,
+            PrepareWriteReq => WRITE,
+            PrepareWriteRsp => None,
+            ExecuteWriteReq => None,
+            ExecuteWriteRsp => None,
+            ReadMultipleVariableReq => READ,
+            ReadMultipleVariableRsp => None,
+            MultipleHandleValueNtf => None,
+            HandleValueNtf => None,
+            HandleValueInd => None,
+            HandleValueCfm => None,
+            SignedWriteCmd => WRITE,
+        }
+    }
+}
+
+/// Attribute PDU type ([Vol 3] Part F, Section 3.3).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PduType {
+    /// Command sent to a server by a client that does not invoke a response.
+    Cmd,
+    /// Request sent to a server by a client that invokes a response.
+    Req,
+    /// Response sent to a client by a server in response to a request.
+    Rsp,
+    /// Notification sent to a client by a server that does not invoke a
+    /// confirmation.
+    Ntf,
+    /// Indication sent to a client by a server that invokes a confirmation.
+    Ind,
+    /// Confirmation sent to a server by a client to confirm receipt of an
+    /// indication.
+    Cfm,
+}
+
+/// ATT and Common Profile and Service error codes
+/// ([Vol 3] Part F, Section 3.4.1.1 and [CSS] Part B, Section 1.2).
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    PartialEq,
+    num_enum::IntoPrimitive,
+    num_enum::TryFromPrimitive,
+    strum::Display,
+    thiserror::Error,
 )]
 #[non_exhaustive]
 #[repr(u8)]
@@ -47,4 +222,14 @@ pub enum ErrorCode {
     DatabaseOutOfSync = 0x12,
     /// The attribute parameter value was not allowed.
     ValueNotAllowed = 0x13,
+    /// Write operation cannot be fulfilled for reasons other than permissions.
+    WriteRequestRejected = 0xFC,
+    /// Client Characteristic Configuration descriptor is not configured
+    /// according to the requirements of the profile or service.
+    CccdImproperlyConfigured = 0xFD,
+    /// Request cannot be serviced because an operation that has been previously
+    /// triggered is still in progress.
+    ProcedureAlreadyInProgress = 0xFE,
+    /// Attribute value is out of range.
+    OutOfRange = 0xFF,
 }

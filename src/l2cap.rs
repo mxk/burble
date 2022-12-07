@@ -327,14 +327,14 @@ impl<T: host::Transport> Drop for AclTransfer<T> {
 impl<T: host::Transport> Deref for AclTransfer<T> {
     type Target = T::Transfer;
 
-    #[inline]
+    #[inline(always)]
     fn deref(&self) -> &Self::Target {
         &self.0 .0
     }
 }
 
 impl<T: host::Transport> DerefMut for AclTransfer<T> {
-    #[inline]
+    #[inline(always)]
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0 .0
     }

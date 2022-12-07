@@ -19,6 +19,8 @@ pub(crate) struct BasicChan<T: host::Transport> {
 }
 
 impl<T: host::Transport> BasicChan<T> {
+    const HDR: usize = ACL_HDR + L2CAP_HDR;
+
     /// Creates a new channel.
     #[inline]
     pub(super) fn new(cid: LeCid, tx: &Arc<tx::State<T>>, mtu: usize) -> Self {
@@ -34,21 +36,48 @@ impl<T: host::Transport> BasicChan<T> {
     pub fn new_sdu(&self) -> Sdu<T> {
         Sdu {
             raw: self.tx.new_pdu(L2CAP_HDR + self.mtu),
-            off: ACL_HDR + L2CAP_HDR,
+            off: Self::HDR,
         }
     }
 
     /// Receives the next inbound SDU. This method is cancel safe.
-    pub async fn recv(&self) -> Result<Sdu<T>> {
+    pub async fn recv(&mut self) -> Result<Sdu<T>> {
         let mut cs = self.raw.state.lock();
         loop {
             cs.err(self.raw.cid)?;
-            if let Some(raw) = cs.rx.pop_front() {
+            if let Some(raw) = cs.pdu.pop_front() {
                 return Ok(Sdu {
                     raw,
-                    off: ACL_HDR + L2CAP_HDR,
+                    off: Self::HDR,
                 });
             }
+            cs.notified().await;
+        }
+    }
+
+    /// Returns the next inbound SDU that matches filter `f`. All other SDUs
+    /// stay in the buffer.
+    pub async fn recv_filter(&mut self, f: impl Fn(&[u8]) -> bool + Send) -> Result<Sdu<T>> {
+        let mut cs = self.raw.state.lock();
+        let mut skip = 0;
+        loop {
+            cs.err(self.raw.cid)?;
+            let mut it = cs.pdu.iter();
+            if skip > 0 {
+                // It's safe to skip prior PDUs because we have exclusive access
+                // to the channel and the queue can only be modified by new PDUs
+                // getting appended.
+                it.nth(skip - 1);
+            }
+            // SAFETY: RawBuf always contains basic L2CAP header
+            if let Some(i) = it.position(|b| f(unsafe { b.as_ref().get_unchecked(L2CAP_HDR..) })) {
+                return Ok(Sdu {
+                    // SAFETY: `skip + i` is within bounds
+                    raw: unsafe { cs.pdu.remove(skip + i).unwrap_unchecked() },
+                    off: Self::HDR,
+                });
+            }
+            skip = cs.pdu.len();
             cs.notified().await;
         }
     }
@@ -149,7 +178,7 @@ pub(super) struct State<T: host::Transport> {
     /// Maximum PDU length, including the basic L2CAP header.
     pub max_frame_len: usize,
     /// Received PDU queue.
-    pub rx: VecDeque<RawBuf<T>>,
+    pub pdu: VecDeque<RawBuf<T>>,
 }
 
 impl<T: host::Transport> State<T> {
@@ -160,7 +189,7 @@ impl<T: host::Transport> State<T> {
         Self {
             status: Status::empty(),
             max_frame_len,
-            rx: VecDeque::new(),
+            pdu: VecDeque::new(),
         }
     }
 

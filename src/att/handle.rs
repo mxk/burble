@@ -5,10 +5,21 @@ use nameof::name_of_type;
 
 /// Attribute handle ([Vol 3] Part F, Section 3.2.2).
 #[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[must_use]
 #[repr(transparent)]
 pub struct Handle(NonZeroU16);
 
 impl Handle {
+    pub(super) const MIN: Self = Self(
+        // TODO: Replace with NonZeroU16::{MIN,MAX} when stable
+        // SAFETY: Non-zero
+        unsafe { NonZeroU16::new_unchecked(0x0001) },
+    );
+    pub(super) const MAX: Self = Self(
+        // SAFETY: Non-zero
+        unsafe { NonZeroU16::new_unchecked(0xFFFF) },
+    );
+
     /// Wraps a raw handle. Returns `None` if the handle is invalid.
     #[inline]
     #[must_use]
@@ -18,6 +29,12 @@ impl Handle {
             Some(nz) => Some(Self(nz)),
             None => None,
         }
+    }
+
+    /// Returns the next handle or `None` if the maximum handle was reached.
+    #[inline]
+    pub(super) const fn next(self) -> Option<Self> {
+        Self::new(self.0.get().wrapping_add(1))
     }
 }
 

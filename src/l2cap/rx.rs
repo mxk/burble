@@ -249,14 +249,14 @@ impl<T: host::Transport> Chan<T> {
         if !cs.is_ok() {
             return None;
         }
-        if cs.rx.len() == Self::MAX_PDUS {
+        if cs.pdu.len() == Self::MAX_PDUS {
             error!("PDU queue overflow for {}", self.raw.cid);
             chan::State::set_fatal(cs, Status::ERROR);
             return None;
         }
         trace!("New PDU for {}", self.raw.cid);
-        cs.rx.push_back(raw);
-        if cs.rx.len() == 1 {
+        cs.pdu.push_back(raw);
+        if cs.pdu.len() == 1 {
             cs.notify_all();
         }
         Some(self.raw.cid)
