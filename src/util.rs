@@ -1,3 +1,4 @@
-pub(crate) use condvar::*;
+pub(crate) use {self::bytes::*, condvar::*};
 
+mod bytes;
 mod condvar;
