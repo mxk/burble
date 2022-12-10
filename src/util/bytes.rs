@@ -1,10 +1,6 @@
 #![allow(dead_code)] // TODO: Remove
 
-use std::mem::size_of;
-use std::ptr::NonNull;
-use std::slice;
-
-static ZERO: [u8; 64] = [0; 64];
+use std::{mem, slice};
 
 /// Unpacker of POD values from a byte slice. Any reads past the end of the
 /// slice return default values rather than panicking. The caller must check the
@@ -25,11 +21,11 @@ impl<'a> Unpkr<'a> {
     /// Returns the remaining byte slice.
     #[inline(always)]
     #[must_use]
-    pub const fn peek(&self) -> &[u8] {
+    pub const fn peek(&self) -> &'a [u8] {
         self.0
     }
 
-    /// Returns whether all reads stayed within the bounds of the original byte
+    /// Returns whether all reads were within the bounds of the original byte
     /// slice.
     #[inline]
     #[must_use]
@@ -45,10 +41,13 @@ impl<'a> Unpkr<'a> {
         self.is_ok().then_some(self.0)
     }
 
-    /// Skips `n` bytes.
+    /// Returns the remaining byte slice in a new unpacker, leaving the original
+    /// empty. This is primarily useful in combination with `map()`.
     #[inline]
-    pub fn skip(&mut self, n: usize) {
-        self.0 = (self.0.get(n..)).unwrap_or(Self::err());
+    pub fn take(&mut self) -> Self {
+        // SAFETY: `len()..` range is always valid for get()
+        let empty = unsafe { self.0.get_unchecked(self.0.len()..) };
+        Self(mem::replace(&mut self.0, empty))
     }
 
     /// Returns the result of passing the unpacker to `f`, or `None` if `f`
@@ -65,6 +64,12 @@ impl<'a> Unpkr<'a> {
     #[must_use]
     pub fn map_or<T>(self, default: T, f: impl FnOnce(&mut Self) -> T) -> T {
         self.map(f).unwrap_or(default)
+    }
+
+    /// Skips `n` bytes.
+    #[inline]
+    pub fn skip(&mut self, n: usize) {
+        self.0 = (self.0.get(n..)).unwrap_or(Self::err());
     }
 
     /// Returns the next `u8` as a `bool` where any non-zero value is converted
@@ -162,10 +167,10 @@ impl<'a> Unpkr<'a> {
     ///
     /// # Safety
     ///
-    /// The caller must ensure that `T` can hold the resulting bit pattern.
+    /// `T` must be able to hold the resulting bit pattern.
     #[inline]
     pub unsafe fn read<T: Default>(&mut self) -> T {
-        let n = size_of::<T>();
+        let n = mem::size_of::<T>();
         if n > self.0.len() {
             self.0 = Self::err();
             return T::default();
@@ -178,39 +183,21 @@ impl<'a> Unpkr<'a> {
         }
     }
 
-    /// Returns the next `N` bytes as an array, where `N <= 64`.
-    pub fn next<const N: usize>(&mut self) -> &[u8; N] {
-        if N <= self.0.len() {
-            let p = self.0.as_ptr();
-            // SAFETY: 0 <= N <= self.0.len()
-            unsafe {
-                self.0 = slice::from_raw_parts(p.add(N), self.0.len() - N);
-                &*p.cast()
-            }
-        } else {
-            self.0 = Self::err();
-            assert!(N <= ZERO.len());
-            // SAFETY: A dangling pointer is valid for a zero-length slice and
-            // ZERO has at least N bytes.
-            unsafe { &*ZERO.as_ptr().cast() }
-        }
-    }
-
     /// Returns a sentinel byte slice indicating that the original slice was too
     /// short.
     #[inline(always)]
     #[must_use]
     const fn err() -> &'static [u8] {
-        // Can't be a `const`: https://github.com/rust-lang/rust/issues/105536
+        // Can't be a const: https://github.com/rust-lang/rust/issues/105536
         // SAFETY: A dangling pointer is valid for a zero-length slice
-        unsafe { slice::from_raw_parts(NonNull::dangling().as_ptr(), 0) }
+        unsafe { slice::from_raw_parts(std::ptr::NonNull::dangling().as_ptr(), 0) }
     }
 }
 
-impl AsRef<[u8]> for Unpkr<'_> {
+impl<'a> AsRef<[u8]> for Unpkr<'a> {
     #[inline(always)]
     #[must_use]
-    fn as_ref(&self) -> &[u8] {
+    fn as_ref(&self) -> &'a [u8] {
         self.0
     }
 }
@@ -233,5 +220,22 @@ mod tests {
         assert_eq!(u.u16(), 0);
         assert!(!u.is_ok());
         assert_eq!(u.u32(), 0);
+    }
+
+    #[test]
+    fn unpkr_take() {
+        let mut u = Unpkr::new(&[1, 2, 3]);
+        assert_eq!(u.u8(), 1);
+        let mut v = u.take();
+        assert!(u.is_ok());
+        assert!(u.peek().is_empty());
+
+        assert_eq!((v.u8(), v.u8()), (2, 3));
+        assert!(v.is_ok());
+
+        assert_eq!(u.u64(), 0);
+        assert!(!u.is_ok());
+        let v = u.take();
+        assert!(!v.is_ok());
     }
 }
