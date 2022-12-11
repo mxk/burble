@@ -1,5 +1,4 @@
-pub(crate) use {self::bytes::*, condvar::*};
+pub(crate) use {buf::*, condvar::*};
 
 mod buf;
-mod bytes;
 mod condvar;
