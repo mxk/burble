@@ -176,11 +176,9 @@ impl<'a> Unpkr<'a> {
             return T::default();
         }
         // SAFETY: 0 <= size_of::<T>() <= self.0.len()
-        unsafe {
-            let p = self.0.as_ptr().cast::<T>();
-            self.0 = slice::from_raw_parts(p.add(1).cast(), self.0.len() - n);
-            p.read_unaligned()
-        }
+        let p = self.0.as_ptr().cast::<T>();
+        self.0 = slice::from_raw_parts(p.add(1).cast(), self.0.len() - n);
+        p.read_unaligned()
     }
 
     /// Returns a sentinel byte slice indicating that the original slice was too
