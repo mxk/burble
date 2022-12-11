@@ -21,6 +21,8 @@ use super::*;
 mod hci;
 mod le;
 
+// TODO: Switch to using Unpkr
+
 /// HCI event decoder.
 #[derive(Clone, Debug, Default)]
 pub struct Event<'a> {

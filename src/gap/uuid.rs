@@ -98,6 +98,7 @@ impl Display for Uuid {
 pub struct Uuid16(NonZeroU16);
 
 impl Uuid16 {
+    #[allow(dead_code)] // TODO: Remove
     #[inline]
     const fn new(v: u16) -> Self {
         // SAFETY: v is not 0

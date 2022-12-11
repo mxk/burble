@@ -2,7 +2,7 @@
 
 use std::fmt::Debug;
 
-use super::Access;
+use super::*;
 
 /// Attribute opcode ([Vol 3] Part F, Section 3.3.1 and
 /// [Vol 3] Part F, Section 3.4.8).
@@ -63,6 +63,26 @@ impl Opcode {
     #[inline]
     pub const fn is_signed(self) -> bool {
         self as u8 & (1 << 7) != 0
+    }
+
+    /// Returns a non-handle error response.
+    #[inline]
+    pub(crate) const fn err(self, err: ErrorCode) -> ErrorRsp {
+        ErrorRsp {
+            req: self,
+            hdl: None,
+            err,
+        }
+    }
+
+    /// Returns a handle-specific error response.
+    #[inline]
+    pub(crate) const fn hdl_err(self, hdl: Option<Handle>, err: ErrorCode) -> ErrorRsp {
+        ErrorRsp {
+            req: self,
+            hdl,
+            err,
+        }
     }
 
     /// Returns the PDU type.

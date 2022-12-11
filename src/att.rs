@@ -9,7 +9,7 @@ use std::time::Duration;
 use bytes::{Buf, BufMut, BytesMut};
 use tracing::warn;
 
-pub(crate) use {consts::*, handle::*, perm::*, server::*};
+pub(crate) use {consts::*, handle::*, pdu::*, perm::*, server::*};
 
 use crate::gap::Uuid;
 use crate::l2cap::{BasicChan, Sdu};
@@ -17,6 +17,7 @@ use crate::{host, l2cap};
 
 mod consts;
 mod handle;
+mod pdu;
 mod perm;
 mod server;
 
@@ -35,9 +36,9 @@ pub enum Error {
 /// Common ATT result type.
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// Error response ([Vol 3] Part F, Section 3.4.1.1).
+/// `ATT_ERROR_RSP` PDU ([Vol 3] Part F, Section 3.4.1.1).
 #[derive(Copy, Clone, Debug, thiserror::Error)]
-#[error("ATT {req} failed with {err} ({hdl:?})")]
+#[error("ATT {req}{} failed with {err}", .hdl.map_or(String::new(), |h| format!(" for handle {:#06X}", u16::from(h))))]
 pub struct ErrorRsp {
     pub req: Opcode,
     pub hdl: Option<Handle>,
@@ -62,7 +63,7 @@ impl<T: host::Transport> Bearer<T> {
 
     /// Returns the next command, request, notification, or indication PDU. This
     /// method is not cancel safe. Dropping the returned future may result in a
-    /// failure to send an error response.
+    /// failure to send an internal response.
     pub async fn recv(&mut self) -> Result<Pdu<T>> {
         loop {
             let sdu = self.ch.recv().await?;
@@ -74,9 +75,7 @@ impl<T: host::Transport> Bearer<T> {
             };
             let Some(op) = Opcode::try_from(op).ok() else {
                 warn!("Unknown ATT opcode: {op}");
-                if !Opcode::is_cmd(op) {
-                    self.error_rsp(op, None, ErrorCode::RequestNotSupported).await?;
-                }
+                self.error_rsp(op, None, ErrorCode::RequestNotSupported).await?;
                 continue;
             };
             if matches!(op.typ(), PduType::Rsp | PduType::Cfm) {
@@ -84,30 +83,34 @@ impl<T: host::Transport> Bearer<T> {
                 continue;
             }
             // TODO: Validate signature?
-            return Ok(Pdu { br: self, op, sdu });
+            return Ok(Pdu::new(self, op, sdu));
         }
     }
 
     /// Sends an `ATT_ERROR_RSP` PDU in response to a request that cannot be
-    /// performed ([Vol 3] Part F, Section 3.4.1.1).
+    /// performed ([Vol 3] Part F, Section 3.4.1.1). Command-related errors are
+    /// ignored.
     async fn error_rsp(&mut self, req: u8, hdl: Option<Handle>, err: ErrorCode) -> Result<()> {
-        assert!(!Opcode::is_cmd(req));
-        let sdu = self.new_sdu(Opcode::ErrorRsp, |b| {
-            b.put_u8(req);
-            b.put_u16_le(hdl.map_or(0, u16::from));
-            b.put_u8(err.into());
+        warn!("ATT response: opcode {req:#06X} for {hdl:?} failed with {err}");
+        if Opcode::is_cmd(req) {
+            return Ok(());
+        }
+        let pdu = self.new_pdu(Opcode::ErrorRsp, |p| {
+            p.put_u8(req);
+            p.put_u16_le(hdl.map_or(0, u16::from));
+            p.put_u8(err.into());
         });
-        self.send(sdu).await
+        self.send(pdu).await
     }
 
-    /// Returns an outbound SDU, calling `f` to encode it after writing the
+    /// Returns an outbound PDU, calling `f` to encode it after writing the
     /// opcode.
     #[inline]
-    fn new_sdu(&mut self, op: Opcode, f: impl FnOnce(&mut BytesMut)) -> Sdu<T> {
+    fn new_pdu(&mut self, op: Opcode, f: impl FnOnce(&mut BytesMut)) -> Sdu<T> {
         let mut sdu = self.ch.new_sdu();
-        let b = sdu.buf_mut();
-        b.put_u8(op.into());
-        f(b);
+        let p = sdu.buf_mut();
+        p.put_u8(op.into());
+        f(p);
         sdu
     }
 
@@ -151,36 +154,5 @@ impl<T: host::Transport> Bearer<T> {
     #[inline]
     async fn send(&mut self, sdu: Sdu<T>) -> Result<()> {
         Ok(self.ch.send(sdu).await?)
-    }
-}
-
-/// Received ATT protocol data unit ([Vol 3] Part F, Section 3.3).
-#[derive(Debug)]
-pub struct Pdu<'a, T: host::Transport> {
-    br: &'a mut Bearer<T>,
-    op: Opcode,
-    sdu: Sdu<T>,
-}
-
-impl<T: host::Transport> Pdu<'_, T> {
-    /// Returns the PDU opcode.
-    #[inline]
-    pub const fn opcode(&self) -> Opcode {
-        self.op
-    }
-
-    /// Sends an `ATT_ERROR_RSP` PDU in response to a request that cannot be
-    /// performed ([Vol 3] Part F, Section 3.4.1.1).
-    pub async fn error_rsp(self, hdl: Option<Handle>, err: ErrorCode) -> Result<()> {
-        self.br.error_rsp(self.op as _, hdl, err).await
-    }
-}
-
-impl<T: host::Transport> AsRef<[u8]> for Pdu<'_, T> {
-    /// Returns PDU bytes, starting with the basic L2CAP header.
-    #[inline]
-    fn as_ref(&self) -> &[u8] {
-        //self.pdu.as_ref().get_unchecked()
-        self.sdu.as_ref()
     }
 }
