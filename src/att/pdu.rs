@@ -1,5 +1,3 @@
-use crate::util::Unpacker;
-
 use super::*;
 
 /// PDU response result.

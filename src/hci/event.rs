@@ -7,13 +7,13 @@ use std::sync::Arc;
 use std::task::{ready, Context, Poll};
 use std::time::Duration;
 
+use structbuf::Unpacker;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, trace};
 
 pub use {hci::*, le::*};
 
-use crate::util::Unpacker;
 use crate::{host, host::Transfer, le::RawAddr};
 
 use super::*;

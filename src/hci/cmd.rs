@@ -1,11 +1,11 @@
 use std::ops::{Deref, DerefMut};
 
+use structbuf::StructBuf;
 use tracing::{trace, warn};
 
 pub use {hci_control::*, info_params::*, le::*};
 
 use crate::host::Transfer;
-use crate::util::LimitedBuf;
 
 use super::*;
 
@@ -67,7 +67,7 @@ impl<T: host::Transport> Command<T> {
 }
 
 impl<T: host::Transport> Deref for Command<T> {
-    type Target = LimitedBuf;
+    type Target = StructBuf;
 
     #[inline]
     fn deref(&self) -> &Self::Target {

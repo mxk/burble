@@ -4,12 +4,12 @@ use std::fmt::Debug;
 use std::sync::Arc;
 use std::time::Duration;
 
+use structbuf::Packer;
 use strum::IntoEnumIterator;
 
 pub use {adv::*, cmd::*, consts::*, event::*, handle::*};
 
 use crate::host;
-use crate::util::Packer;
 
 mod adv;
 mod cmd;

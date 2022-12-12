@@ -10,6 +10,7 @@ use std::mem::ManuallyDrop;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
+use structbuf::StructBuf;
 use tracing::debug;
 
 pub(crate) use chan::*;
@@ -17,7 +18,6 @@ pub use {consts::*, handle::*};
 
 use crate::hci::ACL_HDR;
 use crate::host::Transfer;
-use crate::util::LimitedBuf;
 use crate::{hci, host};
 
 mod chan;
@@ -289,7 +289,7 @@ impl<T: host::Transport> Alloc<T> {
         }
         // TODO: Reuse buffers
         // TODO: This must include the transport header for non-USB transports
-        RawBuf::Buf(LimitedBuf::new(ACL_HDR + max_frame_len))
+        RawBuf::Buf(StructBuf::new(ACL_HDR + max_frame_len))
     }
 }
 
@@ -353,7 +353,7 @@ impl<T: host::Transport> Sdu<T> {
     /// Returns the SDU buffer, which always starts with ACL and L2CAP packet
     /// headers that must not be modified.
     #[inline]
-    pub fn buf_mut(&mut self) -> &mut LimitedBuf {
+    pub fn buf_mut(&mut self) -> &mut StructBuf {
         self.raw.buf_mut()
     }
 }
@@ -371,7 +371,7 @@ impl<T: host::Transport> AsRef<[u8]> for Sdu<T> {
 #[derive(Debug)]
 enum RawBuf<T: host::Transport> {
     Transfer(AclTransfer<T>),
-    Buf(LimitedBuf),
+    Buf(StructBuf),
 }
 
 impl<T: host::Transport> RawBuf<T> {
@@ -389,7 +389,7 @@ impl<T: host::Transport> RawBuf<T> {
     #[must_use]
     fn first(pdu_len: usize, frag: &[u8]) -> Self {
         debug_assert!(frag.len() >= ACL_HDR + L2CAP_HDR);
-        let mut buf = LimitedBuf::with_capacity(ACL_HDR + L2CAP_HDR + pdu_len);
+        let mut buf = StructBuf::with_capacity(ACL_HDR + L2CAP_HDR + pdu_len);
         buf.put_at(0, frag);
         Self::Buf(buf)
     }
@@ -426,7 +426,7 @@ impl<T: host::Transport> RawBuf<T> {
 
     /// Returns the PDU buffer, which starts with an ACL data packet header.
     #[inline]
-    fn buf_mut(&mut self) -> &mut LimitedBuf {
+    fn buf_mut(&mut self) -> &mut StructBuf {
         match *self {
             Self::Transfer(ref mut xfer) => xfer.buf_mut(),
             Self::Buf(ref mut buf) => buf,
@@ -450,7 +450,7 @@ impl<T: host::Transport> RawBuf<T> {
 impl<T: host::Transport> Default for RawBuf<T> {
     #[inline]
     fn default() -> Self {
-        Self::Buf(LimitedBuf::default())
+        Self::Buf(StructBuf::default())
     }
 }
 

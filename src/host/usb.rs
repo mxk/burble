@@ -8,6 +8,7 @@ use std::thread;
 use std::time::Duration;
 
 use rusb::UsbContext;
+use structbuf::StructBuf;
 use tracing::{debug, error, trace, warn};
 
 use crate::hci;
@@ -203,12 +204,12 @@ impl Transfer for UsbTransfer {
     type Future = UsbTransferFuture;
 
     #[inline(always)]
-    fn buf(&self) -> &LimitedBuf {
+    fn buf(&self) -> &StructBuf {
         self.t.buf()
     }
 
     #[inline(always)]
-    fn buf_mut(&mut self) -> &mut LimitedBuf {
+    fn buf_mut(&mut self) -> &mut StructBuf {
         self.t.buf_mut()
     }
 
@@ -349,9 +350,8 @@ mod libusb {
     use std::time::Duration;
 
     use rusb::{constants::*, ffi::*, *};
+    use structbuf::StructBuf;
     use tracing::{debug, error, info, trace, warn};
-
-    use crate::util::LimitedBuf;
 
     macro_rules! check {
         ($x:expr) => {
@@ -370,7 +370,7 @@ mod libusb {
     #[derive(Debug)]
     pub(super) struct Transfer<T: UsbContext> {
         inner: NonNull<libusb_transfer>,
-        buf: LimitedBuf,
+        buf: StructBuf,
 
         // The waker mutex is used to synchronize TransferFuture with the event
         // thread.
@@ -428,9 +428,9 @@ mod libusb {
             let mut t = Box::new(Self {
                 inner,
                 buf: if is_out {
-                    LimitedBuf::new(buf_cap)
+                    StructBuf::new(buf_cap)
                 } else {
-                    LimitedBuf::with_capacity(buf_cap)
+                    StructBuf::with_capacity(buf_cap)
                 },
                 waker: parking_lot::Mutex::new(None),
                 result: None,
@@ -449,13 +449,13 @@ mod libusb {
 
         /// Returns a reference to the transfer buffer.
         #[inline(always)]
-        pub const fn buf(&self) -> &LimitedBuf {
+        pub const fn buf(&self) -> &StructBuf {
             &self.buf
         }
 
         /// Returns a mutable reference to the transfer buffer.
         #[inline(always)]
-        pub fn buf_mut(&mut self) -> &mut LimitedBuf {
+        pub fn buf_mut(&mut self) -> &mut StructBuf {
             &mut self.buf
         }
 

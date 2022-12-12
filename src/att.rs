@@ -6,13 +6,13 @@ use std::fmt::Debug;
 use std::sync::Arc;
 use std::time::Duration;
 
+use structbuf::{Packer, Unpacker};
 use tracing::warn;
 
 pub(crate) use {consts::*, handle::*, pdu::*, perm::*, server::*};
 
 use crate::gap::Uuid;
 use crate::l2cap::{BasicChan, Sdu};
-use crate::util::{Packer, Unpacker};
 use crate::{host, l2cap};
 
 mod consts;

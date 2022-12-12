@@ -3,9 +3,9 @@
 use std::fmt::Debug;
 use std::future::Future;
 
-pub use usb::*;
+use structbuf::StructBuf;
 
-use crate::util::LimitedBuf;
+pub use usb::*;
 
 mod usb;
 
@@ -57,12 +57,12 @@ pub trait Transfer: AsRef<[u8]> + Debug + Send + Sync {
     type Future: Future<Output = Self> + Debug + Send + Unpin;
 
     /// Returns a reference to the transfer buffer.
-    fn buf(&self) -> &LimitedBuf;
+    fn buf(&self) -> &StructBuf;
 
     /// Returns a mutable reference to the transfer buffer. A newly allocated
     /// transfer may start with a non-empty buffer. The header, if any, must not
     /// be modified.
-    fn buf_mut(&mut self) -> &mut LimitedBuf;
+    fn buf_mut(&mut self) -> &mut StructBuf;
 
     /// Returns the length of the header that precedes the payload in the
     /// transfer buffer.

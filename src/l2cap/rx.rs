@@ -1,8 +1,11 @@
 //! Receive side of the Resource Manager.
 
-use crate::util::{CondvarGuard, Unpacker};
 use std::u16;
+
+use structbuf::Unpacker;
 use tracing::{error, trace, warn};
+
+use crate::util::CondvarGuard;
 
 use super::*;
 
@@ -165,7 +168,7 @@ struct Chan<T: host::Transport> {
     /// Destination channel.
     raw: Arc<RawChan<T>>,
     /// PDU recombination buffer.
-    buf: LimitedBuf,
+    buf: StructBuf,
 }
 
 impl<T: host::Transport> Chan<T> {
@@ -179,7 +182,7 @@ impl<T: host::Transport> Chan<T> {
     pub fn new(ch: Arc<RawChan<T>>) -> Self {
         Self {
             raw: ch,
-            buf: LimitedBuf::new(0),
+            buf: StructBuf::new(0),
         }
     }
 
@@ -187,7 +190,7 @@ impl<T: host::Transport> Chan<T> {
     #[inline]
     fn ensure_complete(&mut self) {
         if self.buf.lim() > 0 {
-            self.buf = LimitedBuf::new(0);
+            self.buf = StructBuf::new(0);
             error!("Incomplete PDU for {}", self.raw.cid);
             self.raw.set_error();
         }
@@ -213,7 +216,7 @@ impl<T: host::Transport> Chan<T> {
         if xfer.as_ref().len() == complete_len {
             self.complete(cs, RawBuf::Transfer(xfer))
         } else {
-            self.buf = LimitedBuf::with_capacity(complete_len);
+            self.buf = StructBuf::with_capacity(complete_len);
             self.buf.put_at(0, xfer.as_ref());
             None
         }
@@ -229,13 +232,13 @@ impl<T: host::Transport> Chan<T> {
                 acl_data.len(),
                 self.buf.remaining()
             );
-            self.buf = LimitedBuf::new(0);
+            self.buf = StructBuf::new(0);
             self.raw.set_error();
             return None;
         }
         p.put(acl_data);
         if self.buf.is_full() {
-            let buf = RawBuf::Buf(mem::replace(&mut self.buf, LimitedBuf::new(0)));
+            let buf = RawBuf::Buf(mem::replace(&mut self.buf, StructBuf::new(0)));
             self.complete(self.raw.state.lock(), buf)
         } else {
             None

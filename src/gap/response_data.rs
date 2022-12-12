@@ -10,28 +10,29 @@
 
 use std::time::Duration;
 
+use structbuf::{Packer, StructBuf};
+
 use crate::hci::{ticks_1250us, ticks_625us};
 use crate::le::TxPower;
-use crate::util::{LimitedBuf, Packer};
 
 use super::*;
 
 /// Response data builder.
 #[derive(Clone, Debug)]
-pub struct ResponseDataMut(LimitedBuf);
+pub struct ResponseDataMut(StructBuf);
 
 impl ResponseDataMut {
     /// Creates a new response data buffer.
     #[inline]
     #[must_use]
     pub const fn new() -> Self {
-        Self(LimitedBuf::new(254)) // [Vol 6] Part B, Section 2.3.4
+        Self(StructBuf::new(254)) // [Vol 6] Part B, Section 2.3.4
     }
 
     /// Returns the final response data buffer.
     #[allow(clippy::missing_const_for_fn)]
     #[inline]
-    pub fn get(self) -> LimitedBuf {
+    pub fn get(self) -> StructBuf {
         self.0
     }
 

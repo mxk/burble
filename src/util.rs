@@ -1,4 +1,3 @@
-pub(crate) use {buf::*, condvar::*};
+pub(crate) use condvar::*;
 
-mod buf;
 mod condvar;
