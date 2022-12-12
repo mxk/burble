@@ -1,6 +1,7 @@
 //! Receive side of the Resource Manager.
 
-use bytes::Buf;
+use crate::util::{CondvarGuard, Unpacker};
+use std::u16;
 use tracing::{error, trace, warn};
 
 use super::*;
@@ -138,7 +139,7 @@ impl<T: host::Transport> Receiver<T> {
             };
             trace!("PDU fragment for {cid}: {pkt:02X?}");
             return ch.first(pdu_len, xfer).or_else(|| {
-                if ch.rem > 0 {
+                if !ch.buf.is_full() {
                     *cont_cid = Some(cid.chan);
                 }
                 None
@@ -151,7 +152,7 @@ impl<T: host::Transport> Receiver<T> {
         trace!("Cont. PDU fragment for {cid}: {pkt:02X?}");
         let ch = self.chans.get_mut(&link.chan(cid)).unwrap();
         let r = ch.cont(data);
-        if ch.rem == 0 {
+        if ch.buf.is_full() {
             *cont_cid = None;
         }
         r
@@ -164,9 +165,7 @@ struct Chan<T: host::Transport> {
     /// Destination channel.
     raw: Arc<RawChan<T>>,
     /// PDU recombination buffer.
-    buf: BytesMut,
-    /// Number of bytes needed to finish recombining the current PDU.
-    rem: usize,
+    buf: LimitedBuf,
 }
 
 impl<T: host::Transport> Chan<T> {
@@ -180,17 +179,15 @@ impl<T: host::Transport> Chan<T> {
     pub fn new(ch: Arc<RawChan<T>>) -> Self {
         Self {
             raw: ch,
-            buf: BytesMut::new(),
-            rem: 0,
+            buf: LimitedBuf::new(0),
         }
     }
 
     /// Sets the channel error flag if the most recent PDU is incomplete.
     #[inline]
     fn ensure_complete(&mut self) {
-        if self.rem > 0 {
-            self.buf.clear();
-            self.rem = 0;
+        if self.buf.lim() > 0 {
+            self.buf = LimitedBuf::new(0);
             error!("Incomplete PDU for {}", self.raw.cid);
             self.raw.set_error();
         }
@@ -214,38 +211,39 @@ impl<T: host::Transport> Chan<T> {
         }
         let complete_len = ACL_HDR + frame_len;
         if xfer.as_ref().len() == complete_len {
-            return self.complete(RawBuf::Transfer(xfer));
+            self.complete(cs, RawBuf::Transfer(xfer))
+        } else {
+            self.buf = LimitedBuf::with_capacity(complete_len);
+            self.buf.put_at(0, xfer.as_ref());
+            None
         }
-        self.buf.reserve(complete_len);
-        self.buf.extend_from_slice(xfer.as_ref());
-        self.rem = complete_len - self.buf.len();
-        None
     }
 
     /// Receives a continuation PDU fragment.
     pub fn cont(&mut self, acl_data: &[u8]) -> Option<LeCid> {
-        let Some(rem) = self.rem.checked_sub(acl_data.len()) else {
+        let mut p = self.buf.pack();
+        if !p.can_put(acl_data.len()) {
             error!(
                 "PDU fragment for {} exceeds expected length ({} > {})",
-                self.raw.cid, acl_data.len(), self.rem
+                self.raw.cid,
+                acl_data.len(),
+                self.buf.remaining()
             );
-            self.buf.clear();
-            self.rem = 0;
+            self.buf = LimitedBuf::new(0);
             self.raw.set_error();
             return None;
-        };
-        self.rem = rem;
-        self.buf.extend_from_slice(acl_data);
-        if rem > 0 {
-            return None;
         }
-        let raw = RawBuf::Buf(self.buf.split());
-        self.complete(raw)
+        p.put(acl_data);
+        if self.buf.is_full() {
+            let buf = RawBuf::Buf(mem::replace(&mut self.buf, LimitedBuf::new(0)));
+            self.complete(self.raw.state.lock(), buf)
+        } else {
+            None
+        }
     }
 
     /// Adds a complete PDU to the channel queue and notifies any waiters.
-    pub fn complete(&self, raw: RawBuf<T>) -> Option<LeCid> {
-        let mut cs = self.raw.state.lock();
+    pub fn complete(&self, mut cs: CondvarGuard<chan::State<T>>, raw: RawBuf<T>) -> Option<LeCid> {
         if !cs.is_ok() {
             return None;
         }
@@ -268,42 +266,41 @@ impl<T: host::Transport> Chan<T> {
 #[allow(clippy::type_complexity)]
 #[must_use]
 fn parse_hdr(pkt: &[u8]) -> Option<(LeU, Option<(u16, Cid)>, &[u8])> {
-    if pkt.len() < ACL_HDR {
+    let mut p = Unpacker::new(pkt);
+    let Some(mut hdr) = p.skip(ACL_HDR) else {
         error!("ACL data packet with missing header: {pkt:02X?}");
         return None;
-    }
-    let (mut hdr, data) = pkt.split_at(ACL_HDR); // TODO: Use split_at_unchecked
-    let cn_flag = hdr.get_u16_le();
+    };
+    let cn_flag = hdr.u16();
     let Some(cn) = hci::ConnHandle::new(cn_flag) else {
         error!("ACL data packet for an invalid connection handle: {pkt:02X?}");
         return None;
     };
-    if data.len() != usize::from(hdr.get_u16_le()) {
+    if p.len() != usize::from(hdr.u16()) {
         error!("ACL data packet length mismatch: {pkt:02X?}");
         return None;
     }
     let is_first = (cn_flag >> hci::ConnHandle::BITS) & 0b11 != 0b01;
     let l2cap_hdr = if is_first {
-        if data.len() < L2CAP_HDR {
+        let Some(mut hdr) = p.skip(L2CAP_HDR) else {
             error!("ACL data packet with missing L2CAP header: {pkt:02X?}");
             return None;
         };
-        let (mut hdr, payload) = data.split_at(L2CAP_HDR);
-        let pdu_len = hdr.get_u16_le();
-        if usize::from(pdu_len) < payload.len() {
+        let pdu_len = hdr.u16();
+        if usize::from(pdu_len) < p.len() {
             error!("ACL data packet with an invalid PDU length: {pkt:02X?}");
             return None;
         }
-        let Some(cid) = Cid::new(hdr.get_u16_le()) else {
+        let Some(cid) = Cid::new(hdr.u16()) else {
             error!("ACL data packet for an invalid CID: {pkt:02X?}");
             return None;
         };
         Some((pdu_len, cid))
-    } else if data.is_empty() {
+    } else if p.is_empty() {
         warn!("ACL data packet without payload: {pkt:02X?}");
         return None;
     } else {
         None
     };
-    Some((LeU::new(cn), l2cap_hdr, data))
+    p.into_inner().map(|data| (LeU::new(cn), l2cap_hdr, data))
 }

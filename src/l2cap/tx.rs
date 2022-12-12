@@ -22,11 +22,11 @@ impl<T: host::Transport> State<T> {
         })
     }
 
-    /// Creates a new outbound PDU, padded with space for the ACL data packet
+    /// Creates a new outbound buffer, padded with space for the ACL data packet
     /// and basic L2CAP headers.
-    pub fn new_pdu(&self, max_frame_len: usize) -> RawBuf<T> {
-        let mut raw = self.alloc.pdu(max_frame_len);
-        raw.buf_mut().put_bytes(0, ACL_HDR + L2CAP_HDR);
+    pub fn new_buf(&self, max_frame_len: usize) -> RawBuf<T> {
+        let mut raw = self.alloc.buf(max_frame_len);
+        raw.buf_mut().put_at(ACL_HDR + L2CAP_HDR, &[]);
         raw
     }
 
@@ -312,13 +312,14 @@ impl<T: host::Transport> SchedulerGuard<T> {
     async fn send(mut self) -> Result<()> {
         // Update basic L2CAP header ([Vol 3] Part A, Section 3.1)
         let cid = u16::from(self.ch.cid.chan);
-        let data = &mut self.raw.buf_mut()[ACL_HDR..];
-        let (mut l2cap_hdr, payload) = data.split_at_mut(L2CAP_HDR);
-        l2cap_hdr.put_u16_le(u16::try_from(payload.len()).unwrap());
-        l2cap_hdr.put_u16_le(cid);
+        let buf = self.raw.buf_mut();
+        let pdu_len = buf.len().saturating_sub(ACL_HDR + L2CAP_HDR);
+        buf.pack_at(ACL_HDR)
+            .u16(u16::try_from(pdu_len).unwrap())
+            .u16(cid);
 
         if let Some(xfer) = self.raw.take_xfer() {
-            // Fast path for single-fragment PDUs
+            // Fast path for a single-fragment PDU
             return self.send_frag(xfer, false, false).await.map(|_xfer| ());
         }
 
@@ -326,9 +327,11 @@ impl<T: host::Transport> SchedulerGuard<T> {
         let frags = self.raw.as_ref().chunks(self.tx.alloc.acl_data_len);
         let last = frags.len() - 1;
         for (i, frag) in frags.enumerate() {
-            let buf = xfer.buf_mut();
-            buf.put_bytes(0, ACL_HDR);
-            buf.extend_from_slice(frag);
+            // This path may be taken by single-fragment PDUs that weren't
+            // guaranteed to fit when first allocated. These still need to be
+            // copied into the new transfer because simply swapping buffers
+            // would create problems when the transfer is reused.
+            xfer.buf_mut().pack_at(ACL_HDR).put(frag);
             xfer = self.send_frag(xfer, i != 0, i != last).await?;
             if i != last {
                 xfer.reset();
@@ -345,9 +348,11 @@ impl<T: host::Transport> SchedulerGuard<T> {
         more: bool,
     ) -> Result<AclTransfer<T>> {
         // Update ACL data packet header ([Vol 4] Part E, Section 5.4.2)
-        let (mut hdr, data) = xfer.buf_mut().split_at_mut(ACL_HDR);
-        hdr.put_u16_le(u16::from(is_cont) << hci::ConnHandle::BITS | u16::from(self.ch.cid.link));
-        hdr.put_u16_le(u16::try_from(data.len()).unwrap());
+        let buf = xfer.buf_mut();
+        let data_len = buf.len().saturating_sub(ACL_HDR);
+        buf.pack_at(0)
+            .u16(u16::from(is_cont) << hci::ConnHandle::BITS | u16::from(self.ch.cid.link))
+            .u16(u16::try_from(data_len).unwrap());
         self.ch.may_send().await?;
         // TODO: Verify that xfer is an outbound ACL transfer
         trace!(

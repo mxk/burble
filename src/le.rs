@@ -99,13 +99,6 @@ impl TxPower {
     pub const fn new(v: i8) -> Self {
         Self(v)
     }
-
-    /// Returns the raw power level as `i8`.
-    #[inline]
-    #[must_use]
-    pub const fn as_i8(self) -> i8 {
-        self.0
-    }
 }
 
 impl Default for TxPower {
@@ -119,5 +112,12 @@ impl From<&mut Event<'_>> for TxPower {
     #[inline]
     fn from(e: &mut Event<'_>) -> Self {
         Self(e.i8())
+    }
+}
+
+impl From<TxPower> for i8 {
+    #[inline]
+    fn from(p: TxPower) -> Self {
+        p.0
     }
 }

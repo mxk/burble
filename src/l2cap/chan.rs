@@ -35,7 +35,7 @@ impl<T: host::Transport> BasicChan<T> {
     #[inline]
     pub fn new_sdu(&self) -> Sdu<T> {
         Sdu {
-            raw: self.tx.new_pdu(L2CAP_HDR + self.mtu),
+            raw: self.tx.new_buf(L2CAP_HDR + self.mtu),
             off: Self::HDR,
         }
     }

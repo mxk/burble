@@ -79,7 +79,7 @@ impl<T: host::Transport> Bearer<T> {
     /// Sends an `ATT_EXCHANGE_MTU_RSP` PDU ([Vol 3] Part F, Section 3.4.2.2).
     pub async fn exchange_mtu_rsp(&mut self, mtu: u16) -> Result<()> {
         let sdu = self.new_pdu(Opcode::ExchangeMtuRsp, |p| {
-            p.put_u16_le(mtu);
+            p.u16(mtu);
         });
         self.send(sdu).await
     }

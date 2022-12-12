@@ -1,9 +1,11 @@
-use bytes::{BufMut, BytesMut};
+use std::ops::{Deref, DerefMut};
+
 use tracing::{trace, warn};
 
 pub use {hci_control::*, info_params::*, le::*};
 
 use crate::host::Transfer;
+use crate::util::LimitedBuf;
 
 use super::*;
 
@@ -15,9 +17,8 @@ mod le;
 #[derive(Debug)]
 pub(super) struct Command<T: host::Transport> {
     router: Arc<EventRouter<T>>,
-    xfer: T::Transfer,
     opcode: Opcode,
-    hdr: usize,
+    xfer: T::Transfer,
 }
 
 impl<T: host::Transport> Command<T> {
@@ -27,12 +28,10 @@ impl<T: host::Transport> Command<T> {
         // TODO: Transfer reuse
         let mut cmd = Self {
             router: Arc::clone(&host.router),
-            xfer: host.transport.command(),
             opcode,
-            hdr: 0,
+            xfer: host.transport.command(),
         };
-        cmd.hdr = cmd.xfer.as_ref().len();
-        cmd.u16(opcode).u8(0); // Final length is set in exec()
+        cmd.pack().u16(opcode).u8(0); // Final length is set in exec()
         cmd
     }
 
@@ -40,7 +39,8 @@ impl<T: host::Transport> Command<T> {
     /// check the completion status to determine whether the command was
     /// successful.
     pub async fn exec(mut self) -> Result<EventGuard<T>> {
-        let buf = &mut self.xfer.buf_mut()[self.hdr..];
+        let hdr_len = self.xfer.hdr_len();
+        let buf = &mut self.xfer.buf_mut()[hdr_len..];
         buf[CMD_HDR - 1] = u8::try_from(buf.len() - CMD_HDR).expect("command too long");
         trace!("Command: {:02X?}", buf);
         // Event registration must happen first to ensure that the command quota
@@ -64,61 +64,20 @@ impl<T: host::Transport> Command<T> {
             }
         }
     }
+}
 
-    /// Returns the command transfer buffer.
+impl<T: host::Transport> Deref for Command<T> {
+    type Target = LimitedBuf;
+
     #[inline]
-    #[must_use]
-    pub fn buf(&mut self) -> &mut BytesMut {
+    fn deref(&self) -> &Self::Target {
+        self.xfer.buf()
+    }
+}
+
+impl<T: host::Transport> DerefMut for Command<T> {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut Self::Target {
         self.xfer.buf_mut()
-    }
-
-    /// Writes a `bool` parameter to the command buffer.
-    #[inline]
-    pub fn bool<V: Into<bool>>(&mut self, v: V) -> &mut Self {
-        self.buf().put_u8(u8::from(v.into()));
-        self
-    }
-
-    /// Writes an `i8` parameter to the command buffer.
-    #[inline]
-    pub fn i8<V: Into<i8>>(&mut self, v: V) -> &mut Self {
-        self.buf().put_i8(v.into());
-        self
-    }
-
-    /// Writes a `u8` parameter to the command buffer.
-    #[inline]
-    pub fn u8<V: Into<u8>>(&mut self, v: V) -> &mut Self {
-        self.buf().put_u8(v.into());
-        self
-    }
-
-    /// Writes a `u16` parameter to the command buffer.
-    #[inline]
-    pub fn u16<V: Into<u16>>(&mut self, v: V) -> &mut Self {
-        self.buf().put_u16_le(v.into());
-        self
-    }
-
-    /// Writes a `u24` parameter to the command buffer.
-    #[inline]
-    pub fn u24<V: Into<u32>>(&mut self, v: V) -> &mut Self {
-        let v = v.into().to_le_bytes();
-        assert_eq!(v[3], 0);
-        self.slice(&v[..3])
-    }
-
-    /// Writes a `u64` parameter to the command buffer.
-    #[inline]
-    pub fn u64<V: Into<u64>>(&mut self, v: V) -> &mut Self {
-        self.buf().put_u64_le(v.into());
-        self
-    }
-
-    /// Writes raw byte slice to the command buffer.
-    #[inline]
-    pub fn slice<V: AsRef<[u8]>>(&mut self, v: V) -> &mut Self {
-        self.buf().put_slice(v.as_ref());
-        self
     }
 }

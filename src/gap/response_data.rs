@@ -10,30 +10,29 @@
 
 use std::time::Duration;
 
-use bytes::{BufMut, Bytes, BytesMut};
-
 use crate::hci::{ticks_1250us, ticks_625us};
 use crate::le::TxPower;
+use crate::util::{LimitedBuf, Packer};
 
 use super::*;
 
 /// Response data builder.
 #[derive(Clone, Debug)]
-pub struct ResponseDataMut(BytesMut);
+pub struct ResponseDataMut(LimitedBuf);
 
 impl ResponseDataMut {
     /// Creates a new response data buffer.
     #[inline]
     #[must_use]
-    pub fn new() -> Self {
-        Self(BytesMut::with_capacity(240))
+    pub const fn new() -> Self {
+        Self(LimitedBuf::new(254)) // [Vol 6] Part B, Section 2.3.4
     }
 
     /// Returns the final response data buffer.
+    #[allow(clippy::missing_const_for_fn)]
     #[inline]
-    #[must_use]
-    pub fn freeze(self) -> Bytes {
-        self.0.freeze()
+    pub fn get(self) -> LimitedBuf {
+        self.0
     }
 
     /// Appends service class UUIDs ([CSS] Part A, Section 1.1). Each UUID is
@@ -41,19 +40,19 @@ impl ResponseDataMut {
     pub fn service_class<T: Copy + Into<Uuid>>(&mut self, complete: bool, v: &[T]) -> &mut Self {
         let typ = u8::from(ResponseDataType::IncompleteServiceClass16) + u8::from(complete);
         self.maybe_put(complete, typ, |b| {
-            v.iter()
-                .filter_map(|&u| u.into().as_u16())
-                .for_each(|v| b.put_u16_le(v));
+            v.iter().filter_map(|&u| u.into().as_u16()).for_each(|v| {
+                b.u16(v);
+            });
         });
         self.maybe_put(complete, typ + 2, |b| {
-            v.iter()
-                .filter_map(|&u| u.into().as_u32())
-                .for_each(|v| b.put_u32_le(v));
+            v.iter().filter_map(|&u| u.into().as_u32()).for_each(|v| {
+                b.u32(v);
+            });
         });
         self.maybe_put(complete, typ + 4, |b| {
-            v.iter()
-                .filter_map(|&u| u.into().as_u128())
-                .for_each(|v| b.put_u128_le(v));
+            v.iter().filter_map(|&u| u.into().as_u128()).for_each(|v| {
+                b.u128(v);
+            });
         })
     }
 
@@ -61,25 +60,30 @@ impl ResponseDataMut {
     /// ([CSS] Part A, Section 1.2).
     pub fn local_name<T: AsRef<str>>(&mut self, complete: bool, v: T) -> &mut Self {
         let typ = u8::from(ResponseDataType::ShortLocalName) + u8::from(complete);
-        self.put(typ, |b| b.put_slice(v.as_ref().as_bytes()))
+        self.put(typ, |b| {
+            b.put(v.as_ref().as_bytes());
+        })
     }
 
     /// Appends advertising flags ([CSS] Part A, Section 1.3).
     pub fn flags(&mut self, v: AdvFlag) -> &mut Self {
-        self.put(ResponseDataType::Flags, |b| b.put_u8(v.bits()))
+        self.put(ResponseDataType::Flags, |b| {
+            b.u8(v.bits());
+        })
     }
 
     /// Appends manufacturer-specific data ([CSS] Part A, Section 1.4).
     pub fn manufacturer_data<T: AsRef<str>>(&mut self, company_id: u16, v: &[u8]) -> &mut Self {
         self.put(ResponseDataType::ManufacturerData, |b| {
-            b.put_u16_le(company_id);
-            b.put_slice(v);
+            b.u16(company_id).put(v);
         })
     }
 
     /// Appends TX power level ([CSS] Part A, Section 1.5).
     pub fn tx_power(&mut self, v: TxPower) -> &mut Self {
-        self.put(ResponseDataType::TxPower, |b| b.put_i8(v.as_i8()))
+        self.put(ResponseDataType::TxPower, |b| {
+            b.i8(v);
+        })
     }
 
     /// Appends peripheral connection interval range ([CSS] Part A, Section 1.9).
@@ -89,30 +93,38 @@ impl ResponseDataMut {
         max: Option<Duration>,
     ) -> &mut Self {
         self.put(ResponseDataType::PeripheralConnectionIntervalRange, |b| {
-            b.put_u16_le(min.map_or(u16::MAX, |v| ticks_1250us(v).unwrap()));
-            b.put_u16_le(max.map_or(u16::MAX, |v| ticks_1250us(v).unwrap()));
+            b.u16(min.map_or(u16::MAX, |v| ticks_1250us(v).unwrap()));
+            b.u16(max.map_or(u16::MAX, |v| ticks_1250us(v).unwrap()));
         })
     }
 
     /// Appends device appearance ([CSS] Part A, Section 1.12).
     pub fn appearance(&mut self, v: Appearance) -> &mut Self {
-        self.put(ResponseDataType::Appearance, |b| b.put_u16_le(v.into()))
+        self.put(ResponseDataType::Appearance, |b| {
+            b.u16(v);
+        })
     }
 
     /// Appends advertising Interval ([CSS] Part A, Section 1.15).
     pub fn adv_interval(&mut self, v: Duration) -> &mut Self {
         let v: [u8; 4] = ticks_625us(v).unwrap().to_le_bytes();
         match v {
-            [v @ .., 0, 0] => self.put(ResponseDataType::AdvInterval, |b| b.put_slice(&v)),
-            [v @ .., 0] => self.put(ResponseDataType::AdvIntervalLong, |b| b.put_slice(&v)),
-            v => self.put(ResponseDataType::AdvIntervalLong, |b| b.put_slice(&v)),
+            [v @ .., 0, 0] => self.put(ResponseDataType::AdvInterval, |b| {
+                b.put(v);
+            }),
+            [v @ .., 0] => self.put(ResponseDataType::AdvIntervalLong, |b| {
+                b.put(v);
+            }),
+            v => self.put(ResponseDataType::AdvIntervalLong, |b| {
+                b.put(v);
+            }),
         }
     }
 
     /// Appends a length-type-data field to the buffer, calling `f` to provide
     /// the data.
     #[inline]
-    fn put<T: Into<u8>>(&mut self, typ: T, f: impl Fn(&mut BytesMut)) -> &mut Self {
+    fn put<T: Into<u8>>(&mut self, typ: T, f: impl Fn(&mut Packer)) -> &mut Self {
         self.maybe_put(true, typ, f)
     }
 
@@ -123,11 +135,10 @@ impl ResponseDataMut {
         &mut self,
         keep_empty: bool,
         typ: T,
-        f: impl Fn(&mut BytesMut),
+        f: impl Fn(&mut Packer),
     ) -> &mut Self {
         let i = self.0.len();
-        self.0.put_slice(&[0, typ.into()]);
-        f(&mut self.0);
+        f(self.0.pack().put([0, typ.into()]));
         let n = u8::try_from(self.0.len().wrapping_sub(i + 1)).expect("response data overflow");
         self.0[i] = n;
         if !keep_empty && n < 2 {
@@ -174,7 +185,7 @@ mod tests {
             0x01, // Length of this data
             0x07, // <Complete list of 128-bit Service UUIDs>
         ];
-        assert_eq!(eir.freeze().as_ref(), want);
+        assert_eq!(eir.get().as_ref(), want);
     }
 
     #[test]
@@ -197,6 +208,6 @@ mod tests {
             0x65, // 'e'
             0x72, // 'r'
         ];
-        assert_eq!(ad.freeze().as_ref(), want);
+        assert_eq!(ad.get().as_ref(), want);
     }
 }

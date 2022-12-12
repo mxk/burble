@@ -7,7 +7,6 @@ use std::task::{Context, Poll};
 use std::thread;
 use std::time::Duration;
 
-use bytes::BytesMut;
 use rusb::UsbContext;
 use tracing::{debug, error, trace, warn};
 
@@ -203,9 +202,19 @@ pub struct UsbTransfer {
 impl Transfer for UsbTransfer {
     type Future = UsbTransferFuture;
 
-    #[inline]
-    fn buf_mut(&mut self) -> &mut BytesMut {
+    #[inline(always)]
+    fn buf(&self) -> &LimitedBuf {
+        self.t.buf()
+    }
+
+    #[inline(always)]
+    fn buf_mut(&mut self) -> &mut LimitedBuf {
         self.t.buf_mut()
+    }
+
+    #[inline(always)]
+    fn hdr_len(&self) -> usize {
+        self.t.hdr_len()
     }
 
     #[inline]
@@ -339,9 +348,10 @@ mod libusb {
     use std::task::{Poll, Waker};
     use std::time::Duration;
 
-    use bytes::{BufMut, BytesMut};
     use rusb::{constants::*, ffi::*, *};
     use tracing::{debug, error, info, trace, warn};
+
+    use crate::util::LimitedBuf;
 
     macro_rules! check {
         ($x:expr) => {
@@ -360,7 +370,7 @@ mod libusb {
     #[derive(Debug)]
     pub(super) struct Transfer<T: UsbContext> {
         inner: NonNull<libusb_transfer>,
-        buf: BytesMut,
+        buf: LimitedBuf,
 
         // The waker mutex is used to synchronize TransferFuture with the event
         // thread.
@@ -389,10 +399,10 @@ mod libusb {
 
     impl<T: UsbContext> Transfer<T> {
         /// Creates a new control transfer.
-        pub fn new_control(buf_cap: usize) -> Box<Self> {
-            let buf_cap = LIBUSB_CONTROL_SETUP_SIZE + buf_cap;
+        pub fn new_control(mut buf_cap: usize) -> Box<Self> {
+            buf_cap += LIBUSB_CONTROL_SETUP_SIZE;
             let mut t = Self::new(LIBUSB_TRANSFER_TYPE_CONTROL, 0, buf_cap);
-            t.buf.put_bytes(0, LIBUSB_CONTROL_SETUP_SIZE);
+            t.buf.put_at(LIBUSB_CONTROL_SETUP_SIZE, &[]);
             t
         }
 
@@ -413,17 +423,22 @@ mod libusb {
             let inner = NonNull::new(unsafe { libusb_alloc_transfer(0) })
                 .expect("failed to allocate libusb_transfer struct");
             assert_eq!(inner.as_ptr() as usize % align_of::<libusb_transfer>(), 0);
+            let is_out = endpoint & LIBUSB_ENDPOINT_DIR_MASK == LIBUSB_ENDPOINT_OUT;
             // TODO: Use DMA buffers on Linux?
             let mut t = Box::new(Self {
                 inner,
-                buf: BytesMut::with_capacity(buf_cap),
+                buf: if is_out {
+                    LimitedBuf::new(buf_cap)
+                } else {
+                    LimitedBuf::with_capacity(buf_cap)
+                },
                 waker: parking_lot::Mutex::new(None),
                 result: None,
                 ctx: None,
                 dev: None,
             });
             let mut inner = t.inner_mut();
-            if endpoint & LIBUSB_ENDPOINT_DIR_MASK == LIBUSB_ENDPOINT_OUT {
+            if is_out {
                 inner.flags = LIBUSB_TRANSFER_SHORT_NOT_OK;
             }
             inner.endpoint = endpoint;
@@ -432,10 +447,27 @@ mod libusb {
             t
         }
 
+        /// Returns a reference to the transfer buffer.
+        #[inline(always)]
+        pub const fn buf(&self) -> &LimitedBuf {
+            &self.buf
+        }
+
         /// Returns a mutable reference to the transfer buffer.
-        #[inline]
-        pub fn buf_mut(&mut self) -> &mut BytesMut {
+        #[inline(always)]
+        pub fn buf_mut(&mut self) -> &mut LimitedBuf {
             &mut self.buf
+        }
+
+        /// Returns the length of the header that precedes the payload in the
+        /// transfer buffer.
+        #[inline]
+        pub fn hdr_len(&self) -> usize {
+            if self.inner().transfer_type == LIBUSB_TRANSFER_TYPE_CONTROL {
+                LIBUSB_CONTROL_SETUP_SIZE
+            } else {
+                0
+            }
         }
 
         /// Returns the transfer result or [`None`] if the transfer was not yet
@@ -498,7 +530,7 @@ mod libusb {
             let buf_ptr = self.buf.as_mut_ptr();
             let buf_len = match self.inner().endpoint & LIBUSB_ENDPOINT_DIR_MASK {
                 LIBUSB_ENDPOINT_OUT => self.buf.len(),
-                LIBUSB_ENDPOINT_IN => self.buf.capacity(),
+                LIBUSB_ENDPOINT_IN => self.buf.cap(),
                 _ => unreachable!(),
             };
             let inner = self.inner_mut();
@@ -536,14 +568,9 @@ mod libusb {
             inner.length = 0;
             inner.actual_length = 0;
             inner.buffer = null_mut();
-            let n = if inner.transfer_type == LIBUSB_TRANSFER_TYPE_CONTROL {
-                LIBUSB_CONTROL_SETUP_SIZE
-            } else {
-                0
-            };
-            // SAFETY: buf capacity is at least n and control setup is always
+            // SAFETY: buf capacity is at least hdr_len, which is always
             // initialized.
-            unsafe { self.buf.set_len(n) };
+            unsafe { self.buf.set_len(self.hdr_len()) };
             self.result = None;
         }
 
@@ -571,13 +598,9 @@ mod libusb {
                 let inner = t.inner_mut();
                 inner.dev_handle = null_mut();
                 inner.user_data = null_mut();
-                let n = if inner.transfer_type == LIBUSB_TRANSFER_TYPE_CONTROL {
-                    LIBUSB_CONTROL_SETUP_SIZE
-                } else {
-                    0
-                } + inner.actual_length.unsigned_abs() as usize;
-                // SAFETY: buf contains n valid bytes
-                unsafe { t.buf.set_len(n) }
+                let n = inner.actual_length.unsigned_abs() as usize;
+                // SAFETY: buf contains hdr_len + n valid bytes
+                unsafe { t.buf.set_len(t.hdr_len() + n) }
 
                 if t.result.is_some() {
                     // TransferFuture was dropped or submit failed
@@ -597,7 +620,7 @@ mod libusb {
     impl<T: UsbContext> AsRef<[u8]> for Transfer<T> {
         #[inline]
         fn as_ref(&self) -> &[u8] {
-            self.buf.as_ref()
+            &self.buf
         }
     }
 

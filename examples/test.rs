@@ -32,7 +32,7 @@ async fn main() -> Result<()> {
         .local_name(true, "Burble")
         .appearance(gap::Appearance::GenericHumanInterfaceDevice)
         .tx_power(power);
-    adv.set_data(h, rd.freeze()).await?;
+    adv.set_data(h, rd.get()).await?;
     let mut adv_mon = (adv.enable(hci::AdvEnableParams {
         handle: h,
         duration: Duration::from_secs(20),

@@ -6,13 +6,13 @@ use std::fmt::Debug;
 use std::sync::Arc;
 use std::time::Duration;
 
-use bytes::{Buf, BufMut, BytesMut};
 use tracing::warn;
 
 pub(crate) use {consts::*, handle::*, pdu::*, perm::*, server::*};
 
 use crate::gap::Uuid;
 use crate::l2cap::{BasicChan, Sdu};
+use crate::util::{Packer, Unpacker};
 use crate::{host, l2cap};
 
 mod consts;
@@ -96,9 +96,7 @@ impl<T: host::Transport> Bearer<T> {
             return Ok(());
         }
         let pdu = self.new_pdu(Opcode::ErrorRsp, |p| {
-            p.put_u8(req);
-            p.put_u16_le(hdl.map_or(0, u16::from));
-            p.put_u8(err.into());
+            p.u8(req).u16(hdl.map_or(0, u16::from)).u8(err);
         });
         self.send(pdu).await
     }
@@ -106,11 +104,9 @@ impl<T: host::Transport> Bearer<T> {
     /// Returns an outbound PDU, calling `f` to encode it after writing the
     /// opcode.
     #[inline]
-    fn new_pdu(&mut self, op: Opcode, f: impl FnOnce(&mut BytesMut)) -> Sdu<T> {
+    fn new_pdu(&mut self, op: Opcode, f: impl FnOnce(&mut Packer)) -> Sdu<T> {
         let mut sdu = self.ch.new_sdu();
-        let p = sdu.buf_mut();
-        p.put_u8(op.into());
-        f(p);
+        f(sdu.buf_mut().pack().u8(op));
         sdu
     }
 
@@ -138,14 +134,14 @@ impl<T: host::Transport> Bearer<T> {
                 return Err(Error::Timeout(rsp));
             }
         };
-        let mut b = sdu.as_ref();
-        if b.get_u8() == want {
+        let mut p = Unpacker::new(sdu.as_ref());
+        if p.u8() == want {
             Ok(sdu)
         } else {
             Err(Error::Att(ErrorRsp {
-                req: Opcode::try_from(b.get_u8()).unwrap_or(Opcode::ErrorRsp),
-                hdl: Handle::new(b.get_u16_le()),
-                err: ErrorCode::try_from(b.get_u8()).unwrap_or(ErrorCode::UnlikelyError),
+                req: Opcode::try_from(p.u8()).unwrap_or(Opcode::ErrorRsp),
+                hdl: Handle::new(p.u16()),
+                err: ErrorCode::try_from(p.u8()).unwrap_or(ErrorCode::UnlikelyError),
             }))
         }
     }

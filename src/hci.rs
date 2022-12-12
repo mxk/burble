@@ -4,12 +4,12 @@ use std::fmt::Debug;
 use std::sync::Arc;
 use std::time::Duration;
 
-use bytes::Bytes;
 use strum::IntoEnumIterator;
 
 pub use {adv::*, cmd::*, consts::*, event::*, handle::*};
 
 use crate::host;
+use crate::util::Packer;
 
 mod adv;
 mod cmd;
@@ -33,12 +33,12 @@ pub enum Error {
         // TODO: Add backtrace once stabilized
     },
     #[error("invalid event: {0:?}")]
-    InvalidEvent(Bytes),
+    InvalidEvent(Vec<u8>),
     #[error("unknown event [code={code:#04X}, subevent={subevent:#04X}]: {params:?}")]
     UnknownEvent {
         code: u8,
         subevent: u8,
-        params: Bytes,
+        params: Vec<u8>,
     },
     #[error("event filter conflict (duplicate commands issued?)")]
     FilterConflict,
@@ -54,6 +54,7 @@ pub enum Error {
 
 impl Error {
     /// Returns the HCI status code, if any.
+    #[must_use]
     pub const fn status(&self) -> Option<Status> {
         use Error::*;
         match *self {
@@ -151,10 +152,10 @@ impl<T: host::Transport> Host<T> {
     async fn exec_params(
         &self,
         opcode: Opcode,
-        f: impl FnOnce(&mut Command<T>) + Send,
+        f: impl FnOnce(&mut Packer) + Send,
     ) -> Result<EventGuard<T>> {
         let mut cmd = Command::new(self, opcode);
-        f(&mut cmd);
+        f(&mut cmd.pack());
         cmd.exec().await
     }
 }

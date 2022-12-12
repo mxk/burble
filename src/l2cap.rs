@@ -10,7 +10,6 @@ use std::mem::ManuallyDrop;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
-use bytes::{BufMut, BytesMut};
 use tracing::debug;
 
 pub(crate) use chan::*;
@@ -18,6 +17,7 @@ pub use {consts::*, handle::*};
 
 use crate::hci::ACL_HDR;
 use crate::host::Transfer;
+use crate::util::LimitedBuf;
 use crate::{hci, host};
 
 mod chan;
@@ -280,15 +280,16 @@ impl<T: host::Transport> Alloc<T> {
         AclTransfer::new(xfer, Arc::clone(self))
     }
 
-    /// Allocates an empty PDU buffer.
+    /// Allocates an empty outbound buffer.
     #[inline]
     #[must_use]
-    fn pdu(self: &Arc<Self>, max_frame_len: usize) -> RawBuf<T> {
+    fn buf(self: &Arc<Self>, max_frame_len: usize) -> RawBuf<T> {
         if max_frame_len <= self.acl_data_len {
             return RawBuf::Transfer(self.xfer());
         }
         // TODO: Reuse buffers
-        RawBuf::Buf(BytesMut::with_capacity(ACL_HDR + max_frame_len))
+        // TODO: This must include the transport header for non-USB transports
+        RawBuf::Buf(LimitedBuf::new(ACL_HDR + max_frame_len))
     }
 }
 
@@ -352,8 +353,7 @@ impl<T: host::Transport> Sdu<T> {
     /// Returns the SDU buffer, which always starts with ACL and L2CAP packet
     /// headers that must not be modified.
     #[inline]
-    #[must_use]
-    pub fn buf_mut(&mut self) -> &mut BytesMut {
+    pub fn buf_mut(&mut self) -> &mut LimitedBuf {
         self.raw.buf_mut()
     }
 }
@@ -371,7 +371,7 @@ impl<T: host::Transport> AsRef<[u8]> for Sdu<T> {
 #[derive(Debug)]
 enum RawBuf<T: host::Transport> {
     Transfer(AclTransfer<T>),
-    Buf(BytesMut),
+    Buf(LimitedBuf),
 }
 
 impl<T: host::Transport> RawBuf<T> {
@@ -389,17 +389,17 @@ impl<T: host::Transport> RawBuf<T> {
     #[must_use]
     fn first(pdu_len: usize, frag: &[u8]) -> Self {
         debug_assert!(frag.len() >= ACL_HDR + L2CAP_HDR);
-        let mut buf = BytesMut::with_capacity(ACL_HDR + L2CAP_HDR + pdu_len);
-        buf.extend_from_slice(frag);
+        let mut buf = LimitedBuf::with_capacity(ACL_HDR + L2CAP_HDR + pdu_len);
+        buf.put_at(0, frag);
         Self::Buf(buf)
     }
 
     /// Returns whether the buffer has been allocated.
     #[inline]
-    fn is_some(&self) -> bool {
+    const fn is_some(&self) -> bool {
         match *self {
             Self::Transfer(_) => true,
-            Self::Buf(ref buf) => buf.capacity() != 0,
+            Self::Buf(ref buf) => buf.lim() != 0,
         }
     }
 
@@ -426,8 +426,7 @@ impl<T: host::Transport> RawBuf<T> {
 
     /// Returns the PDU buffer, which starts with an ACL data packet header.
     #[inline]
-    #[must_use]
-    fn buf_mut(&mut self) -> &mut BytesMut {
+    fn buf_mut(&mut self) -> &mut LimitedBuf {
         match *self {
             Self::Transfer(ref mut xfer) => xfer.buf_mut(),
             Self::Buf(ref mut buf) => buf,
@@ -451,7 +450,7 @@ impl<T: host::Transport> RawBuf<T> {
 impl<T: host::Transport> Default for RawBuf<T> {
     #[inline]
     fn default() -> Self {
-        Self::Buf(BytesMut::new())
+        Self::Buf(LimitedBuf::default())
     }
 }
 

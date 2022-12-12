@@ -7,13 +7,13 @@ use std::sync::Arc;
 use std::task::{ready, Context, Poll};
 use std::time::Duration;
 
-use bytes::Buf;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, trace};
 
 pub use {hci::*, le::*};
 
+use crate::util::Unpacker;
 use crate::{host, host::Transfer, le::RawAddr};
 
 use super::*;
@@ -21,7 +21,8 @@ use super::*;
 mod hci;
 mod le;
 
-// TODO: Switch to using Unpkr
+// TODO: Merge Event and EventGuard
+// TODO: Remove u* and i* Event methods
 
 /// HCI event decoder.
 #[derive(Clone, Debug, Default)]
@@ -31,7 +32,7 @@ pub struct Event<'a> {
     cmd_quota: u8,
     opcode: Opcode,
     handle: u16,
-    tail: &'a [u8],
+    tail: Unpacker<'a>,
 }
 
 impl Event<'_> {
@@ -97,26 +98,26 @@ impl Event<'_> {
     #[cfg(test)]
     #[inline]
     #[must_use]
-    pub const fn tail(&self) -> &[u8] {
-        self.tail
+    pub fn tail(&self) -> &[u8] {
+        self.tail.as_ref()
     }
 
     /// Returns the next u8.
     #[inline]
     pub fn u8(&mut self) -> u8 {
-        self.tail.get_u8()
+        self.tail.u8()
     }
 
     /// Returns the next i8.
     #[inline]
     pub fn i8(&mut self) -> i8 {
-        self.tail.get_i8()
+        self.tail.i8()
     }
 
     /// Returns the next u16.
     #[inline]
     pub fn u16(&mut self) -> u16 {
-        self.tail.get_u16_le()
+        self.tail.u16()
     }
 
     /// Returns the next `BD_ADDR`.
@@ -128,11 +129,10 @@ impl Event<'_> {
     /// Returns a reference to the next array of length `N`.
     #[inline]
     pub fn array<const N: usize>(&mut self) -> &[u8; N] {
-        // TODO: Use split_array_ref when stabilized
-        let (head, tail) = self.tail.split_at(N);
+        let (head, tail) = self.tail.split_at(N).unwrap();
         self.tail = tail;
         // SAFETY: head is &[u8; N] (checked by split_at)
-        unsafe { &*head.as_ptr().cast() }
+        unsafe { &*head.as_ref().as_ptr().cast() }
     }
 }
 
@@ -142,26 +142,24 @@ impl<'a> TryFrom<&'a [u8]> for Event<'a> {
     /// Tries to parse event header from `orig`. The subevent code for LE
     /// events, event status, and handle parameters are also consumed.
     fn try_from(orig: &'a [u8]) -> Result<Self> {
-        if orig.len() < EVT_HDR {
-            return Err(Error::InvalidEvent(Bytes::copy_from_slice(orig)));
-        }
-        let mut tail = orig;
-        let (code, len) = (tail.get_u8(), tail.get_u8());
-        if tail.len() != usize::from(len) {
-            return Err(Error::InvalidEvent(Bytes::copy_from_slice(orig)));
+        let mut p = Unpacker::new(orig);
+        let Some(mut hdr) = p.skip(EVT_HDR) else {
+            return Err(Error::InvalidEvent(Vec::from(orig)));
+        };
+        let code = hdr.u8();
+        if p.len() != usize::from(hdr.u8()) {
+            return Err(Error::InvalidEvent(Vec::from(orig)));
         }
         let typ = match EventCode::try_from(code) {
             Ok(EventCode::LeMetaEvent) => {
-                // After the header is validated, we allow further decoding
-                // calls to panic if there is missing data.
-                let subevent = tail.get_u8();
+                let subevent = p.u8();
                 match SubeventCode::try_from(subevent) {
                     Ok(subevent) => EventType::Le(subevent),
                     Err(_) => {
                         return Err(Error::UnknownEvent {
                             code,
                             subevent,
-                            params: Bytes::copy_from_slice(tail),
+                            params: Vec::from(p.as_ref()),
                         })
                     }
                 }
@@ -171,13 +169,13 @@ impl<'a> TryFrom<&'a [u8]> for Event<'a> {
                 return Err(Error::UnknownEvent {
                     code,
                     subevent: 0,
-                    params: Bytes::copy_from_slice(tail),
+                    params: Vec::from(p.as_ref()),
                 })
             }
         };
         let mut evt = Self {
             typ,
-            tail,
+            tail: p,
             ..Self::default()
         };
         match typ {
@@ -620,7 +618,10 @@ impl<T: host::Transport> EventReceiver<T> {
         let r = Event::try_from(buf);
         trace!("{r:?}");
         r.map(|evt| {
-            self.evt = Event { tail: &[], ..evt };
+            self.evt = Event {
+                tail: Unpacker::default(),
+                ..evt
+            };
             self.tail = buf.len() - evt.tail.len();
         })
     }
@@ -634,13 +635,13 @@ impl<T: host::Transport> EventReceiver<T> {
             return None;
         }
         // SAFETY: We have a valid Event and EVT_HDR <= self.tail <= buf.len()
-        let tail = unsafe {
+        let tail = Unpacker::new(unsafe {
             self.xfer
                 .as_ref()
                 .unwrap_unchecked()
                 .as_ref()
                 .get_unchecked(self.tail..)
-        };
+        });
         Some(Event { tail, ..self.evt })
     }
 }

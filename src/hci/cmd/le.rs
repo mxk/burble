@@ -31,7 +31,7 @@ impl<T: host::Transport> Host<T> {
         a: RawAddr,
     ) -> Result<()> {
         let r = self.exec_params(Opcode::LeSetAdvertisingSetRandomAddress, |cmd| {
-            cmd.u8(h).slice(a);
+            cmd.u8(h).put(a);
         });
         r.await?.into()
     }
@@ -53,9 +53,9 @@ impl<T: host::Transport> Host<T> {
                     Addr::Public(_) => 0x00,
                     Addr::Random(_) => 0x01,
                 })
-                .slice(p.peer_addr.raw())
+                .put(p.peer_addr.raw())
                 .u8(p.filter_policy)
-                .i8(p.tx_power.map_or(TxPower::NONE, TxPower::as_i8))
+                .i8(p.tx_power.map_or(TxPower::NONE, i8::from))
                 .u8(p.pri_phy)
                 .u8(p.sec_max_skip)
                 .u8(p.sec_phy)
@@ -75,7 +75,7 @@ impl<T: host::Transport> Host<T> {
     ) -> Result<()> {
         let r = self.exec_params(Opcode::LeSetExtendedAdvertisingData, |cmd| {
             cmd.u8(h).u8(op).bool(dont_frag);
-            cmd.u8(u8::try_from(data.len()).unwrap()).slice(data);
+            cmd.u8(u8::try_from(data.len()).unwrap()).put(data);
         });
         r.await?.into()
     }
@@ -90,7 +90,7 @@ impl<T: host::Transport> Host<T> {
     ) -> Result<()> {
         let r = self.exec_params(Opcode::LeSetExtendedScanResponseData, |cmd| {
             cmd.u8(h).u8(op).bool(dont_frag);
-            cmd.u8(u8::try_from(data.len()).unwrap()).slice(data);
+            cmd.u8(u8::try_from(data.len()).unwrap()).put(data);
         });
         r.await?.into()
     }
@@ -168,7 +168,7 @@ impl<T: host::Transport> Host<T> {
             cmd.u8(h)
                 .u8(op)
                 .u8(u8::try_from(data.len()).unwrap())
-                .slice(data);
+                .put(data);
         });
         r.await?.into()
     }

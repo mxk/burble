@@ -1,5 +1,4 @@
-#![allow(dead_code)] // TODO: Remove
-
+use std::ops::{Deref, DerefMut};
 use std::{mem, slice};
 
 use smallvec::SmallVec;
@@ -13,9 +12,9 @@ const INLINE_CAP: usize = 32;
 /// allocation. It performs at most one heap allocation up to the capacity limit
 /// once the internal capacity is exceeded. The relationship `len <= cap <= lim`
 /// always holds. It panics if a write operation exceeds the limit.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 #[must_use]
-pub(crate) struct LimitedBuf {
+pub struct LimitedBuf {
     lim: usize,
     b: SmallVec<[u8; INLINE_CAP]>,
 }
@@ -58,10 +57,32 @@ impl LimitedBuf {
         self.lim
     }
 
+    /// Returns the number of additional bytes that can be written to the
+    /// buffer.
+    #[inline]
+    pub fn remaining(&self) -> usize {
+        self.lim - self.b.len()
+    }
+
+    /// Returns whether the buffer contains the maximum number of bytes.
+    #[inline]
+    pub fn is_full(&self) -> bool {
+        self.remaining() == 0
+    }
+
     /// Clears the buffer, resetting its length to 0.
     #[inline]
     pub fn clear(&mut self) -> &mut Self {
-        self.b.clear();
+        self.truncate(0)
+    }
+
+    /// Removes all but the first `n` bytes from the buffer.
+    #[inline]
+    pub fn truncate(&mut self, n: usize) -> &mut Self {
+        if n < self.b.len() {
+            // SAFETY: n is a valid length and there is nothing to drop
+            unsafe { self.b.set_len(n) }
+        }
         self
     }
 
@@ -114,6 +135,17 @@ impl LimitedBuf {
             unsafe { self.b.set_len(n) };
         }
     }
+
+    /// Sets the buffer length.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that the buffer contains `n` initialized bytes.
+    #[inline]
+    pub unsafe fn set_len(&mut self, n: usize) {
+        assert!(n <= self.cap(), "buffer capacity exceeded");
+        self.b.set_len(n);
+    }
 }
 
 impl AsRef<[u8]> for LimitedBuf {
@@ -130,12 +162,28 @@ impl AsMut<[u8]> for LimitedBuf {
     }
 }
 
+impl Deref for LimitedBuf {
+    type Target = [u8];
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        &self.b
+    }
+}
+
+impl DerefMut for LimitedBuf {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.b
+    }
+}
+
 /// Packer of POD values into a [`LimitedBuf`]. The packer maintains an index
 /// where new values are written, which may be less than the current buffer
 /// length. Little-endian encoding is assumed. All write operations panic if the
 /// buffer capacity limit is exceeded.
 #[derive(Debug)]
-pub(crate) struct Packer<'a> {
+pub struct Packer<'a> {
     i: usize,
     b: &'a mut LimitedBuf,
 }
@@ -143,69 +191,83 @@ pub(crate) struct Packer<'a> {
 impl<'a> Packer<'a> {
     /// Returns the underlying buffer.
     #[inline(always)]
-    fn into_inner(self) -> &'a mut LimitedBuf {
+    pub fn into_inner(self) -> &'a mut LimitedBuf {
         self.b
+    }
+
+    /// Writes a `bool` at the current index.
+    #[inline]
+    pub fn bool<T: Into<bool>>(&mut self, v: T) -> &mut Self {
+        self.put([u8::from(v.into())])
     }
 
     /// Writes a `u8` at the current index.
     #[inline]
     pub fn u8<T: Into<u8>>(&mut self, v: T) -> &mut Self {
-        self.put(&[v.into()])
+        self.put([v.into()])
     }
 
     /// Writes a `u16` at the current index.
     #[inline]
     pub fn u16<T: Into<u16>>(&mut self, v: T) -> &mut Self {
-        self.put(&v.into().to_le_bytes())
+        self.put(v.into().to_le_bytes())
+    }
+
+    /// Writes a `u24` at the current index.
+    #[inline]
+    pub fn u24<T: Into<u32>>(&mut self, v: T) -> &mut Self {
+        let v = v.into().to_le_bytes();
+        assert_eq!(v[3], 0);
+        self.put(&v[..3])
     }
 
     /// Writes a `u32` at the current index.
     #[inline]
     pub fn u32<T: Into<u32>>(&mut self, v: T) -> &mut Self {
-        self.put(&v.into().to_le_bytes())
+        self.put(v.into().to_le_bytes())
     }
 
     /// Writes a `u64` at the current index.
     #[inline]
     pub fn u64<T: Into<u64>>(&mut self, v: T) -> &mut Self {
-        self.put(&v.into().to_le_bytes())
+        self.put(v.into().to_le_bytes())
     }
 
     /// Writes a `u128` at the current index.
     #[inline]
     pub fn u128<T: Into<u128>>(&mut self, v: T) -> &mut Self {
-        self.put(&v.into().to_le_bytes())
+        self.put(v.into().to_le_bytes())
     }
 
     /// Writes an `i8` at the current index.
     #[inline]
     pub fn i8<T: Into<i8>>(&mut self, v: T) -> &mut Self {
         #[allow(clippy::cast_sign_loss)]
-        self.put(&[v.into() as u8])
+        self.put([v.into() as u8])
     }
 
     /// Writes an `i16` at the current index.
     #[inline]
     pub fn i16<T: Into<i16>>(&mut self, v: T) -> &mut Self {
-        self.put(&v.into().to_le_bytes())
+        self.put(v.into().to_le_bytes())
     }
 
     /// Writes an `i32` at the current index.
     #[inline]
     pub fn i32<T: Into<i32>>(&mut self, v: T) -> &mut Self {
-        self.put(&v.into().to_le_bytes())
+        self.put(v.into().to_le_bytes())
     }
 
     /// Writes an `i64` at the current index.
     #[inline]
     pub fn i64<T: Into<i64>>(&mut self, v: T) -> &mut Self {
-        self.put(&v.into().to_le_bytes())
+        self.put(v.into().to_le_bytes())
     }
 
     /// Writes an `i128` at the current index.
     #[inline]
     pub fn i128<T: Into<i128>>(&mut self, v: T) -> &mut Self {
-        self.put(&v.into().to_le_bytes())
+        self.put(v.into().to_le_bytes())
     }
 
     /// Returns whether `n` bytes can be written to the buffer at the current
@@ -215,9 +277,10 @@ impl<'a> Packer<'a> {
         self.b.can_put_at(self.i, n)
     }
 
-    /// Writes slice `v` at the current index.
+    /// Writes `v` at the current index.
     #[inline]
-    pub fn put(&mut self, v: &[u8]) -> &mut Self {
+    pub fn put<T: AsRef<[u8]>>(&mut self, v: T) -> &mut Self {
+        let v = v.as_ref();
         self.b.put_at(self.i, v);
         self.i += v.len();
         self
@@ -228,10 +291,10 @@ impl<'a> Packer<'a> {
 /// slice return default values rather than panicking. The caller must check the
 /// error status at the end to determine whether all returned values were valid.
 /// Little-endian encoding is assumed.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
 #[must_use]
 #[repr(transparent)]
-pub(crate) struct Unpacker<'a>(&'a [u8]);
+pub struct Unpacker<'a>(&'a [u8]);
 
 impl<'a> Unpacker<'a> {
     /// Creates a new unpacker.
@@ -240,11 +303,25 @@ impl<'a> Unpacker<'a> {
         Self(b)
     }
 
+    /// Returns the remaining number of bytes.
+    #[inline]
+    #[must_use]
+    pub const fn len(&self) -> usize {
+        self.0.len()
+    }
+
     /// Returns the remaining byte slice.
     #[inline(always)]
     #[must_use]
     pub const fn peek(&self) -> &'a [u8] {
         self.0
+    }
+
+    /// Returns whether the byte slice is empty.
+    #[inline]
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.0.is_empty()
     }
 
     /// Returns whether all reads were within the bounds of the original byte
@@ -272,6 +349,22 @@ impl<'a> Unpacker<'a> {
         Self(mem::replace(&mut self.0, empty))
     }
 
+    /// Splits the byte slice at `i`, and returns two new unpackers or `None` if
+    /// there is an insufficient number of bytes remaining.
+    #[inline]
+    pub fn split_at(&self, i: usize) -> Option<(Self, Self)> {
+        self.0.len().checked_sub(i).map(|rem| {
+            // SAFETY: 0 <= i <= self.0.len() and i + rem == self.0.len()
+            unsafe {
+                let p = self.0.as_ptr();
+                (
+                    Self(slice::from_raw_parts(p, i)),
+                    Self(slice::from_raw_parts(p.add(i), rem)),
+                )
+            }
+        })
+    }
+
     /// Returns the result of passing the unpacker to `f`, or `None` if `f`
     /// fails to consume the entire slice without reading past the end.
     #[inline]
@@ -288,10 +381,16 @@ impl<'a> Unpacker<'a> {
         self.map(f).unwrap_or(default)
     }
 
-    /// Skips `n` bytes.
+    /// Advances `self` by `n` bytes, returning a new unpacker for the skipped
+    /// bytes or `None` if there is an insufficient number of bytes remaining,
+    /// in which case any remaining bytes are discarded.
     #[inline]
-    pub fn skip(&mut self, n: usize) {
-        self.0 = (self.0.get(n..)).unwrap_or(Self::err());
+    pub fn skip(&mut self, n: usize) -> Option<Self> {
+        let (a, b) = self
+            .split_at(n)
+            .map_or_else(|| (None, Self::err()), |(a, b)| (Some(a), b.0));
+        self.0 = b;
+        a
     }
 
     /// Returns the next `u8` as a `bool` where any non-zero value is converted
@@ -464,8 +563,12 @@ mod tests {
         // SAFETY: b is valid for b.cap() bytes
         unsafe { b.as_mut().as_mut_ptr().write_bytes(0xFF, b.cap()) };
         b.pack_at(INLINE_CAP).u8(1);
-        assert!(&b.as_ref()[..32].iter().all(|&v| v == 0));
-        assert_eq!(b.as_ref()[32], 1);
+        assert!(&b.as_ref()[..INLINE_CAP].iter().all(|&v| v == 0));
+        assert_eq!(b.as_ref()[INLINE_CAP], 1);
+
+        b.clear();
+        b.put_at(4, &[]);
+        assert_eq!(b.as_ref(), &[0, 0, 0, 0]);
     }
 
     #[test]
@@ -490,7 +593,7 @@ mod tests {
         assert_eq!(u.u8(), 1);
         let mut v = u.take();
         assert!(u.is_ok());
-        assert!(u.peek().is_empty());
+        assert!(u.is_empty());
 
         assert_eq!((v.u8(), v.u8()), (2, 3));
         assert!(v.is_ok());
