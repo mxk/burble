@@ -6,7 +6,7 @@ use std::task::{Context, Poll};
 
 /// Async conditional variable consisting of a mutex-protected value and a
 /// notification mechanism to alert any waiters of changes to the value.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct Condvar<T> {
     mutex: parking_lot::Mutex<T>,
     notify: tokio::sync::Notify,
@@ -80,14 +80,14 @@ impl<T> Drop for CondvarGuard<'_, T> {
 impl<T> Deref for CondvarGuard<'_, T> {
     type Target = T;
 
-    #[inline]
+    #[inline(always)]
     fn deref(&self) -> &Self::Target {
         &self.guard
     }
 }
 
 impl<T> DerefMut for CondvarGuard<'_, T> {
-    #[inline]
+    #[inline(always)]
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.guard
     }

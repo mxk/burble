@@ -17,9 +17,6 @@ mod consts;
 mod event;
 mod handle;
 
-#[cfg(test)]
-mod tests;
-
 /// Error type returned by the HCI layer.
 #[derive(Clone, Debug, thiserror::Error)]
 #[non_exhaustive]

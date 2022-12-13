@@ -1,34 +1,33 @@
 use matches::assert_matches;
 
+use crate::hci::*;
 use crate::le::RawAddr;
 
-use super::*;
-
 #[test]
-fn event() {
+fn hci() {
     let pkt = [1, 2, 3, 4];
     let mut e = Event::try_from(pkt.as_ref()).unwrap();
     assert_eq!(e.typ(), EventType::Hci(EventCode::InquiryComplete));
     assert_eq!(e.status(), Status::HardwareFailure);
-    assert_eq!(e.tail(), &pkt[3..]);
+    assert_eq!(e.params.as_ref(), &pkt[3..]);
     assert_eq!(e.u8(), pkt[3]);
-    assert!(e.tail().is_empty());
+    assert!(e.params.is_empty());
 }
 
 #[test]
-fn event_le() {
+fn le() {
     let pkt = [EventCode::LeMetaEvent as u8, 2, 2, 4];
     let mut e = Event::try_from(pkt.as_ref()).unwrap();
     assert_eq!(e.typ(), EventType::Le(SubeventCode::AdvertisingReport));
-    assert_eq!(e.tail(), &pkt[3..]);
+    assert_eq!(e.params.as_ref(), &pkt[3..]);
     assert_eq!(e.u8(), pkt[3]);
 }
 
 #[test]
-fn event_cmd_complete() {
+fn cmd_complete() {
     let mut pkt = vec![EventCode::CommandComplete as u8, 3, 3, 0x01, 0x10];
     let e = Event::try_from(pkt.as_ref()).unwrap();
-    assert_eq!(e.cmd_quota(), 3);
+    assert_eq!(e.cmd_quota, 3);
     assert_eq!(e.opcode(), Opcode::ReadLocalVersionInformation);
     assert_eq!(e.status(), Status::Success);
 
@@ -40,22 +39,22 @@ fn event_cmd_complete() {
     pkt[1] += 1;
     pkt.push(6);
     let e = Event::try_from(pkt.as_ref()).unwrap();
-    assert_eq!(e.cmd_quota(), 3);
+    assert_eq!(e.cmd_quota, 3);
     assert_eq!(e.opcode(), Opcode::ReadLocalVersionInformation);
     assert_eq!(e.status(), Status::UnknownCommand);
 }
 
 #[test]
-fn event_cmd_status() {
+fn cmd_status() {
     let pkt = [EventCode::CommandStatus as u8, 4, 0xff, 3, 0x01, 0x10];
     let e = Event::try_from(pkt.as_ref()).unwrap();
-    assert_eq!(e.cmd_quota(), 3);
+    assert_eq!(e.cmd_quota, 3);
     assert_eq!(e.opcode(), Opcode::ReadLocalVersionInformation);
     assert_eq!(e.status(), Status::UnspecifiedError);
 }
 
 #[test]
-fn event_error() {
+fn error() {
     let event = |b: &[u8]| Event::try_from(b).unwrap_err();
     assert_matches!(event(&[]), Error::InvalidEvent(_));
     assert_matches!(
@@ -81,8 +80,8 @@ fn event_error() {
 }
 
 #[test]
-fn event_addr() {
+fn addr() {
     let mut e = Event::try_from([EventCode::Vendor as u8, 6, 0, 1, 2, 3, 4, 5].as_ref()).unwrap();
     assert_eq!(e.addr(), RawAddr::from([0, 1, 2, 3, 4, 5]));
-    assert!(e.tail().is_empty());
+    assert!(e.params.is_empty());
 }

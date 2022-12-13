@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::future::Future;
 use std::marker::PhantomData;
-use std::ops::Deref;
+use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{ready, Context, Poll};
@@ -14,6 +14,7 @@ use tracing::{debug, trace};
 
 pub use {hci::*, le::*};
 
+use crate::util::Condvar;
 use crate::{host, host::Transfer, le::RawAddr};
 
 use super::*;
@@ -21,23 +22,24 @@ use super::*;
 mod hci;
 mod le;
 
-// TODO: Merge Event and EventGuard
-// TODO: Remove u* and i* Event methods
+#[cfg(test)]
+mod tests;
 
 /// HCI event decoder.
 #[derive(Clone, Debug, Default)]
+#[must_use]
 pub struct Event<'a> {
     typ: EventType,
     status: Status,
     cmd_quota: u8,
     opcode: Opcode,
     handle: u16,
-    tail: Unpacker<'a>,
+    params: Unpacker<'a>,
 }
 
 impl Event<'_> {
     /// Returns the event type.
-    #[inline]
+    #[inline(always)]
     #[must_use]
     pub const fn typ(&self) -> EventType {
         self.typ
@@ -45,25 +47,16 @@ impl Event<'_> {
 
     /// Returns the event status or [`Status::Success`] for events without a
     /// status parameter.
-    #[inline]
+    #[inline(always)]
     #[must_use]
     pub const fn status(&self) -> Status {
         self.status
     }
 
-    /// Returns the number of commands that the host is allowed to send to the
-    /// controller from `CommandComplete` or `CommandStatus` events.
-    #[cfg(test)]
-    #[inline]
-    #[must_use]
-    pub(super) const fn cmd_quota(&self) -> u8 {
-        self.cmd_quota
-    }
-
     /// Returns the opcode from `CommandComplete` or `CommandStatus` events.
     /// [`Opcode::None`] may be returned for either event that only updates the
     /// command quota and for non-command events.
-    #[inline]
+    #[inline(always)]
     #[must_use]
     pub const fn opcode(&self) -> Opcode {
         self.opcode
@@ -94,43 +87,27 @@ impl Event<'_> {
         }
     }
 
-    /// Returns any unparsed bytes.
-    #[cfg(test)]
-    #[inline]
-    #[must_use]
-    pub fn tail(&self) -> &[u8] {
-        self.tail.as_ref()
-    }
-
-    /// Returns the next u8.
-    #[inline]
-    pub fn u8(&mut self) -> u8 {
-        self.tail.u8()
-    }
-
-    /// Returns the next i8.
-    #[inline]
-    pub fn i8(&mut self) -> i8 {
-        self.tail.i8()
-    }
-
-    /// Returns the next u16.
-    #[inline]
-    pub fn u16(&mut self) -> u16 {
-        self.tail.u16()
-    }
-
     /// Returns the next `BD_ADDR`.
     #[inline]
     pub fn addr(&mut self) -> RawAddr {
-        RawAddr::from(*self.array())
+        // SAFETY: All bit patterns are valid
+        unsafe { self.params.read() }
     }
+}
 
-    /// Returns a reference to the next array of length `N`.
-    #[inline]
-    pub fn array<const N: usize>(&mut self) -> &[u8; N] {
-        // SAFETY: unwrap() returns &[u8; N]
-        unsafe { &*self.tail.skip(N).unwrap().as_ref().as_ptr().cast() }
+impl<'a> Deref for Event<'a> {
+    type Target = Unpacker<'a>;
+
+    #[inline(always)]
+    fn deref(&self) -> &Self::Target {
+        &self.params
+    }
+}
+
+impl DerefMut for Event<'_> {
+    #[inline(always)]
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.params
     }
 }
 
@@ -140,24 +117,24 @@ impl<'a> TryFrom<&'a [u8]> for Event<'a> {
     /// Tries to parse event header from `orig`. The subevent code for LE
     /// events, event status, and handle parameters are also consumed.
     fn try_from(orig: &'a [u8]) -> Result<Self> {
-        let mut p = Unpacker::new(orig);
-        let Some(mut hdr) = p.skip(EVT_HDR) else {
+        let mut evt = Unpacker::new(orig);
+        let Some(mut hdr) = evt.skip(EVT_HDR) else {
             return Err(Error::InvalidEvent(Vec::from(orig)));
         };
         let code = hdr.u8();
-        if p.len() != usize::from(hdr.u8()) {
+        if evt.len() != usize::from(hdr.u8()) {
             return Err(Error::InvalidEvent(Vec::from(orig)));
         }
         let typ = match EventCode::try_from(code) {
             Ok(EventCode::LeMetaEvent) => {
-                let subevent = p.u8();
+                let subevent = evt.u8();
                 match SubeventCode::try_from(subevent) {
                     Ok(subevent) => EventType::Le(subevent),
                     Err(_) => {
                         return Err(Error::UnknownEvent {
                             code,
                             subevent,
-                            params: Vec::from(p.as_ref()),
+                            params: Vec::from(evt.as_ref()),
                         })
                     }
                 }
@@ -167,20 +144,20 @@ impl<'a> TryFrom<&'a [u8]> for Event<'a> {
                 return Err(Error::UnknownEvent {
                     code,
                     subevent: 0,
-                    params: Vec::from(p.as_ref()),
+                    params: Vec::from(evt.as_ref()),
                 })
             }
         };
         let mut evt = Self {
             typ,
-            tail: p,
+            params: evt,
             ..Self::default()
         };
         match typ {
             EventType::Hci(EventCode::CommandComplete) => {
                 evt.cmd_quota = evt.u8();
                 evt.opcode = Opcode::from(evt.u16());
-                if !evt.tail.is_empty() {
+                if !evt.params.is_empty() {
                     evt.status = Status::from(evt.u8());
                 }
             }
@@ -250,28 +227,14 @@ impl Default for EventType {
     }
 }
 
-/// Basic information from `CommandComplete` or `CommandStatus` events.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct CommandStatus {
-    pub cmd_quota: u8,
-    pub opcode: Opcode,
-    pub status: Status,
-}
-
 /// Received event router. When an event is received, all registered waiters
 /// with matching filters are notified in a broadcast fashion, and must process
 /// the event asynchronously before the next receive operation can happen.
 #[derive(Debug)]
 pub(super) struct EventRouter<T: host::Transport> {
-    waiters: parking_lot::Mutex<Waiters<T>>, // TODO: Switch to Condvar
+    // TODO: Avoid notifying all waiters for each event?
+    waiters: Condvar<Waiters<T>>,
     recv: tokio::sync::Mutex<SharedEventReceiver<T>>,
-
-    // Notification should ideally be limited to each waiter, but we need
-    // condvar-like functionality where we register for notification while
-    // holding the waiters lock, drop the lock, and then await. That doesn't
-    // work if we're referencing a synchronization primitive protected by the
-    // lock, so we keep this separate.
-    notify: tokio::sync::Notify,
 }
 
 impl<T: host::Transport> EventRouter<T> {
@@ -328,22 +291,22 @@ impl<T: host::Transport> EventRouter<T> {
         // TODO: One second command timeout ([Vol 4] Part E, Section 4.4)
 
         // Lock router before downgrading to a read lock
-        let mut waiters = self.waiters.lock();
+        let mut ws = self.waiters.lock();
         let evt = EventGuard::new(recv.downgrade());
 
         // Provide EventGuards to registered waiters and notify them
         if evt.typ.is_cmd() {
-            waiters.cmd_quota = evt.cmd_quota;
+            ws.cmd_quota = evt.cmd_quota;
         }
-        let mut notify = false;
-        for w in waiters.queue.iter_mut().filter(|w| evt.matches(&w.filter)) {
+        let mut received = false;
+        for w in ws.queue.iter_mut().filter(|w| evt.matches(&w.filter)) {
             // try_read_owned() is guaranteed to succeed since we are
             // holding our own read lock and there are no writers waiting.
             w.ready = Some(Arc::clone(&rwlock).try_read_owned().unwrap());
-            notify = true;
+            received = true;
         }
-        if notify {
-            self.notify.notify_waiters();
+        if received {
+            ws.notify_all();
         } else {
             trace!("Ignored event: {evt:?}");
         }
@@ -355,9 +318,8 @@ impl<T: host::Transport> Default for EventRouter<T> {
     #[inline]
     fn default() -> Self {
         Self {
-            waiters: parking_lot::Mutex::default(),
+            waiters: Condvar::default(),
             recv: tokio::sync::Mutex::default(),
-            notify: tokio::sync::Notify::default(),
         }
     }
 }
@@ -472,18 +434,15 @@ impl<T: host::Transport> EventWaiterGuard<T> {
     /// Returns the next matching event or an error if the waiter is no longer
     /// registered (e.g. if the controller is lost). This method is cancel safe.
     pub async fn next(&self) -> Result<EventGuard<T>> {
+        let mut ws = self.router.waiters.lock();
         loop {
-            let ready_or_notify = {
-                let mut ws = self.router.waiters.lock();
-                match ws.queue.iter_mut().find(|w| w.id == self.id) {
-                    Some(w) => w.ready.take().ok_or_else(|| self.router.notify.notified()),
-                    None => return Err(Status::UnspecifiedError.into()),
-                }
-            };
-            match ready_or_notify {
-                Ok(ready) => return Ok(EventGuard::new(ready)),
-                Err(notify) => notify.await,
-            };
+            match ws.queue.iter_mut().find(|w| w.id == self.id) {
+                Some(w) => match w.ready.take() {
+                    Some(ready) => return Ok(EventGuard::new(ready)),
+                    None => ws.notified().await,
+                },
+                None => return Err(Status::UnspecifiedError.into()),
+            }
         }
     }
 }
@@ -503,15 +462,15 @@ impl<T: host::Transport> Drop for EventWaiterGuard<T> {
 /// received until all guards are dropped. It is `!Send` to prevent it from
 /// being held across `await` points.
 #[derive(Debug)]
+#[must_use]
 pub struct EventGuard<T: host::Transport> {
     r: tokio::sync::OwnedRwLockReadGuard<EventReceiver<T>>,
     _not_send: PhantomData<*const ()>,
 }
 
 impl<T: host::Transport> EventGuard<T> {
-    /// Creates a read lock that is !Send and !Sync.
+    /// Creates an event read lock that is !Send and !Sync.
     #[inline]
-    #[must_use]
     fn new(r: tokio::sync::OwnedRwLockReadGuard<EventReceiver<T>>) -> Self {
         Self {
             r,
@@ -521,7 +480,6 @@ impl<T: host::Transport> EventGuard<T> {
 
     /// Returns the received event.
     #[inline]
-    #[must_use]
     pub fn get(&self) -> Event {
         // SAFETY: EventGuard can only contain a valid Event
         unsafe { self.r.event().unwrap_unchecked() }
@@ -571,7 +529,7 @@ impl<T: host::Transport> EventGuard<T> {
 impl<T: host::Transport> Deref for EventGuard<T> {
     type Target = Event<'static>;
 
-    /// Provides access to `Event` metadata. The `tail()` will be empty. Use
+    /// Provides access to `Event` metadata without parameters. Use
     /// [`Self::get()`] or [`Self::ok()`] to get a decodable event.
     #[inline]
     fn deref(&self) -> &Self::Target {
@@ -579,13 +537,16 @@ impl<T: host::Transport> Deref for EventGuard<T> {
     }
 }
 
+// TODO: This should work for all events?
+
 impl<T: host::Transport, R: for<'a, 'b> From<&'a mut Event<'b>>> From<EventGuard<T>> for Result<R> {
     /// Converts `CommandComplete` parameters to a concrete type.
     #[inline]
     fn from(g: EventGuard<T>) -> Self {
         let mut evt = g.ok()?;
         let r = R::from(&mut evt);
-        debug_assert_eq!(evt.tail.len(), 0, "unconsumed event");
+        debug_assert!(evt.params.is_empty(), "unconsumed event");
+        debug_assert!(evt.params.is_ok(), "corrupt event");
         Ok(r)
     }
 }
@@ -597,13 +558,13 @@ type SharedEventReceiver<T> = Arc<tokio::sync::RwLock<EventReceiver<T>>>;
 struct EventReceiver<T: host::Transport> {
     xfer: Option<T::Transfer>,
     evt: Event<'static>,
-    tail: usize,
+    params: usize,
 }
 
 impl<T: host::Transport> EventReceiver<T> {
     /// Receives and validates the next event.
     async fn next(&mut self, transport: &T) -> Result<()> {
-        self.tail = 0;
+        self.params = 0;
         let xfer = {
             let mut xfer = self.xfer.take().unwrap_or_else(|| transport.event());
             xfer.reset();
@@ -617,10 +578,10 @@ impl<T: host::Transport> EventReceiver<T> {
         trace!("{r:?}");
         r.map(|evt| {
             self.evt = Event {
-                tail: Unpacker::default(),
+                params: Unpacker::default(),
                 ..evt
             };
-            self.tail = buf.len() - evt.tail.len();
+            self.params = buf.len() - evt.params.len();
         })
     }
 
@@ -629,18 +590,13 @@ impl<T: host::Transport> EventReceiver<T> {
     #[inline]
     #[must_use]
     fn event(&self) -> Option<Event> {
-        if self.tail < EVT_HDR {
-            return None;
-        }
-        // SAFETY: We have a valid Event and EVT_HDR <= self.tail <= buf.len()
-        let tail = Unpacker::new(unsafe {
-            self.xfer
-                .as_ref()
-                .unwrap_unchecked()
-                .as_ref()
-                .get_unchecked(self.tail..)
-        });
-        Some(Event { tail, ..self.evt })
+        (self.params >= EVT_HDR).then_some(Event {
+            // SAFETY: We have a valid Event and EVT_HDR <= self.params <= buf.len()
+            params: Unpacker::new(unsafe {
+                (self.xfer.as_ref().unwrap_unchecked().as_ref()).get_unchecked(self.params..)
+            }),
+            ..self.evt
+        })
     }
 }
 
@@ -650,7 +606,7 @@ impl<T: host::Transport> Default for EventReceiver<T> {
         Self {
             xfer: None,
             evt: Event::default(),
-            tail: 0,
+            params: 0,
         }
     }
 }
