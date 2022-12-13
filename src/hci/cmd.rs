@@ -1,6 +1,4 @@
-use std::ops::{Deref, DerefMut};
-
-use structbuf::StructBuf;
+use structbuf::Pack;
 use tracing::{trace, warn};
 
 pub use {hci_control::*, info_params::*, le::*};
@@ -31,7 +29,7 @@ impl<T: host::Transport> Command<T> {
             opcode,
             xfer: host.transport.command(),
         };
-        cmd.pack().u16(opcode).u8(0); // Final length is set in exec()
+        cmd.append().u16(opcode).u8(0); // Final length is set in exec()
         cmd
     }
 
@@ -39,10 +37,9 @@ impl<T: host::Transport> Command<T> {
     /// check the completion status to determine whether the command was
     /// successful.
     pub async fn exec(mut self) -> Result<EventGuard<T>> {
-        let hdr_len = self.xfer.hdr_len();
-        let buf = &mut self.xfer.buf_mut()[hdr_len..];
-        buf[CMD_HDR - 1] = u8::try_from(buf.len() - CMD_HDR).expect("command too long");
-        trace!("Command: {:02X?}", buf);
+        let n = u8::try_from(self.xfer.as_ref().len() - CMD_HDR).expect("command too long");
+        self.xfer.at(CMD_HDR - 1).u8(n);
+        trace!("Command: {:02X?}", self.xfer.as_ref());
         // Event registration must happen first to ensure that the command quota
         // is not exceeded, to check for any conflicting commands, and to
         // guarantee that the completion event will not be missed.
@@ -66,18 +63,14 @@ impl<T: host::Transport> Command<T> {
     }
 }
 
-impl<T: host::Transport> Deref for Command<T> {
-    type Target = StructBuf;
-
+impl<T: host::Transport> Pack for Command<T> {
     #[inline]
-    fn deref(&self) -> &Self::Target {
-        self.xfer.buf()
+    fn append(&mut self) -> Packer {
+        self.xfer.append()
     }
-}
 
-impl<T: host::Transport> DerefMut for Command<T> {
     #[inline]
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.xfer.buf_mut()
+    fn at(&mut self, i: usize) -> Packer {
+        self.xfer.at(CMD_HDR + i)
     }
 }

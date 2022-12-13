@@ -8,7 +8,7 @@ use std::thread;
 use std::time::Duration;
 
 use rusb::UsbContext;
-use structbuf::StructBuf;
+use structbuf::{Pack, Packer};
 use tracing::{debug, error, trace, warn};
 
 use crate::hci;
@@ -203,21 +203,6 @@ pub struct UsbTransfer {
 impl Transfer for UsbTransfer {
     type Future = UsbTransferFuture;
 
-    #[inline(always)]
-    fn buf(&self) -> &StructBuf {
-        self.t.buf()
-    }
-
-    #[inline(always)]
-    fn buf_mut(&mut self) -> &mut StructBuf {
-        self.t.buf_mut()
-    }
-
-    #[inline(always)]
-    fn hdr_len(&self) -> usize {
-        self.t.hdr_len()
-    }
-
     #[inline]
     fn submit(self) -> Result<Self::Future> {
         let dev = Arc::clone(&self.dev);
@@ -241,6 +226,18 @@ impl AsRef<[u8]> for UsbTransfer {
     #[inline]
     fn as_ref(&self) -> &[u8] {
         (*self.t).as_ref()
+    }
+}
+
+impl Pack for UsbTransfer {
+    #[inline]
+    fn append(&mut self) -> Packer {
+        self.t.append()
+    }
+
+    #[inline]
+    fn at(&mut self, i: usize) -> Packer {
+        self.t.at(i)
     }
 }
 
@@ -350,7 +347,7 @@ mod libusb {
     use std::time::Duration;
 
     use rusb::{constants::*, ffi::*, *};
-    use structbuf::StructBuf;
+    use structbuf::{Pack, Packer, StructBuf};
     use tracing::{debug, error, info, trace, warn};
 
     macro_rules! check {
@@ -447,22 +444,10 @@ mod libusb {
             t
         }
 
-        /// Returns a reference to the transfer buffer.
-        #[inline(always)]
-        pub const fn buf(&self) -> &StructBuf {
-            &self.buf
-        }
-
-        /// Returns a mutable reference to the transfer buffer.
-        #[inline(always)]
-        pub fn buf_mut(&mut self) -> &mut StructBuf {
-            &mut self.buf
-        }
-
         /// Returns the length of the header that precedes the payload in the
         /// transfer buffer.
         #[inline]
-        pub fn hdr_len(&self) -> usize {
+        fn hdr_len(&self) -> usize {
             if self.inner().transfer_type == LIBUSB_TRANSFER_TYPE_CONTROL {
                 LIBUSB_CONTROL_SETUP_SIZE
             } else {
@@ -504,7 +489,7 @@ mod libusb {
         pub fn control_setup(&mut self, request_type: u8, request: u8, value: u16, index: u16) {
             debug_assert_eq!(self.inner().transfer_type, LIBUSB_TRANSFER_TYPE_CONTROL);
             debug_assert!(self.buf.len() >= LIBUSB_CONTROL_SETUP_SIZE);
-            // SAFETY: Buffer length is at least LIBUSB_CONTROL_SETUP_SIZE
+            // SAFETY: buffer length is at least LIBUSB_CONTROL_SETUP_SIZE
             unsafe {
                 libusb_fill_control_setup(
                     self.buf.as_mut_ptr(),
@@ -530,7 +515,7 @@ mod libusb {
             let buf_ptr = self.buf.as_mut_ptr();
             let buf_len = match self.inner().endpoint & LIBUSB_ENDPOINT_DIR_MASK {
                 LIBUSB_ENDPOINT_OUT => self.buf.len(),
-                LIBUSB_ENDPOINT_IN => self.buf.cap(),
+                LIBUSB_ENDPOINT_IN => self.buf.capacity(),
                 _ => unreachable!(),
             };
             let inner = self.inner_mut();
@@ -568,7 +553,7 @@ mod libusb {
             inner.length = 0;
             inner.actual_length = 0;
             inner.buffer = null_mut();
-            // SAFETY: buf capacity is at least hdr_len, which is always
+            // SAFETY: buf capacity is at least hdr_len(), which is always
             // initialized.
             unsafe { self.buf.set_len(self.hdr_len()) };
             self.result = None;
@@ -599,8 +584,8 @@ mod libusb {
                 inner.dev_handle = null_mut();
                 inner.user_data = null_mut();
                 let n = inner.actual_length.unsigned_abs() as usize;
-                // SAFETY: buf contains hdr_len + n valid bytes
-                unsafe { t.buf.set_len(t.hdr_len() + n) }
+                // SAFETY: buf contains hdr_len() + n valid bytes
+                unsafe { t.buf.set_len(t.hdr_len() + n) };
 
                 if t.result.is_some() {
                     // TransferFuture was dropped or submit failed
@@ -617,17 +602,30 @@ mod libusb {
         }
     }
 
-    impl<T: UsbContext> AsRef<[u8]> for Transfer<T> {
-        #[inline]
-        fn as_ref(&self) -> &[u8] {
-            &self.buf
-        }
-    }
-
     impl<T: UsbContext> Drop for Transfer<T> {
         fn drop(&mut self) {
             // SAFETY: C API call, inner can be null
             unsafe { libusb_free_transfer(self.inner.as_ptr()) }
+        }
+    }
+
+    impl<T: UsbContext> AsRef<[u8]> for Transfer<T> {
+        #[inline]
+        fn as_ref(&self) -> &[u8] {
+            // SAFETY: buf contains at least hdr_len() bytes
+            unsafe { self.buf.as_ref().get_unchecked(self.hdr_len()..) }
+        }
+    }
+
+    impl<T: UsbContext> Pack for Transfer<T> {
+        #[inline]
+        fn append(&mut self) -> Packer {
+            self.buf.append()
+        }
+
+        #[inline]
+        fn at(&mut self, i: usize) -> Packer {
+            self.buf.at(self.hdr_len() + i)
         }
     }
 

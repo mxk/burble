@@ -6,7 +6,7 @@ use std::fmt::Debug;
 use std::sync::Arc;
 use std::time::Duration;
 
-use structbuf::{Packer, Unpacker};
+use structbuf::{Pack, Packer, Unpacker};
 use tracing::warn;
 
 pub(crate) use {consts::*, handle::*, pdu::*, perm::*, server::*};
@@ -37,7 +37,7 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// `ATT_ERROR_RSP` PDU ([Vol 3] Part F, Section 3.4.1.1).
-#[derive(Copy, Clone, Debug, thiserror::Error)]
+#[derive(Clone, Copy, Debug, thiserror::Error)]
 #[error("ATT {req}{} failed with {err}", .hdl.map_or(String::new(), |h| format!(" for handle {:#06X}", u16::from(h))))]
 pub struct ErrorRsp {
     pub req: Opcode,
@@ -106,7 +106,7 @@ impl<T: host::Transport> Bearer<T> {
     #[inline]
     fn new_pdu(&mut self, op: Opcode, f: impl FnOnce(&mut Packer)) -> Sdu<T> {
         let mut sdu = self.ch.new_sdu();
-        f(sdu.buf_mut().pack().u8(op));
+        f(sdu.append().u8(op));
         sdu
     }
 
@@ -121,8 +121,8 @@ impl<T: host::Transport> Bearer<T> {
         // Transaction timeout ([Vol 3] Part F, Section 3.3.3)
         let r = tokio::time::timeout(
             Duration::from_secs(30),
-            self.ch.recv_filter(|b| {
-                let Some(&op) = b.first() else { return false };
+            self.ch.recv_filter(|mut pdu| {
+                let op = pdu.u8();
                 op == want || (op == err && err != 0)
             }),
         )

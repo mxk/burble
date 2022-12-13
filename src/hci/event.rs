@@ -129,10 +129,8 @@ impl Event<'_> {
     /// Returns a reference to the next array of length `N`.
     #[inline]
     pub fn array<const N: usize>(&mut self) -> &[u8; N] {
-        let (head, tail) = self.tail.split_at(N).unwrap();
-        self.tail = tail;
-        // SAFETY: head is &[u8; N] (checked by split_at)
-        unsafe { &*head.as_ref().as_ptr().cast() }
+        // SAFETY: unwrap() returns &[u8; N]
+        unsafe { &*self.tail.skip(N).unwrap().as_ref().as_ptr().cast() }
     }
 }
 

@@ -10,7 +10,7 @@ use std::mem::ManuallyDrop;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
-use structbuf::StructBuf;
+use structbuf::{Pack, Packer, StructBuf};
 use tracing::debug;
 
 pub(crate) use chan::*;
@@ -26,7 +26,8 @@ mod handle;
 mod rx;
 mod tx;
 
-// TODO: Remove this assumption
+// TODO: Remove this assumption? Currently, it is required to index into buffers
+// that may contain 2^16 bytes of payload with additional headers.
 #[allow(clippy::assertions_on_constants)]
 const _: () = assert!(usize::BITS > u16::BITS, "usize too small");
 
@@ -239,6 +240,126 @@ impl<T: host::Transport> Conn<T> {
     }
 }
 
+/// Inbound or outbound service data unit (SDU) containing at most MTU bytes of
+/// information payload ([Vol 3] Part A, Section 3).
+#[derive(Debug)]
+#[must_use]
+pub(crate) struct Sdu<T: host::Transport> {
+    i: usize,
+    f: Frame<T>,
+}
+
+impl<T: host::Transport> Sdu<T> {
+    /// Creates an SDU from a frame with information payload at index `i`.
+    #[inline]
+    fn new(f: Frame<T>, i: usize) -> Self {
+        debug_assert!(f.as_ref().len() >= i);
+        Self { i, f }
+    }
+}
+
+impl<T: host::Transport> AsRef<[u8]> for Sdu<T> {
+    /// Returns the SDU information payload.
+    #[inline]
+    fn as_ref(&self) -> &[u8] {
+        // SAFETY: SDU always starts with i bytes of L2CAP header data
+        unsafe { self.f.as_ref().get_unchecked(self.i..) }
+    }
+}
+
+impl<T: host::Transport> Pack for Sdu<T> {
+    #[inline]
+    fn append(&mut self) -> Packer {
+        self.f.append()
+    }
+
+    #[inline]
+    fn at(&mut self, i: usize) -> Packer {
+        self.f.at(self.i + i)
+    }
+}
+
+/// PDU/SDU buffer optimized to avoid data copies when the data fits within one
+/// ACL data packet. Each frame starts with a basic L2CAP header at index 0.
+#[derive(Debug)]
+#[must_use]
+enum Frame<T: host::Transport> {
+    /// Complete PDU or SDU, starting with the ACL data packet header.
+    Transfer(AclTransfer<T>),
+    /// Possibly incomplete PDU or SDU, starting with the basic L2CAP header.
+    Buf(StructBuf),
+}
+
+impl<T: host::Transport> Frame<T> {
+    /// Creates a frame from a single ACL data packet.
+    #[inline]
+    fn complete(xfer: AclTransfer<T>) -> Self {
+        debug_assert!(ACL_HDR + L2CAP_HDR <= xfer.as_ref().len());
+        Self::Transfer(xfer)
+    }
+
+    /// Allocates a PDU recombination buffer and appends the first fragment.
+    #[inline]
+    fn first(xfer: &AclTransfer<T>, frame_len: usize) -> StructBuf {
+        let frag = xfer.as_ref();
+        debug_assert!(ACL_HDR + L2CAP_HDR <= frag.len() && frag.len() < ACL_HDR + frame_len);
+        let mut buf = StructBuf::with_capacity(frame_len);
+        // SAFETY: frag starts with an ACL data packet header
+        buf.put_at(0, unsafe { frag.get_unchecked(ACL_HDR..) });
+        buf
+    }
+
+    /// Returns the transfer containing a complete PDU or `None` if the PDU is
+    /// fragmented.
+    #[inline]
+    fn take_xfer(&mut self) -> Option<AclTransfer<T>> {
+        if matches!(*self, Self::Buf(_)) {
+            return None;
+        }
+        match mem::take(self) {
+            Self::Transfer(xfer) => Some(xfer),
+            Self::Buf(_) => unreachable!(),
+        }
+    }
+}
+
+impl<T: host::Transport> Default for Frame<T> {
+    #[inline]
+    fn default() -> Self {
+        Self::Buf(StructBuf::default())
+    }
+}
+
+impl<T: host::Transport> AsRef<[u8]> for Frame<T> {
+    /// Returns PDU bytes, starting with the basic L2CAP header.
+    #[inline]
+    fn as_ref(&self) -> &[u8] {
+        match *self {
+            // SAFETY: xfer always starts with an ACL data packet header
+            Self::Transfer(ref xfer) => unsafe { xfer.as_ref().get_unchecked(ACL_HDR..) },
+            Self::Buf(ref buf) => buf.as_ref(),
+        }
+    }
+}
+
+impl<T: host::Transport> Pack for Frame<T> {
+    #[inline]
+    fn append(&mut self) -> Packer {
+        match *self {
+            Self::Transfer(ref mut xfer) => xfer.append(),
+            Self::Buf(ref mut buf) => buf.append(),
+        }
+    }
+
+    #[inline]
+    fn at(&mut self, i: usize) -> Packer {
+        match *self {
+            Self::Transfer(ref mut xfer) => xfer.at(ACL_HDR + i),
+            Self::Buf(ref mut buf) => buf.at(i),
+        }
+    }
+}
+
 /// ACL data transfer allocator.
 #[derive(Debug)]
 struct Alloc<T: host::Transport> {
@@ -280,20 +401,24 @@ impl<T: host::Transport> Alloc<T> {
         AclTransfer::new(xfer, Arc::clone(self))
     }
 
-    /// Allocates an empty outbound buffer.
+    /// Allocates an outbound frame with a zero-filled basic L2CAP header.
     #[inline]
-    #[must_use]
-    fn buf(self: &Arc<Self>, max_frame_len: usize) -> RawBuf<T> {
+    fn frame(self: &Arc<Self>, max_frame_len: usize) -> Frame<T> {
         if max_frame_len <= self.acl_data_len {
-            return RawBuf::Transfer(self.xfer());
+            let mut xfer = self.xfer();
+            xfer.at(ACL_HDR + L2CAP_HDR).put([]);
+            Frame::Transfer(xfer)
+        } else {
+            // TODO: Reuse buffers?
+            let mut buf = StructBuf::new(max_frame_len);
+            buf.at(L2CAP_HDR).put([]);
+            Frame::Buf(buf)
         }
-        // TODO: Reuse buffers
-        // TODO: This must include the transport header for non-USB transports
-        RawBuf::Buf(StructBuf::new(ACL_HDR + max_frame_len))
     }
 }
 
-/// ACL data transfer containing a PDU fragment.
+/// ACL data transfer containing a PDU fragment. The transfer starts with an ACL
+/// data packet header at index 0.
 #[derive(Debug)]
 struct AclTransfer<T: host::Transport>(ManuallyDrop<(T::Transfer, Arc<Alloc<T>>)>);
 
@@ -302,6 +427,12 @@ impl<T: host::Transport> AclTransfer<T> {
     #[inline]
     fn new(xfer: T::Transfer, alloc: Arc<Alloc<T>>) -> Self {
         Self(ManuallyDrop::new((xfer, alloc)))
+    }
+
+    /// Returns the transfer direction.
+    #[inline]
+    fn dir(&self) -> host::Direction {
+        self.0 .1.dir
     }
 
     /// Submits the transfer for execution.
@@ -338,131 +469,5 @@ impl<T: host::Transport> DerefMut for AclTransfer<T> {
     #[inline(always)]
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0 .0
-    }
-}
-
-/// Inbound or outbound service data unit.
-#[derive(Debug)]
-#[must_use]
-pub(crate) struct Sdu<T: host::Transport> {
-    raw: RawBuf<T>,
-    off: usize,
-}
-
-impl<T: host::Transport> Sdu<T> {
-    /// Returns the SDU buffer, which always starts with ACL and L2CAP packet
-    /// headers that must not be modified.
-    #[inline]
-    pub fn buf_mut(&mut self) -> &mut StructBuf {
-        self.raw.buf_mut()
-    }
-}
-
-impl<T: host::Transport> AsRef<[u8]> for Sdu<T> {
-    /// Returns SDU bytes after the ACL and L2CAP packet headers.
-    #[inline]
-    fn as_ref(&self) -> &[u8] {
-        &self.raw.as_ref()[self.off..]
-    }
-}
-
-/// PDU/SDU buffer optimized to avoid data copies when the data fits within a
-/// single ACL data packet.
-#[derive(Debug)]
-enum RawBuf<T: host::Transport> {
-    Transfer(AclTransfer<T>),
-    Buf(StructBuf),
-}
-
-impl<T: host::Transport> RawBuf<T> {
-    /// Creates a PDU from a single ACL data packet.
-    #[inline]
-    #[must_use]
-    fn complete(xfer: AclTransfer<T>) -> Self {
-        debug_assert!(xfer.as_ref().len() >= ACL_HDR + L2CAP_HDR);
-        Self::Transfer(xfer)
-    }
-
-    /// Allocates a PDU recombination buffer and appends the first fragment,
-    /// which must start with the ACL data packet header.
-    #[inline]
-    #[must_use]
-    fn first(pdu_len: usize, frag: &[u8]) -> Self {
-        debug_assert!(frag.len() >= ACL_HDR + L2CAP_HDR);
-        let mut buf = StructBuf::with_capacity(ACL_HDR + L2CAP_HDR + pdu_len);
-        buf.put_at(0, frag);
-        Self::Buf(buf)
-    }
-
-    /// Returns whether the buffer has been allocated.
-    #[inline]
-    const fn is_some(&self) -> bool {
-        match *self {
-            Self::Transfer(_) => true,
-            Self::Buf(ref buf) => buf.lim() != 0,
-        }
-    }
-
-    /// Returns whether the PDU is fully recombined.
-    #[inline]
-    #[must_use]
-    fn is_complete(&self) -> bool {
-        self.rem_len() == 0
-    }
-
-    /// Returns the number of bytes needed to complete the PDU.
-    #[inline]
-    #[must_use]
-    fn rem_len(&self) -> usize {
-        match *self {
-            Self::Transfer(_) => 0,
-            Self::Buf(ref buf) => {
-                // SAFETY: buf starts with ACL and basic L2CAP headers
-                let pdu_len = u16::from_le_bytes(unsafe { *buf.as_ptr().add(ACL_HDR).cast() });
-                ACL_HDR + L2CAP_HDR + usize::from(pdu_len) - buf.len()
-            }
-        }
-    }
-
-    /// Returns the PDU buffer, which starts with an ACL data packet header.
-    #[inline]
-    fn buf_mut(&mut self) -> &mut StructBuf {
-        match *self {
-            Self::Transfer(ref mut xfer) => xfer.buf_mut(),
-            Self::Buf(ref mut buf) => buf,
-        }
-    }
-
-    /// Returns the transfer containing a complete PDU or `None` if the PDU is
-    /// fragmented.
-    #[inline]
-    fn take_xfer(&mut self) -> Option<AclTransfer<T>> {
-        match mem::take(self) {
-            Self::Transfer(xfer) => Some(xfer),
-            Self::Buf(buf) => {
-                *self = Self::Buf(buf);
-                None
-            }
-        }
-    }
-}
-
-impl<T: host::Transport> Default for RawBuf<T> {
-    #[inline]
-    fn default() -> Self {
-        Self::Buf(StructBuf::default())
-    }
-}
-
-impl<T: host::Transport> AsRef<[u8]> for RawBuf<T> {
-    /// Returns PDU bytes, starting with the basic L2CAP header.
-    #[inline]
-    fn as_ref(&self) -> &[u8] {
-        let b = match *self {
-            Self::Transfer(ref xfer) => xfer.as_ref(),
-            Self::Buf(ref buf) => buf.as_ref(),
-        };
-        // SAFETY: b always starts with an ACL data packet header
-        unsafe { b.get_unchecked(ACL_HDR..) }
     }
 }

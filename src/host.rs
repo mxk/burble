@@ -1,9 +1,7 @@
-//! Host transport layer ([Vol 4] Parts A-D)
+//! Host transport layer ([Vol 4] Parts A-D).
 
 use std::fmt::Debug;
 use std::future::Future;
-
-use structbuf::StructBuf;
 
 pub use usb::*;
 
@@ -53,20 +51,10 @@ pub trait Transport: Clone + Debug + Send + Sync {
 }
 
 /// Asynchronous I/O transfer.
-pub trait Transfer: AsRef<[u8]> + Debug + Send + Sync {
+pub trait Transfer:
+    AsRef<[u8]> + Debug + Send + Sync + structbuf::Pack + structbuf::Unpack
+{
     type Future: Future<Output = Self> + Debug + Send + Unpin;
-
-    /// Returns a reference to the transfer buffer.
-    fn buf(&self) -> &StructBuf;
-
-    /// Returns a mutable reference to the transfer buffer. A newly allocated
-    /// transfer may start with a non-empty buffer. The header, if any, must not
-    /// be modified.
-    fn buf_mut(&mut self) -> &mut StructBuf;
-
-    /// Returns the length of the header that precedes the payload in the
-    /// transfer buffer.
-    fn hdr_len(&self) -> usize;
 
     /// Submits the transfer for execution. The transfer may be cancelled by
     /// dropping the returned future.

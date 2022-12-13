@@ -2,6 +2,8 @@ use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::sync::Arc;
 
+use structbuf::{Unpack, Unpacker};
+
 use crate::hci::ACL_LE_MIN_DATA_LEN;
 use crate::host;
 use crate::util::{Condvar, CondvarGuard};
@@ -19,8 +21,6 @@ pub(crate) struct BasicChan<T: host::Transport> {
 }
 
 impl<T: host::Transport> BasicChan<T> {
-    const HDR: usize = ACL_HDR + L2CAP_HDR;
-
     /// Creates a new channel.
     #[inline]
     pub(super) fn new(cid: LeCid, tx: &Arc<tx::State<T>>, mtu: usize) -> Self {
@@ -34,10 +34,7 @@ impl<T: host::Transport> BasicChan<T> {
     /// Creates a new outbound SDU.
     #[inline]
     pub fn new_sdu(&self) -> Sdu<T> {
-        Sdu {
-            raw: self.tx.new_buf(L2CAP_HDR + self.mtu),
-            off: Self::HDR,
-        }
+        Sdu::new(self.tx.new_frame(L2CAP_HDR + self.mtu), L2CAP_HDR)
     }
 
     /// Receives the next inbound SDU. This method is cancel safe.
@@ -45,11 +42,8 @@ impl<T: host::Transport> BasicChan<T> {
         let mut cs = self.raw.state.lock();
         loop {
             cs.err(self.raw.cid)?;
-            if let Some(raw) = cs.pdu.pop_front() {
-                return Ok(Sdu {
-                    raw,
-                    off: Self::HDR,
-                });
+            if let Some(pdu) = cs.pdu.pop_front() {
+                return Ok(Sdu::new(pdu, L2CAP_HDR));
             }
             cs.notified().await;
         }
@@ -57,7 +51,7 @@ impl<T: host::Transport> BasicChan<T> {
 
     /// Returns the next inbound SDU that matches filter `f`. All other SDUs
     /// stay in the buffer.
-    pub async fn recv_filter(&mut self, f: impl Fn(&[u8]) -> bool + Send) -> Result<Sdu<T>> {
+    pub async fn recv_filter(&mut self, f: impl Fn(Unpacker) -> bool + Send) -> Result<Sdu<T>> {
         let mut cs = self.raw.state.lock();
         let mut skip = 0;
         loop {
@@ -69,13 +63,10 @@ impl<T: host::Transport> BasicChan<T> {
                 // getting appended.
                 it.nth(skip - 1);
             }
-            // SAFETY: RawBuf always contains basic L2CAP header
-            if let Some(i) = it.position(|b| f(unsafe { b.as_ref().get_unchecked(L2CAP_HDR..) })) {
-                return Ok(Sdu {
-                    // SAFETY: `skip + i` is within bounds
-                    raw: unsafe { cs.pdu.remove(skip + i).unwrap_unchecked() },
-                    off: Self::HDR,
-                });
+            if let Some(i) = it.position(|pdu| f(pdu.unpack().split_at(L2CAP_HDR).1)) {
+                // SAFETY: `skip + i` is within bounds
+                let pdu = unsafe { cs.pdu.remove(skip + i).unwrap_unchecked() };
+                return Ok(Sdu::new(pdu, L2CAP_HDR));
             }
             skip = cs.pdu.len();
             cs.notified().await;
@@ -86,7 +77,7 @@ impl<T: host::Transport> BasicChan<T> {
     /// submitted to the controller.
     #[inline]
     pub async fn send(&self, sdu: Sdu<T>) -> Result<()> {
-        self.tx.send(&self.raw, sdu.raw).await
+        self.tx.send(&self.raw, sdu.f).await
     }
 }
 
@@ -178,7 +169,7 @@ pub(super) struct State<T: host::Transport> {
     /// Maximum PDU length, including the basic L2CAP header.
     pub max_frame_len: usize,
     /// Received PDU queue.
-    pub pdu: VecDeque<RawBuf<T>>,
+    pub pdu: VecDeque<Frame<T>>,
 }
 
 impl<T: host::Transport> State<T> {

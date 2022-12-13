@@ -1,5 +1,6 @@
 //! Transmit side of the Resource Manager.
 
+use structbuf::Pack;
 use tracing::{trace, warn};
 
 use super::*;
@@ -22,21 +23,18 @@ impl<T: host::Transport> State<T> {
         })
     }
 
-    /// Creates a new outbound buffer, padded with space for the ACL data packet
-    /// and basic L2CAP headers.
-    pub fn new_buf(&self, max_frame_len: usize) -> RawBuf<T> {
-        let mut raw = self.alloc.buf(max_frame_len);
-        raw.buf_mut().put_at(ACL_HDR + L2CAP_HDR, &[]);
-        raw
+    /// Allocates an outbound frame with a zero-filled basic L2CAP header.
+    pub fn new_frame(&self, max_frame_len: usize) -> Frame<T> {
+        self.alloc.frame(max_frame_len)
     }
 
     /// Sends the PDU, returning as soon as the last fragment is submitted to
     /// the controller.
     #[inline]
-    pub async fn send(self: &Arc<Self>, ch: &Arc<RawChan<T>>, raw: RawBuf<T>) -> Result<()> {
+    pub async fn send(self: &Arc<Self>, ch: &Arc<RawChan<T>>, pdu: Frame<T>) -> Result<()> {
         let (tx, ch) = (Arc::clone(self), Arc::clone(ch));
-        self.sched.lock().schedule(Arc::clone(&ch))?;
-        SchedulerGuard { raw, tx, ch }.send().await
+        let guard = self.sched.lock().schedule(tx, ch)?;
+        guard.send(pdu).await
     }
 
     /// Registers a new LE-U logical link.
@@ -206,7 +204,7 @@ impl<T: host::Transport> Scheduler<T> {
     }
 
     /// Schedules channel `ch` for sending a PDU.
-    fn schedule(&mut self, ch: Arc<RawChan<T>>) -> Result<()> {
+    fn schedule(&mut self, tx: Arc<State<T>>, ch: Arc<RawChan<T>>) -> Result<SchedulerGuard<T>> {
         let Some(blocked) = self.blocked.get_mut(&ch.cid.link) else {
             return Err(Error::InvalidConn(ch.cid.link.into()));
         };
@@ -220,20 +218,22 @@ impl<T: host::Transport> Scheduler<T> {
             // Fast path for the only sender, no notification needed
             cs.set_scheduled_active();
             drop(cs);
-            self.active = Some(ch);
-            return Ok(());
-        }
-        cs.set_scheduled(true);
-        drop(cs);
-        if blocked.is_empty()
-            && (self.active.iter().chain(self.ready.iter()))
-                .all(|other| other.cid.link != ch.cid.link)
-        {
-            self.ready.push_back(ch); // First sender for this logical link
+            self.active = Some(Arc::clone(&ch));
         } else {
-            blocked.push_back(ch); // Multiple senders for this logical link
+            cs.set_scheduled(true);
+            drop(cs);
+            if blocked.is_empty()
+                && (self.active.iter().chain(self.ready.iter()))
+                    .all(|other| other.cid.link != ch.cid.link)
+            {
+                // First sender for this logical link
+                self.ready.push_back(Arc::clone(&ch));
+            } else {
+                // Multiple senders for this logical link
+                blocked.push_back(Arc::clone(&ch));
+            }
         }
-        Ok(())
+        Ok(SchedulerGuard { tx, ch })
     }
 
     /// Updates scheduler state after a PDU fragment is sent to the controller.
@@ -301,37 +301,31 @@ impl<T: host::Transport> Scheduler<T> {
 /// Scheduled PDU send task. Ensures that the channel is removed from the
 /// Scheduler when the send operation is done (or dropped).
 #[derive(Debug)]
+#[must_use]
 struct SchedulerGuard<T: host::Transport> {
-    raw: RawBuf<T>,
     tx: Arc<State<T>>,
     ch: Arc<RawChan<T>>,
 }
 
 impl<T: host::Transport> SchedulerGuard<T> {
     /// Performs PDU fragmentation and submits each fragment to the controller.
-    async fn send(mut self) -> Result<()> {
+    async fn send(self, mut pdu: Frame<T>) -> Result<()> {
         // Update basic L2CAP header ([Vol 3] Part A, Section 3.1)
-        let cid = u16::from(self.ch.cid.chan);
-        let buf = self.raw.buf_mut();
-        let pdu_len = buf.len().saturating_sub(ACL_HDR + L2CAP_HDR);
-        buf.pack_at(ACL_HDR)
-            .u16(u16::try_from(pdu_len).unwrap())
-            .u16(cid);
+        let mut hdr = pdu.at(0);
+        let pdu_len = u16::try_from(hdr.as_ref().len() - L2CAP_HDR).unwrap();
+        hdr.u16(pdu_len).u16(self.ch.cid.chan);
 
-        if let Some(xfer) = self.raw.take_xfer() {
+        if let Some(xfer) = pdu.take_xfer() {
             // Fast path for a single-fragment PDU
+            debug_assert_eq!(xfer.dir(), host::Direction::Out);
             return self.send_frag(xfer, false, false).await.map(|_xfer| ());
         }
 
         let mut xfer = self.tx.alloc.xfer();
-        let frags = self.raw.as_ref().chunks(self.tx.alloc.acl_data_len);
+        let frags = pdu.as_ref().chunks(self.tx.alloc.acl_data_len);
         let last = frags.len() - 1;
         for (i, frag) in frags.enumerate() {
-            // This path may be taken by single-fragment PDUs that weren't
-            // guaranteed to fit when first allocated. These still need to be
-            // copied into the new transfer because simply swapping buffers
-            // would create problems when the transfer is reused.
-            xfer.buf_mut().pack_at(ACL_HDR).put(frag);
+            xfer.at(ACL_HDR).put(frag);
             xfer = self.send_frag(xfer, i != 0, i != last).await?;
             if i != last {
                 xfer.reset();
@@ -348,13 +342,11 @@ impl<T: host::Transport> SchedulerGuard<T> {
         more: bool,
     ) -> Result<AclTransfer<T>> {
         // Update ACL data packet header ([Vol 4] Part E, Section 5.4.2)
-        let buf = xfer.buf_mut();
-        let data_len = buf.len().saturating_sub(ACL_HDR);
-        buf.pack_at(0)
+        let data_len = u16::try_from(xfer.as_ref().len() - ACL_HDR).unwrap();
+        xfer.at(0)
             .u16(u16::from(is_cont) << hci::ConnHandle::BITS | u16::from(self.ch.cid.link))
-            .u16(u16::try_from(data_len).unwrap());
+            .u16(data_len);
         self.ch.may_send().await?;
-        // TODO: Verify that xfer is an outbound ACL transfer
         trace!(
             "{}PDU fragment from {}: {:02X?}",
             if is_cont { "Cont. " } else { "" },

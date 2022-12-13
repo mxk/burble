@@ -10,7 +10,7 @@
 
 use std::time::Duration;
 
-use structbuf::{Packer, StructBuf};
+use structbuf::{Pack, Packer, StructBuf};
 
 use crate::hci::{ticks_1250us, ticks_625us};
 use crate::le::TxPower;
@@ -139,7 +139,7 @@ impl ResponseDataMut {
         f: impl Fn(&mut Packer),
     ) -> &mut Self {
         let i = self.0.len();
-        f(self.0.pack().put([0, typ.into()]));
+        f(self.0.append().put([0, typ.into()]));
         let n = u8::try_from(self.0.len().wrapping_sub(i + 1)).expect("response data overflow");
         self.0[i] = n;
         if !keep_empty && n < 2 {

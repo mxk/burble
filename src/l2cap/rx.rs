@@ -1,7 +1,5 @@
 //! Receive side of the Resource Manager.
 
-use std::u16;
-
 use structbuf::Unpacker;
 use tracing::{error, trace, warn};
 
@@ -142,7 +140,7 @@ impl<T: host::Transport> Receiver<T> {
             };
             trace!("PDU fragment for {cid}: {pkt:02X?}");
             return ch.first(pdu_len, xfer).or_else(|| {
-                if !ch.buf.is_full() {
+                if !ch.buf.is_none() {
                     *cont_cid = Some(cid.chan);
                 }
                 None
@@ -155,7 +153,7 @@ impl<T: host::Transport> Receiver<T> {
         trace!("Cont. PDU fragment for {cid}: {pkt:02X?}");
         let ch = self.chans.get_mut(&link.chan(cid)).unwrap();
         let r = ch.cont(data);
-        if ch.buf.is_full() {
+        if ch.buf.is_none() {
             *cont_cid = None;
         }
         r
@@ -179,24 +177,24 @@ impl<T: host::Transport> Chan<T> {
     /// Creates PDU receive state for channel `ch`.
     #[inline]
     #[must_use]
-    pub fn new(ch: Arc<RawChan<T>>) -> Self {
+    pub const fn new(ch: Arc<RawChan<T>>) -> Self {
         Self {
             raw: ch,
-            buf: StructBuf::new(0),
+            buf: StructBuf::none(),
         }
     }
 
     /// Sets the channel error flag if the most recent PDU is incomplete.
     #[inline]
     fn ensure_complete(&mut self) {
-        if self.buf.lim() > 0 {
-            self.buf = StructBuf::new(0);
+        if !self.buf.is_none() {
+            self.buf = StructBuf::none();
             error!("Incomplete PDU for {}", self.raw.cid);
             self.raw.set_error();
         }
     }
 
-    /// Receives the first, possibly complete, PDU fragment.
+    /// Receives the first, possibly incomplete, PDU fragment.
     pub fn first(&mut self, pdu_len: u16, xfer: AclTransfer<T>) -> Option<LeCid> {
         self.ensure_complete();
         let cs = self.raw.state.lock();
@@ -206,25 +204,23 @@ impl<T: host::Transport> Chan<T> {
         let frame_len = L2CAP_HDR + usize::from(pdu_len);
         if frame_len > cs.max_frame_len {
             error!(
-                "PDU for {} exceeds maximum frame size ({} > {})",
+                "PDU for {} exceeds maximum frame length ({} > {})",
                 self.raw.cid, frame_len, cs.max_frame_len
             );
             chan::State::set_fatal(cs, Status::ERROR);
             return None;
         }
-        let complete_len = ACL_HDR + frame_len;
-        if xfer.as_ref().len() == complete_len {
-            self.complete(cs, RawBuf::Transfer(xfer))
+        if xfer.as_ref().len() == ACL_HDR + frame_len {
+            self.complete(cs, Frame::complete(xfer))
         } else {
-            self.buf = StructBuf::with_capacity(complete_len);
-            self.buf.put_at(0, xfer.as_ref());
+            self.buf = Frame::first(&xfer, frame_len);
             None
         }
     }
 
     /// Receives a continuation PDU fragment.
     pub fn cont(&mut self, acl_data: &[u8]) -> Option<LeCid> {
-        let mut p = self.buf.pack();
+        let mut p = self.buf.append();
         if !p.can_put(acl_data.len()) {
             error!(
                 "PDU fragment for {} exceeds expected length ({} > {})",
@@ -232,13 +228,13 @@ impl<T: host::Transport> Chan<T> {
                 acl_data.len(),
                 self.buf.remaining()
             );
-            self.buf = StructBuf::new(0);
+            self.buf = StructBuf::none();
             self.raw.set_error();
             return None;
         }
         p.put(acl_data);
         if self.buf.is_full() {
-            let buf = RawBuf::Buf(mem::replace(&mut self.buf, StructBuf::new(0)));
+            let buf = Frame::Buf(self.buf.take());
             self.complete(self.raw.state.lock(), buf)
         } else {
             None
@@ -246,7 +242,7 @@ impl<T: host::Transport> Chan<T> {
     }
 
     /// Adds a complete PDU to the channel queue and notifies any waiters.
-    pub fn complete(&self, mut cs: CondvarGuard<chan::State<T>>, raw: RawBuf<T>) -> Option<LeCid> {
+    pub fn complete(&self, mut cs: CondvarGuard<chan::State<T>>, pdu: Frame<T>) -> Option<LeCid> {
         if !cs.is_ok() {
             return None;
         }
@@ -256,7 +252,7 @@ impl<T: host::Transport> Chan<T> {
             return None;
         }
         trace!("New PDU for {}", self.raw.cid);
-        cs.pdu.push_back(raw);
+        cs.pdu.push_back(pdu);
         if cs.pdu.len() == 1 {
             cs.notify_all();
         }
@@ -305,5 +301,6 @@ fn parse_hdr(pkt: &[u8]) -> Option<(LeU, Option<(u16, Cid)>, &[u8])> {
     } else {
         None
     };
+    // into_inner() is guaranteed to return Some()
     p.into_inner().map(|data| (LeU::new(cn), l2cap_hdr, data))
 }

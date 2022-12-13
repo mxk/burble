@@ -4,7 +4,7 @@ use std::fmt::Debug;
 use std::sync::Arc;
 use std::time::Duration;
 
-use structbuf::Packer;
+use structbuf::{Pack, Packer};
 use strum::IntoEnumIterator;
 
 pub use {adv::*, cmd::*, consts::*, event::*, handle::*};
@@ -155,7 +155,7 @@ impl<T: host::Transport> Host<T> {
         f: impl FnOnce(&mut Packer) + Send,
     ) -> Result<EventGuard<T>> {
         let mut cmd = Command::new(self, opcode);
-        f(&mut cmd.pack());
+        f(&mut cmd.append());
         cmd.exec().await
     }
 }
