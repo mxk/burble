@@ -14,6 +14,16 @@ const MASK_32: u128 = !((u32::MAX as u128) << SHIFT);
 pub struct Uuid(NonZeroU128);
 
 impl Uuid {
+    /// Creates a UUID from a `u128`.
+    #[inline]
+    #[must_use]
+    pub const fn new(v: u128) -> Option<Self> {
+        match NonZeroU128::new(v) {
+            Some(nz) => Some(Self(nz)),
+            None => None,
+        }
+    }
+
     /// Converts an assigned 16-bit Bluetooth SIG UUID to `u16`. This is
     /// mutually exclusive with `as_u32` and `as_u128`.
     #[inline]
@@ -54,6 +64,13 @@ impl<T: Into<u16>> From<T> for Uuid {
     }
 }
 
+impl From<Uuid> for u128 {
+    #[inline]
+    fn from(u: Uuid) -> Self {
+        u.0.get()
+    }
+}
+
 impl From<Uuid16> for Uuid {
     #[inline]
     fn from(u: Uuid16) -> Self {
@@ -66,9 +83,9 @@ impl Debug for Uuid {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         #[allow(clippy::cast_possible_truncation)]
         if let Some(v) = self.as_u16() {
-            write!(f, "{:#06X}", v)
+            write!(f, "{v:#06X}")
         } else if let Some(v) = self.as_u32() {
-            write!(f, "{:#010X}", v)
+            write!(f, "{v:#010X}")
         } else {
             let v = self.0.get();
             write!(
@@ -98,11 +115,23 @@ impl Display for Uuid {
 pub struct Uuid16(NonZeroU16);
 
 impl Uuid16 {
-    #[allow(dead_code)] // TODO: Remove
+    /// Creates a 16-bit SIG UUID from a `u16`.
     #[inline]
-    const fn new(v: u16) -> Self {
-        // SAFETY: v is not 0
-        Self(unsafe { NonZeroU16::new_unchecked(v) })
+    #[must_use]
+    pub const fn new(v: u16) -> Option<Self> {
+        match NonZeroU16::new(v) {
+            Some(nz) => Some(Self(nz)),
+            None => None,
+        }
+    }
+
+    /// Returns 128-bit UUID representation.
+    #[inline]
+    #[must_use]
+    pub const fn as_uuid(self) -> Uuid {
+        // TODO: Use NonZeroU128::from() when it is const
+        // SAFETY: self.0 is non-zero
+        Uuid(unsafe { NonZeroU128::new_unchecked(self.0.get() as _) })
     }
 }
 

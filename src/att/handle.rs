@@ -58,3 +58,21 @@ impl Display for Handle {
         Debug::fmt(self, f)
     }
 }
+
+/// Inclusive range of attribute handles. This is a `Copy` version of
+/// `RangeInclusive<Handle>`.
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
+#[must_use]
+pub struct HandleRange {
+    pub start: Handle,
+    pub end: Handle,
+}
+
+impl HandleRange {
+    /// Creates a new handle range `start..=end`.
+    #[inline]
+    pub const fn new(start: Handle, end: Handle) -> Self {
+        assert!(start.0.get() <= end.0.get());
+        Self { start, end }
+    }
+}

@@ -399,7 +399,7 @@ mod libusb {
         pub fn new_control(mut buf_cap: usize) -> Box<Self> {
             buf_cap += LIBUSB_CONTROL_SETUP_SIZE;
             let mut t = Self::new(LIBUSB_TRANSFER_TYPE_CONTROL, 0, buf_cap);
-            t.buf.put_at(LIBUSB_CONTROL_SETUP_SIZE, &[]);
+            t.buf.put_at(LIBUSB_CONTROL_SETUP_SIZE, []);
             t
         }
 

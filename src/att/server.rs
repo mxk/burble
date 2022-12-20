@@ -15,7 +15,7 @@ pub(crate) struct Server {
 impl Server {
     /// Creates an empty ATT server.
     #[inline]
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             attrs: BTreeMap::new(),
         }

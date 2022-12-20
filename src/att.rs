@@ -87,29 +87,6 @@ impl<T: host::Transport> Bearer<T> {
         }
     }
 
-    /// Sends an `ATT_ERROR_RSP` PDU in response to a request that cannot be
-    /// performed ([Vol 3] Part F, Section 3.4.1.1). Command-related errors are
-    /// ignored.
-    async fn error_rsp(&mut self, req: u8, hdl: Option<Handle>, err: ErrorCode) -> Result<()> {
-        warn!("ATT response: opcode {req:#06X} for {hdl:?} failed with {err}");
-        if Opcode::is_cmd(req) {
-            return Ok(());
-        }
-        let pdu = self.new_pdu(Opcode::ErrorRsp, |p| {
-            p.u8(req).u16(hdl.map_or(0, u16::from)).u8(err);
-        });
-        self.send(pdu).await
-    }
-
-    /// Returns an outbound PDU, calling `f` to encode it after writing the
-    /// opcode.
-    #[inline]
-    fn new_pdu(&mut self, op: Opcode, f: impl FnOnce(&mut Packer)) -> Sdu<T> {
-        let mut sdu = self.ch.new_sdu();
-        f(sdu.append().u8(op));
-        sdu
-    }
-
     /// Receives a response or confirmation PDU ([Vol 3] Part F, Section 3.4.9).
     async fn recv_rsp(&mut self, rsp: Opcode) -> Result<Sdu<T>> {
         let want = u8::from(rsp);
@@ -146,9 +123,32 @@ impl<T: host::Transport> Bearer<T> {
         }
     }
 
+    /// Sends an `ATT_ERROR_RSP` PDU in response to a request that cannot be
+    /// performed ([Vol 3] Part F, Section 3.4.1.1). Command-related errors are
+    /// ignored.
+    async fn error_rsp(&mut self, req: u8, hdl: Option<Handle>, err: ErrorCode) -> Result<()> {
+        warn!("ATT response: opcode {req:#06X} for {hdl:?} failed with {err}");
+        if Opcode::is_cmd(req) {
+            return Ok(());
+        }
+        let pdu = self.pack(Opcode::ErrorRsp, |p| {
+            p.u8(req).u16(hdl.map_or(0, u16::from)).u8(err);
+        });
+        self.send(pdu).await
+    }
+
+    /// Returns an outbound PDU, calling `f` to encode it after writing the
+    /// opcode.
+    #[inline]
+    fn pack(&self, op: Opcode, f: impl FnOnce(&mut Packer)) -> Sdu<T> {
+        let mut sdu = self.ch.new_sdu();
+        f(sdu.append().u8(op));
+        sdu
+    }
+
     /// Sends an SDU over the channel.
     #[inline]
-    async fn send(&mut self, sdu: Sdu<T>) -> Result<()> {
+    async fn send(&self, sdu: Sdu<T>) -> Result<()> {
         Ok(self.ch.send(sdu).await?)
     }
 }
