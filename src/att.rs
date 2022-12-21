@@ -70,12 +70,12 @@ impl<T: host::Transport> Bearer<T> {
             // [Vol 3] Part F, Section 3.3
             let Some(&op) = sdu.as_ref().first() else {
                 warn!("Empty PDU");
-                self.error_rsp(0, None, ErrorCode::InvalidPdu).await?;
+                self.raw_error_rsp(0, None, ErrorCode::InvalidPdu).await?;
                 continue;
             };
             let Some(op) = Opcode::try_from(op).ok() else {
                 warn!("Unknown ATT opcode: {op}");
-                self.error_rsp(op, None, ErrorCode::RequestNotSupported).await?;
+                self.raw_error_rsp(op, None, ErrorCode::RequestNotSupported).await?;
                 continue;
             };
             if matches!(op.typ(), PduType::Rsp | PduType::Cfm) {
@@ -83,7 +83,7 @@ impl<T: host::Transport> Bearer<T> {
                 continue;
             }
             // TODO: Validate signature?
-            return Ok(Pdu::new(self, op, sdu));
+            return Ok(Pdu(sdu));
         }
     }
 
@@ -126,7 +126,7 @@ impl<T: host::Transport> Bearer<T> {
     /// Sends an `ATT_ERROR_RSP` PDU in response to a request that cannot be
     /// performed ([Vol 3] Part F, Section 3.4.1.1). Command-related errors are
     /// ignored.
-    async fn error_rsp(&mut self, req: u8, hdl: Option<Handle>, err: ErrorCode) -> Result<()> {
+    async fn raw_error_rsp(&self, req: u8, hdl: Option<Handle>, err: ErrorCode) -> Result<()> {
         warn!("ATT response: opcode {req:#06X} for {hdl:?} failed with {err}");
         if Opcode::is_cmd(req) {
             return Ok(());

@@ -5,6 +5,9 @@ use super::*;
 
 type Result<T> = std::result::Result<T, ErrorCode>;
 
+// TODO: Should Server understand groups? If so, can make some Pdu and Bearer
+// methods private.
+
 /// ATT server responsible for assigning attribute handles and storing
 /// associated attribute types and permissions.
 #[derive(Debug)]
