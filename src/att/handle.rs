@@ -61,7 +61,7 @@ impl Display for Handle {
 
 /// Inclusive range of attribute handles. This is a `Copy` version of
 /// `RangeInclusive<Handle>`.
-#[derive(Clone, Copy, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 #[must_use]
 pub struct HandleRange {
     pub start: Handle,

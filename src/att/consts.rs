@@ -68,11 +68,7 @@ impl Opcode {
     /// Returns a non-handle error response.
     #[inline]
     pub(crate) const fn err(self, err: ErrorCode) -> ErrorRsp {
-        ErrorRsp {
-            req: self,
-            hdl: None,
-            err,
-        }
+        self.hdl_err(None, err)
     }
 
     /// Returns a handle-specific error response.
