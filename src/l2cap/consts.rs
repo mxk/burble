@@ -3,6 +3,9 @@
 /// Basic L2CAP header size ([Vol 3] Part A, Section 3).
 pub(super) const L2CAP_HDR: usize = 4;
 
+/// Minimum MTU ([Vol 3] Part A, Section 5.1).
+pub(super) const L2CAP_LE_MIN_MTU: u16 = 23;
+
 /// C-frame command type ([Vol 3] Part A, Section 4).
 #[derive(
     Clone,

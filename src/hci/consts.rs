@@ -10,7 +10,7 @@ pub(crate) const CMD_BUF: usize = CMD_HDR + u8::MAX as usize;
 
 /// HCI ACL data header and buffer sizes ([Vol 4] Part E, Section 5.4.2).
 pub(crate) const ACL_HDR: usize = 4;
-pub(crate) const ACL_LE_MIN_DATA_LEN: usize = 27;
+pub(crate) const ACL_LE_MIN_DATA_LEN: u16 = 27;
 
 /// HCI event header and buffer sizes ([Vol 4] Part E, Section 5.4.4).
 pub(super) const EVT_HDR: usize = 2;

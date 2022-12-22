@@ -27,7 +27,8 @@ mod rx;
 mod tx;
 
 // TODO: Remove this assumption? Currently, it is required to index into buffers
-// that may contain 2^16 bytes of payload with additional headers.
+// that may contain 2^16 bytes of payload with additional headers. Probably
+// split off header and payload lengths in methods that require knowing both.
 #[allow(clippy::assertions_on_constants)]
 const _: () = assert!(usize::BITS > u16::BITS, "usize too small");
 
@@ -368,7 +369,7 @@ struct Alloc<T: host::Transport> {
     /// Transfers that can be reused.
     free: parking_lot::Mutex<Vec<T::Transfer>>,
     /// Maximum size of a PDU fragment in an ACL data packet.
-    acl_data_len: usize,
+    acl_data_len: u16,
     /// Transfer direction.
     dir: host::Direction,
 }
@@ -378,7 +379,6 @@ impl<T: host::Transport> Alloc<T> {
     #[inline]
     #[must_use]
     fn new(transport: T, dir: host::Direction, acl_data_len: u16) -> Arc<Self> {
-        let acl_data_len = usize::from(acl_data_len);
         assert!(acl_data_len >= hci::ACL_LE_MIN_DATA_LEN);
         Arc::new(Self {
             transport,
@@ -402,9 +402,8 @@ impl<T: host::Transport> Alloc<T> {
     }
 
     /// Allocates an outbound frame with a zero-filled basic L2CAP header.
-    #[inline]
     fn frame(self: &Arc<Self>, max_frame_len: usize) -> Frame<T> {
-        if max_frame_len <= self.acl_data_len {
+        if max_frame_len <= self.acl_data_len as usize {
             let mut xfer = self.xfer();
             xfer.at(ACL_HDR + L2CAP_HDR).put([]);
             Frame::Transfer(xfer)

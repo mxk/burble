@@ -47,7 +47,7 @@ pub trait Transport: Clone + Debug + Send + Sync {
     fn event(&self) -> Self::Transfer;
 
     /// Returns an Asynchronous Connection-Oriented transfer.
-    fn acl(&self, dir: Direction, max_data_len: usize) -> Self::Transfer;
+    fn acl(&self, dir: Direction, max_data_len: u16) -> Self::Transfer;
 }
 
 /// Asynchronous I/O transfer.

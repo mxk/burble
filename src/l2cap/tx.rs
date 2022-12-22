@@ -23,7 +23,14 @@ impl<T: host::Transport> State<T> {
         })
     }
 
+    /// Returns the maximum frame length that avoids fragmentation.
+    #[inline]
+    pub fn preferred_frame_len(&self) -> u16 {
+        self.alloc.acl_data_len
+    }
+
     /// Allocates an outbound frame with a zero-filled basic L2CAP header.
+    #[inline]
     pub fn new_frame(&self, max_frame_len: usize) -> Frame<T> {
         self.alloc.frame(max_frame_len)
     }
@@ -322,7 +329,7 @@ impl<T: host::Transport> SchedulerGuard<T> {
         }
 
         let mut xfer = self.tx.alloc.xfer();
-        let frags = pdu.as_ref().chunks(self.tx.alloc.acl_data_len);
+        let frags = pdu.as_ref().chunks(self.tx.alloc.acl_data_len as _);
         let last = frags.len() - 1;
         for (i, frag) in frags.enumerate() {
             xfer.at(ACL_HDR).put(frag);

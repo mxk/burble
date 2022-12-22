@@ -181,13 +181,13 @@ impl Transport for UsbController {
         }
     }
 
-    fn acl(&self, dir: Direction, max_data_len: usize) -> Self::Transfer {
+    fn acl(&self, dir: Direction, max_data_len: u16) -> Self::Transfer {
         let endpoint = match dir {
             Direction::In => self.ep.acl_in,
             Direction::Out => self.ep.acl_out,
         };
         Self::Transfer {
-            t: libusb::Transfer::new_bulk(endpoint, hci::ACL_HDR + max_data_len),
+            t: libusb::Transfer::new_bulk(endpoint, hci::ACL_HDR + max_data_len as usize),
             dev: Arc::clone(&self.dev),
         }
     }

@@ -17,24 +17,39 @@ use super::*;
 pub(crate) struct BasicChan<T: host::Transport> {
     pub(super) raw: Arc<RawChan<T>>,
     tx: Arc<tx::State<T>>,
-    mtu: usize,
+    mtu: u16,
 }
 
 impl<T: host::Transport> BasicChan<T> {
     /// Creates a new channel.
     #[inline]
-    pub(super) fn new(cid: LeCid, tx: &Arc<tx::State<T>>, mtu: usize) -> Self {
+    pub(super) fn new(cid: LeCid, tx: &Arc<tx::State<T>>, mtu: u16) -> Self {
+        assert!(mtu >= L2CAP_LE_MIN_MTU);
         Self {
-            raw: RawChan::new(cid, L2CAP_HDR + mtu),
+            raw: RawChan::new(cid, L2CAP_HDR + mtu as usize),
             tx: Arc::clone(tx),
             mtu,
         }
     }
 
+    /// Returns the maximum MTU that avoids fragmentation.
+    #[allow(clippy::cast_possible_truncation)]
+    #[inline]
+    pub fn preferred_mtu(&self) -> u16 {
+        self.tx.preferred_frame_len() - L2CAP_HDR as u16
+    }
+
+    /// Updates channel MTU.
+    pub fn set_mtu(&mut self, mtu: u16) {
+        assert!(mtu >= L2CAP_LE_MIN_MTU);
+        self.mtu = mtu;
+        self.raw.state.lock().max_frame_len = L2CAP_HDR + mtu as usize;
+    }
+
     /// Creates a new outbound SDU.
     #[inline]
     pub fn new_sdu(&self) -> Sdu<T> {
-        Sdu::new(self.tx.new_frame(L2CAP_HDR + self.mtu), L2CAP_HDR)
+        Sdu::new(self.tx.new_frame(L2CAP_HDR + self.mtu as usize), L2CAP_HDR)
     }
 
     /// Receives the next inbound SDU. This method is cancel safe.
@@ -166,7 +181,7 @@ bitflags::bitflags! {
 pub(super) struct State<T: host::Transport> {
     /// Channel status flags.
     status: Status,
-    /// Maximum PDU length, including the basic L2CAP header.
+    /// Maximum PDU length, including the L2CAP header.
     pub max_frame_len: usize,
     /// Received PDU queue.
     pub pdu: VecDeque<Frame<T>>,
@@ -176,7 +191,7 @@ impl<T: host::Transport> State<T> {
     /// Creates new channel state.
     #[inline]
     fn new(max_frame_len: usize) -> Self {
-        assert!(max_frame_len >= ACL_LE_MIN_DATA_LEN);
+        assert!(max_frame_len >= ACL_LE_MIN_DATA_LEN as usize);
         Self {
             status: Status::empty(),
             max_frame_len,
