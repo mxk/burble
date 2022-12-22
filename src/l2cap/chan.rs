@@ -32,6 +32,18 @@ impl<T: host::Transport> BasicChan<T> {
         }
     }
 
+    /// Returns the channel ID.
+    #[inline(always)]
+    pub fn cid(&self) -> LeCid {
+        self.raw.cid
+    }
+
+    /// Returns the current MTU.
+    #[inline]
+    pub const fn mtu(&self) -> u16 {
+        self.mtu
+    }
+
     /// Returns the maximum MTU that avoids fragmentation.
     #[allow(clippy::cast_possible_truncation)]
     #[inline]
@@ -39,7 +51,7 @@ impl<T: host::Transport> BasicChan<T> {
         self.tx.preferred_frame_len() - L2CAP_HDR as u16
     }
 
-    /// Updates channel MTU.
+    /// Sets new channel MTU.
     pub fn set_mtu(&mut self, mtu: u16) {
         assert!(mtu >= L2CAP_LE_MIN_MTU);
         self.mtu = mtu;

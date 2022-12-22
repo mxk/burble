@@ -41,4 +41,11 @@ impl Server {
         e.insert((typ, p));
         true
     }
+
+    /// Returns an iterator returning the type of each handle in the specified
+    /// range or [`None`] if there are no registered handles in the range.
+    pub fn types(&self, hdls: HandleRange) -> Option<impl Iterator<Item = (Handle, Uuid)> + '_> {
+        let r = self.attrs.range(hdls);
+        (r.clone().next()).map(move |_| r.map(|(&hdl, &(typ, _))| (hdl, typ)))
+    }
 }

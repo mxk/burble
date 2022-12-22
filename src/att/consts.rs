@@ -4,6 +4,9 @@ use std::fmt::Debug;
 
 use super::*;
 
+/// Maximum attribute value length ([Vol 3] Part F, Section 3.2.9).
+pub(crate) const MAX_VAL_LEN: usize = 512;
+
 /// Attribute opcode ([Vol 3] Part F, Section 3.3.1 and
 /// [Vol 3] Part F, Section 3.4.8).
 #[derive(

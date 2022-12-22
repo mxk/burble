@@ -1,5 +1,6 @@
 use std::fmt::{Debug, Display, Formatter};
 use std::num::NonZeroU16;
+use std::ops::{Bound, RangeBounds};
 
 use nameof::name_of_type;
 
@@ -74,5 +75,26 @@ impl HandleRange {
     pub const fn new(start: Handle, end: Handle) -> Self {
         assert!(start.0.get() <= end.0.get());
         Self { start, end }
+    }
+}
+
+impl RangeBounds<Handle> for HandleRange {
+    #[inline]
+    fn start_bound(&self) -> Bound<&Handle> {
+        Bound::Included(&self.start)
+    }
+
+    #[inline]
+    fn end_bound(&self) -> Bound<&Handle> {
+        Bound::Included(&self.end)
+    }
+
+    #[inline]
+    fn contains<U>(&self, item: &U) -> bool
+    where
+        Handle: PartialOrd<U>,
+        U: ?Sized + PartialOrd<Handle>,
+    {
+        self.start <= *item && *item <= self.end
     }
 }

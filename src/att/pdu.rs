@@ -22,13 +22,13 @@ impl<T: host::Transport> Pdu<T> {
 
     /// Returns a non-handle error response.
     #[inline]
-    fn err(&self, err: ErrorCode) -> ErrorRsp {
+    pub fn err(&self, err: ErrorCode) -> ErrorRsp {
         self.opcode().err(err)
     }
 
     /// Returns a handle-specific error response.
     #[inline]
-    fn hdl_err(&self, hdl: Option<Handle>, err: ErrorCode) -> ErrorRsp {
+    pub fn hdl_err(&self, hdl: Option<Handle>, err: ErrorCode) -> ErrorRsp {
         self.opcode().hdl_err(hdl, err)
     }
 
@@ -93,7 +93,7 @@ impl<T: host::Transport> Bearer<T> {
 impl<T: host::Transport> Pdu<T> {
     /// Returns `ATT_EXCHANGE_MTU_REQ` PDU parameters
     /// ([Vol 3] Part F, Section 3.4.2.1).
-    pub fn exchange_mtu_req(&self) -> RspResult<u16> {
+    pub(super) fn exchange_mtu_req(&self) -> RspResult<u16> {
         self.unpack(Opcode::ExchangeMtuReq, |p| Ok(p.u16()))
     }
 }
@@ -101,7 +101,7 @@ impl<T: host::Transport> Pdu<T> {
 /// MTU exchange encoders ([Vol 3] Part F, Section 3.4.2).
 impl<T: host::Transport> Bearer<T> {
     /// Sends an `ATT_EXCHANGE_MTU_RSP` PDU ([Vol 3] Part F, Section 3.4.2.2).
-    pub async fn exchange_mtu_rsp(&self, mtu: u16) -> Result<()> {
+    pub(super) async fn exchange_mtu_rsp(&self, mtu: u16) -> Result<()> {
         let rsp = self.pack(Opcode::ExchangeMtuRsp, |p| {
             p.u16(mtu);
         });

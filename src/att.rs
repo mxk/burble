@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use structbuf::{Pack, Packer, Unpacker};
-use tracing::warn;
+use tracing::{debug, error, warn};
 
 pub(crate) use {consts::*, handle::*, pdu::*, perm::*, server::*};
 
@@ -50,6 +50,7 @@ pub struct ErrorRsp {
 pub struct Bearer<T: host::Transport> {
     ch: BasicChan<T>,
     srv: Arc<Server>,
+    min_mtu: u16,
 }
 
 impl<T: host::Transport> Bearer<T> {
@@ -58,7 +59,8 @@ impl<T: host::Transport> Bearer<T> {
     #[inline]
     #[must_use]
     pub(super) const fn new(ch: BasicChan<T>, srv: Arc<Server>) -> Self {
-        Self { ch, srv }
+        let min_mtu = ch.mtu();
+        Self { ch, srv, min_mtu }
     }
 
     /// Returns the next command, request, notification, or indication PDU. This
@@ -82,8 +84,60 @@ impl<T: host::Transport> Bearer<T> {
                 warn!("Unexpected ATT PDU: {op}");
                 continue;
             }
-            // TODO: Validate signature?
-            return Ok(Pdu(sdu));
+            let pdu = Pdu(sdu);
+            match op {
+                Opcode::ExchangeMtuReq => self.handle_exchange_mtu_req(pdu).await,
+                Opcode::FindInformationReq => self.handle_find_information_req(pdu).await,
+                // TODO: Validate signature?
+                _ => return Ok(pdu),
+            }
+        }
+    }
+
+    /// Calls function `f` to perform additional validation of the received
+    /// request.
+    #[inline]
+    pub async fn validate<P: Send, R>(
+        &self,
+        params: RspResult<P>,
+        f: impl FnOnce(P) -> RspResult<R> + Send,
+    ) -> Result<R> {
+        let e = match params {
+            Ok(p) => match f(p) {
+                Ok(r) => return Ok(r),
+                Err(e) => e,
+            },
+            Err(e) => e,
+        };
+        self.error_rsp(e.req, e.hdl, e.err).await?;
+        Err(e.into())
+    }
+
+    /// Handles `ATT_EXCHANGE_MTU_REQ` ([Vol 3] Part F, Section 3.4.2.1).
+    async fn handle_exchange_mtu_req(&mut self, pdu: Pdu<T>) {
+        let Ok((cli_mtu, srv_mtu)) = self.validate(pdu.exchange_mtu_req(), |mtu| {
+            Ok(((self.min_mtu <= mtu).then_some(mtu), self.ch.preferred_mtu()))
+        }).await else { return };
+        // TODO: Increase server MTU if the controller's ACL data packet limits
+        // are too small.
+        if let Err(e) = self.exchange_mtu_rsp(srv_mtu).await {
+            error!("MTU exchange failed: {e}");
+            return;
+        }
+        if let Some(cli_mtu) = cli_mtu {
+            let min = cli_mtu.min(srv_mtu);
+            debug!("{} ATT_MTU={min}", self.ch.cid());
+            self.ch.set_mtu(min);
+        }
+    }
+
+    /// Handles `ATT_FIND_INFORMATION_REQ` ([Vol 3] Part F, Section 3.4.3.1).
+    async fn handle_find_information_req(&self, pdu: Pdu<T>) {
+        let Ok(it) = self.validate(pdu.find_information_req(), |hdls| {
+            self.srv.types(hdls).ok_or_else(|| pdu.hdl_err(Some(hdls.start), ErrorCode::AttributeNotFound))
+        }).await else { return };
+        if let Err(e) = self.find_information_rsp(it).await {
+            error!("Find information response error: {e}");
         }
     }
 

@@ -116,9 +116,7 @@ impl<T: host::Transport + 'static> ChanManager<T> {
                 self.on_disconnect(hci::DisconnectionComplete::from(evt));
             }
             Hci(EventCode::NumberOfCompletedPackets) => {
-                self.rm
-                    .tx
-                    .on_num_completed(&hci::NumberOfCompletedPackets::from(evt));
+                (self.rm.tx).on_num_completed(&hci::NumberOfCompletedPackets::from(evt));
             }
             _ => unreachable!("Unhandled Channel Manager event: {}", evt.typ()),
         }
@@ -190,7 +188,6 @@ struct ResManager<T: host::Transport> {
 impl<T: host::Transport + 'static> ResManager<T> {
     /// Creates a new resource manager after configuring the ACL data packet
     /// parameters ([Vol 3] Part A, Section 1.1).
-    #[allow(clippy::similar_names)]
     async fn new(host: &hci::Host<T>) -> Result<Self> {
         // [Vol 4] Part E, Section 4.1 and [Vol 4] Part E, Section 7.8.2
         let mut cbuf = host.le_read_buffer_size().await?;

@@ -50,7 +50,6 @@ impl Usb {
 
     /// Convenience function for opening the first device with matching
     /// Vendor/Product ID.
-    #[allow(clippy::similar_names)]
     pub fn open_first(&self, vid: u16, pid: u16) -> Result<UsbController> {
         debug!("Opening ID {:04X}:{:04X}", vid, pid);
         let dev = self
