@@ -116,7 +116,11 @@ impl<T: host::Transport> Bearer<T> {
     /// Handles `ATT_EXCHANGE_MTU_REQ` ([Vol 3] Part F, Section 3.4.2.1).
     async fn handle_exchange_mtu_req(&mut self, pdu: Pdu<T>) {
         let Ok((cli_mtu, srv_mtu)) = self.validate(pdu.exchange_mtu_req(), |mtu| {
-            Ok(((self.min_mtu <= mtu).then_some(mtu), self.ch.preferred_mtu()))
+            if self.min_mtu <= mtu {
+                Ok((mtu, self.ch.preferred_mtu()))
+            } else {
+                Err(pdu.err(ErrorCode::RequestNotSupported))
+            }
         }).await else { return };
         // TODO: Increase server MTU if the controller's ACL data packet limits
         // are too small.
@@ -124,11 +128,9 @@ impl<T: host::Transport> Bearer<T> {
             error!("MTU exchange failed: {e}");
             return;
         }
-        if let Some(cli_mtu) = cli_mtu {
-            let min = cli_mtu.min(srv_mtu);
-            debug!("{} ATT_MTU={min}", self.ch.cid());
-            self.ch.set_mtu(min);
-        }
+        let min = cli_mtu.min(srv_mtu);
+        debug!("{} ATT_MTU={min}", self.ch.cid());
+        self.ch.set_mtu(min);
     }
 
     /// Handles `ATT_FIND_INFORMATION_REQ` ([Vol 3] Part F, Section 3.4.3.1).
