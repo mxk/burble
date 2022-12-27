@@ -45,6 +45,7 @@
 
 pub mod att;
 pub mod gap;
+pub mod gatt;
 pub mod hci;
 pub mod host;
 pub mod l2cap;
