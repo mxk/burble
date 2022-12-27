@@ -1,6 +1,7 @@
 #![allow(clippy::use_self)]
 
 use std::fmt::{Debug, Display, Formatter};
+use std::hash::{Hash, Hasher};
 use std::num::{NonZeroU128, NonZeroU16};
 
 const SHIFT: u32 = u128::BITS - u32::BITS;
@@ -64,18 +65,10 @@ impl<T: Into<u16>> From<T> for Uuid {
     }
 }
 
-impl From<Uuid> for u128 {
-    #[inline]
-    fn from(u: Uuid) -> Self {
-        u.0.get()
-    }
-}
-
 impl From<Uuid16> for Uuid {
     #[inline]
     fn from(u: Uuid16) -> Self {
-        // SAFETY: Always non-zero
-        Self(unsafe { NonZeroU128::new_unchecked(u128::from(u.0.get()) << SHIFT | BASE) })
+        u.as_uuid()
     }
 }
 
@@ -109,8 +102,15 @@ impl Display for Uuid {
     }
 }
 
+impl From<Uuid> for u128 {
+    #[inline]
+    fn from(u: Uuid) -> Self {
+        u.0.get()
+    }
+}
+
 /// 16-bit Bluetooth SIG UUID.
-#[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 #[repr(transparent)]
 pub struct Uuid16(NonZeroU16);
 
@@ -130,8 +130,8 @@ impl Uuid16 {
     #[must_use]
     pub const fn as_uuid(self) -> Uuid {
         // TODO: Use NonZeroU128::from() when it is const
-        // SAFETY: self.0 is non-zero
-        Uuid(unsafe { NonZeroU128::new_unchecked(self.0.get() as _) })
+        // SAFETY: Always non-zero
+        Uuid(unsafe { NonZeroU128::new_unchecked((self.0.get() as u128) << SHIFT | BASE) })
     }
 }
 
@@ -145,6 +145,14 @@ impl Display for Uuid16 {
     #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         Debug::fmt(self, f)
+    }
+}
+
+#[allow(clippy::derive_hash_xor_eq)]
+impl Hash for Uuid16 {
+    #[inline]
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.as_uuid().hash(state);
     }
 }
 
