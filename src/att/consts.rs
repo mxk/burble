@@ -78,7 +78,7 @@ impl Opcode {
     #[inline]
     pub(crate) const fn hdl_err(self, hdl: Option<Handle>, err: ErrorCode) -> ErrorRsp {
         ErrorRsp {
-            req: self,
+            req: self as _,
             hdl,
             err,
         }

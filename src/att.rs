@@ -40,9 +40,17 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Clone, Copy, Debug, thiserror::Error)]
 #[error("ATT {req}{} failed with {err}", .hdl.map_or(String::new(), |h| format!(" for handle {:#06X}", u16::from(h))))]
 pub struct ErrorRsp {
-    pub req: Opcode,
-    pub hdl: Option<Handle>,
-    pub err: ErrorCode,
+    req: u8,
+    hdl: Option<Handle>,
+    err: ErrorCode,
+}
+
+impl ErrorRsp {
+    /// Creates a new error response.
+    #[inline(always)]
+    const fn new(req: u8, hdl: Option<Handle>, err: ErrorCode) -> Self {
+        Self { req, hdl, err }
+    }
 }
 
 /// ATT bearer ([Vol 3] Part F, Section 3.2.11).
@@ -64,34 +72,24 @@ impl<T: host::Transport> Bearer<T> {
     }
 
     /// Returns the next command, request, notification, or indication PDU. This
-    /// method is not cancel safe. Dropping the returned future may result in a
-    /// failure to send an internal response.
+    /// method is cancel safe.
     pub async fn recv(&mut self) -> Result<Pdu<T>> {
-        loop {
-            let sdu = self.ch.recv().await?;
-            // [Vol 3] Part F, Section 3.3
-            let Some(&op) = sdu.as_ref().first() else {
-                warn!("Empty PDU");
-                self.raw_error_rsp(0, None, ErrorCode::InvalidPdu).await?;
-                continue;
-            };
-            let Some(op) = Opcode::try_from(op).ok() else {
-                warn!("Unknown ATT opcode: {op}");
-                self.raw_error_rsp(op, None, ErrorCode::RequestNotSupported).await?;
-                continue;
-            };
-            if matches!(op.typ(), PduType::Rsp | PduType::Cfm) {
-                warn!("Unexpected ATT PDU: {op}");
-                continue;
-            }
-            let pdu = Pdu(sdu);
-            match op {
-                Opcode::ExchangeMtuReq => self.handle_exchange_mtu_req(pdu).await,
-                Opcode::FindInformationReq => self.handle_find_information_req(pdu).await,
-                // TODO: Validate signature?
-                _ => return Ok(pdu),
-            }
+        let sdu = self.ch.recv().await?;
+        // [Vol 3] Part F, Section 3.3
+        let Some(&op) = sdu.as_ref().first() else {
+            warn!("Empty PDU");
+            return Err(ErrorRsp::new(0, None, ErrorCode::InvalidPdu).into());
+        };
+        let Some(op) = Opcode::try_from(op).ok() else {
+            warn!("Unknown ATT opcode: {op}");
+            return Err(ErrorRsp::new(op, None, ErrorCode::RequestNotSupported).into());
+        };
+        if matches!(op.typ(), PduType::Rsp | PduType::Cfm) {
+            warn!("Unexpected ATT PDU: {op}");
+            return Err(ErrorRsp::new(op as _, None, ErrorCode::UnlikelyError).into());
         }
+        // TODO: Validate signature?
+        Ok(Pdu(sdu))
     }
 
     /// Calls function `f` to perform additional validation of the received
@@ -109,7 +107,7 @@ impl<T: host::Transport> Bearer<T> {
             },
             Err(e) => e,
         };
-        self.error_rsp(e.req, e.hdl, e.err).await?;
+        self.raw_error_rsp(e.req, e.hdl, e.err).await?;
         Err(e.into())
     }
 
@@ -156,7 +154,7 @@ impl<T: host::Transport> Bearer<T> {
             Duration::from_secs(30),
             self.ch.recv_filter(|mut pdu| {
                 let op = pdu.u8();
-                op == want || (op == err && err != 0)
+                op == want || (op == err && err != 0 && pdu.u8() == want)
             }),
         )
         .await;
@@ -172,7 +170,7 @@ impl<T: host::Transport> Bearer<T> {
             Ok(sdu)
         } else {
             Err(Error::Att(ErrorRsp {
-                req: Opcode::try_from(p.u8()).unwrap_or(Opcode::ErrorRsp),
+                req: p.u8(),
                 hdl: Handle::new(p.u16()),
                 err: ErrorCode::try_from(p.u8()).unwrap_or(ErrorCode::UnlikelyError),
             }))
