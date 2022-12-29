@@ -1,9 +1,38 @@
 use bitflags::bitflags;
 
+use crate::gap::Uuid16;
+
+/// GATT profile attribute types ([Vol 3] Part G, Section 3.4).
+#[allow(missing_debug_implementations)]
+pub struct Type;
+
+impl Type {
+    /// Primary Service Declaration.
+    pub const PRIMARY_SERVICE: Uuid16 = Uuid16::sig(0x2800);
+    /// Secondary Service Declaration.
+    pub const SECONDARY_SERVICE: Uuid16 = Uuid16::sig(0x2801);
+    /// Include Declaration.
+    pub const INCLUDE: Uuid16 = Uuid16::sig(0x2802);
+    /// Characteristic Declaration.
+    pub const CHARACTERISTIC: Uuid16 = Uuid16::sig(0x2803);
+    /// Characteristic Extended Properties.
+    pub const CHARACTERISTIC_EXTENDED_PROPERTIES: Uuid16 = Uuid16::sig(0x2900);
+    /// Characteristic User Description Descriptor.
+    pub const CHARACTERISTIC_USER_DESCRIPTION: Uuid16 = Uuid16::sig(0x2901);
+    /// Client Characteristic Configuration Descriptor.
+    pub const CLIENT_CHARACTERISTIC_CONFIGURATION: Uuid16 = Uuid16::sig(0x2902);
+    /// Server Characteristic Configuration Descriptor.
+    pub const SERVER_CHARACTERISTIC_CONFIGURATION: Uuid16 = Uuid16::sig(0x2903);
+    /// Characteristic Presentation Format Descriptor.
+    pub const CHARACTERISTIC_PRESENTATION_FORMAT: Uuid16 = Uuid16::sig(0x2904);
+    /// Characteristic Aggregate Format Descriptor.
+    pub const CHARACTERISTIC_AGGREGATE_FORMAT: Uuid16 = Uuid16::sig(0x2905);
+}
+
 bitflags! {
     /// Characteristic properties ([Vol 3] Part G, Section 3.3.1.1).
     #[repr(transparent)]
-    pub struct CharProps: u8 {
+    pub struct Props: u8 {
         /// Permits broadcasts of the Characteristic Value using Server
         /// Characteristic Configuration Descriptor. If set, the Server
         /// Characteristic Configuration Descriptor shall exist.
@@ -11,7 +40,7 @@ bitflags! {
         /// Permits reads of the Characteristic Value.
         const READ = 0x02;
         /// Permit writes of the Characteristic Value without response.
-        const WRITE_WITHOUT_RESPONSE = 0x04;
+        const WRITE_CMD = 0x04;
         /// Permits writes of the Characteristic Value with response.
         const WRITE = 0x08;
         /// Permits notifications of a Characteristic Value without
@@ -23,11 +52,22 @@ bitflags! {
         /// exist.
         const INDICATE = 0x20;
         /// Permits signed writes to the Characteristic Value.
-        const AUTHENTICATED_SIGNED_WRITES = 0x40;
+        const SIGNED_WRITE_CMD = 0x40;
         /// Additional characteristic properties are defined in the
         /// Characteristic Extended Properties Descriptor. If set, the
         /// Characteristic Extended Properties Descriptor shall exist.
-        const EXTENDED_PROPERTIES = 0x80;
+        const EXT_PROPS = 0x80;
+    }
+}
+
+bitflags! {
+    /// Characteristic extended properties ([Vol 3] Part G, Section 3.3.3.1).
+    #[repr(transparent)]
+    pub struct ExtProps: u16 {
+        /// Permits reliable writes of the Characteristic Value.
+        const RELIABLE_WRITE = 1 << 0;
+        /// Permits writes to the Characteristic User Description descriptor.
+        const WRITABLE_AUX = 1 << 1;
     }
 }
 

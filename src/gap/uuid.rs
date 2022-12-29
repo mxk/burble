@@ -25,6 +25,14 @@ impl Uuid {
         }
     }
 
+    /// Returns a [`Uuid16`] representation or [`None`] if the UUID is not an
+    /// assigned 16-bit UUID.
+    #[inline]
+    #[must_use]
+    pub fn as_uuid16(self) -> Option<Uuid16> {
+        self.as_u16().map(Uuid16::sig)
+    }
+
     /// Converts an assigned 16-bit Bluetooth SIG UUID to `u16`. This is
     /// mutually exclusive with `as_u32` and `as_u128`.
     #[inline]
@@ -123,6 +131,19 @@ impl Uuid16 {
             Some(nz) => Some(Self(nz)),
             None => None,
         }
+    }
+
+    /// Creates an assigned 16-bit SIG UUID from a `u16`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if v is 0.
+    #[inline(always)]
+    #[must_use]
+    pub const fn sig(v: u16) -> Self {
+        assert!(v != 0);
+        // SAFETY: v != 0
+        Self(unsafe { NonZeroU16::new_unchecked(v) })
     }
 
     /// Returns 128-bit UUID representation.
@@ -299,19 +320,6 @@ pub enum GattServiceId {
     CommonAudio = 0x1853,
     HearingAid = 0x1854,
     Tmas = 0x1855,
-}
-
-/// Declarations ([Assigned Numbers] Section 3.6).
-#[derive(
-    Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, num_enum::IntoPrimitive, strum::Display,
-)]
-#[non_exhaustive]
-#[repr(u16)]
-pub enum DeclarationId {
-    PrimaryService = 0x2800,
-    SecondaryService = 0x2801,
-    Include = 0x2802,
-    Characteristic = 0x2803,
 }
 
 /// Descriptors ([Assigned Numbers] Section 3.7).

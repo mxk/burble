@@ -8,7 +8,7 @@ type Result<T> = std::result::Result<T, ErrorCode>;
 #[derive(Clone, Copy, Debug)]
 #[must_use]
 #[repr(transparent)]
-pub(crate) struct Access(Perm);
+pub struct Access(Perm);
 
 impl Access {
     /// Creates read access permission/request.
@@ -60,7 +60,7 @@ impl Access {
 #[derive(Clone, Copy, Debug, Default)]
 #[must_use]
 #[repr(transparent)]
-pub(crate) struct Perms([Perm; 4]);
+pub struct Perms([Perm; 4]);
 
 impl Perms {
     /// Creates a new permission set.

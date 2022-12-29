@@ -2,7 +2,7 @@
 
 #![allow(dead_code)] // TODO: Remove
 
-pub use {consts::*, server::*};
+pub use {consts::*, schema::*, server::*};
 
 use crate::att::*;
 use crate::gap::{Uuid, Uuid16};
@@ -10,6 +10,7 @@ use crate::gap::{Uuid, Uuid16};
 mod char;
 mod consts;
 mod db;
+mod schema;
 mod server;
 
 /// Service declaration ([Vol 3] Part G, Section 3.1).
@@ -30,7 +31,7 @@ struct IncludeDecl {
 /// Characteristic declaration ([Vol 3] Part G, Section 3.3.1).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct CharDecl {
-    props: CharProps,
+    props: Props,
     value_hdl: Handle,
     uuid: Uuid,
 }
