@@ -1,5 +1,7 @@
 #![allow(dead_code)] // TODO: Remove
 
+use std::ops::BitOr;
+
 use super::*;
 
 type Result<T> = std::result::Result<T, ErrorCode>;
@@ -53,6 +55,22 @@ impl Access {
         // SAFETY: All bits are valid
         Self(unsafe { Perm::from_bits_unchecked(self.0.difference(Perm::KEY_LEN).bits | n) })
     }
+
+    /// Returns the permission array index.
+    #[inline]
+    #[must_use]
+    const fn index(self) -> usize {
+        self.0.access().bits as usize
+    }
+}
+
+impl BitOr for Access {
+    type Output = Perms;
+
+    #[inline]
+    fn bitor(self, rhs: Self) -> Self::Output {
+        Perms::allow(self, rhs)
+    }
 }
 
 /// A set of attribute permissions. Contains separate permissions for read-only,
@@ -67,20 +85,26 @@ impl Perms {
     #[inline]
     pub const fn new(allow: Access) -> Self {
         let mut ps = Self([Perm::empty(); 4]);
-        ps.0[allow.0.index()] = allow.0;
+        ps.0[allow.index()] = allow.0;
         ps
     }
 
-    /// Allows read-only, write-only, or read/write access.
+    /// Creates a permission set from two types of access.
     #[inline]
-    pub fn allow(&mut self, p: Access) {
-        self.0[p.0.index()] = p.0;
+    pub const fn allow(a: Access, b: Access) -> Self {
+        let (i, j) = (a.index(), b.index());
+        // TODO: Use assert_ne when stable const
+        assert!(i != j, "access type must be different");
+        let mut ps = Self([Perm::empty(); 4]);
+        ps.0[i] = a.0;
+        ps.0[j] = b.0;
+        ps
     }
 
     /// Tests whether an access request should be allowed.
     pub const fn test(self, req: Access) -> Result<()> {
-        const RW: usize = Perm::READ_WRITE.index();
-        let mut op = req.0.index();
+        const RW: usize = Access(Perm::READ_WRITE).index();
+        let mut op = req.index();
         if !self.0[op].is_set() {
             op = RW;
         }
@@ -96,6 +120,13 @@ impl Perms {
             Ok(_) | Err(ErrorCode::EncryptionKeySizeTooShort) => rw,
             _ => exact,
         }
+    }
+}
+
+impl From<Access> for Perms {
+    #[inline]
+    fn from(v: Access) -> Self {
+        Self::new(v)
     }
 }
 
@@ -133,13 +164,6 @@ impl Perm {
     const KEY_MIN: u8 = 56;
     const KEY_MAX: u8 = 128;
     const KEY_OFF: u8 = Self::KEY_MIN - 8;
-
-    /// Returns the permission array index.
-    #[inline]
-    #[must_use]
-    const fn index(self) -> usize {
-        self.access().bits as usize
-    }
 
     /// Returns the read/write access type.
     #[inline]
@@ -260,8 +284,7 @@ mod tests {
         }
         let (ro, wo, rw) = (Access::read(), Access::write(), Access::read_write());
 
-        let mut ps = Perms::new(Access::read_write().authz().key_len(128));
-        ps.allow(Access::read().authn());
+        let ps = Access::read().authn() | Access::read_write().authz().key_len(128);
 
         test(ps, Access(Perm::default()), Err(RequestNotSupported));
 
