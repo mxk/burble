@@ -23,7 +23,7 @@ impl Handle {
     /// Wraps a raw handle. Returns `None` if the handle is invalid.
     #[inline]
     #[must_use]
-    pub(super) const fn new(h: u16) -> Option<Self> {
+    pub(crate) const fn new(h: u16) -> Option<Self> {
         // TODO: Use map() when it is const stable
         match NonZeroU16::new(h) {
             Some(nz) => Some(Self(nz)),
@@ -38,13 +38,6 @@ impl Handle {
     }
 }
 
-impl From<Handle> for u16 {
-    #[inline]
-    fn from(h: Handle) -> Self {
-        h.0.get()
-    }
-}
-
 impl Debug for Handle {
     #[allow(clippy::use_self)]
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -56,6 +49,20 @@ impl Display for Handle {
     #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         Debug::fmt(self, f)
+    }
+}
+
+impl From<Handle> for u16 {
+    #[inline]
+    fn from(h: Handle) -> Self {
+        h.0.get()
+    }
+}
+
+impl From<Handle> for usize {
+    #[inline]
+    fn from(h: Handle) -> Self {
+        Self::from(h.0.get())
     }
 }
 

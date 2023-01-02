@@ -4,6 +4,8 @@ use std::fmt::{Debug, Display, Formatter};
 use std::hash::{Hash, Hasher};
 use std::num::{NonZeroU128, NonZeroU16};
 
+use crate::gatt;
+
 const SHIFT: u32 = u128::BITS - u32::BITS;
 const BASE: u128 = 0x00000000_0000_1000_8000_00805F9B34FB;
 const MASK_16: u128 = !((u16::MAX as u128) << SHIFT);
@@ -23,6 +25,18 @@ impl Uuid {
             Some(nz) => Some(Self(nz)),
             None => None,
         }
+    }
+
+    /// Creates a UUID from a `u128` without checking whether the value is
+    /// non-zero.
+    ///
+    /// # Safety
+    ///
+    /// The value must not be zero.
+    #[inline]
+    #[must_use]
+    pub const unsafe fn new_unchecked(v: u128) -> Self {
+        Self(NonZeroU128::new_unchecked(v))
     }
 
     /// Returns a [`Uuid16`] representation or [`None`] if the UUID is not an
@@ -58,18 +72,6 @@ impl Uuid {
     #[must_use]
     pub fn as_u128(self) -> Option<u128> {
         (self.0.get() & MASK_32 != BASE).then_some(self.0.get())
-    }
-}
-
-/// Blanket implementation for enums that derive `num_enum::IntoPrimitive`.
-impl<T: Into<u16>> From<T> for Uuid {
-    /// Creates a UUID from a raw 16-bit Bluetooth SIG assigned number.
-    #[inline]
-    fn from(v: T) -> Self {
-        let v = v.into();
-        assert_ne!(v, 0, "Invalid UUID");
-        // SAFETY: Always non-zero
-        Self(unsafe { NonZeroU128::new_unchecked(u128::from(v) << SHIFT | BASE) })
     }
 }
 
@@ -152,7 +154,14 @@ impl Uuid16 {
     pub const fn as_uuid(self) -> Uuid {
         // TODO: Use NonZeroU128::from() when it is const
         // SAFETY: Always non-zero
-        Uuid(unsafe { NonZeroU128::new_unchecked((self.0.get() as u128) << SHIFT | BASE) })
+        unsafe { Uuid::new_unchecked((self.0.get() as u128) << SHIFT | BASE) }
+    }
+
+    /// Returns the raw 16-bit UUID value.
+    #[inline]
+    #[must_use]
+    pub(crate) const fn raw(self) -> u16 {
+        self.0.get()
     }
 }
 
@@ -176,6 +185,42 @@ impl Hash for Uuid16 {
         self.as_uuid().hash(state);
     }
 }
+
+impl From<Uuid16> for u16 {
+    #[inline]
+    fn from(u: Uuid16) -> Self {
+        u.raw()
+    }
+}
+
+/// Provides implementations for converting a `u16` SIG UUID enum into [`Uuid`]
+/// and [`Uuid16`].
+macro_rules! sig_enum {
+    ($($t:ty)*) => {$(
+        impl $t {
+            #[inline]
+            #[must_use]
+            pub const fn uuid16(self) -> Uuid16 {
+                Uuid16::sig(self as _)
+            }
+        }
+
+        impl From<$t> for Uuid {
+            #[inline]
+            fn from(v: $t) -> Self {
+                v.uuid16().as_uuid()
+            }
+        }
+
+        impl From<$t> for Uuid16 {
+            #[inline]
+            fn from(v: $t) -> Self {
+                v.uuid16()
+            }
+        }
+    )*}
+}
+sig_enum! { ServiceClassId GattServiceId DescriptorId CharacteristicId }
 
 /// SDP service class identifiers ([Assigned Numbers] Section 3.3).
 #[derive(
@@ -329,12 +374,12 @@ pub enum GattServiceId {
 #[non_exhaustive]
 #[repr(u16)]
 pub enum DescriptorId {
-    CharacteristicExtendedProperties = 0x2900,
-    CharacteristicUserDescription = 0x2901,
-    ClientCharacteristicConfiguration = 0x2902,
-    ServerCharacteristicConfiguration = 0x2903,
-    CharacteristicPresentationFormat = 0x2904,
-    CharacteristicAggregateFormat = 0x2905,
+    CharacteristicExtendedProperties = gatt::Type::CHARACTERISTIC_EXTENDED_PROPERTIES.raw(),
+    CharacteristicUserDescription = gatt::Type::CHARACTERISTIC_USER_DESCRIPTION.raw(),
+    ClientCharacteristicConfiguration = gatt::Type::CLIENT_CHARACTERISTIC_CONFIGURATION.raw(),
+    ServerCharacteristicConfiguration = gatt::Type::SERVER_CHARACTERISTIC_CONFIGURATION.raw(),
+    CharacteristicPresentationFormat = gatt::Type::CHARACTERISTIC_PRESENTATION_FORMAT.raw(),
+    CharacteristicAggregateFormat = gatt::Type::CHARACTERISTIC_AGGREGATE_FORMAT.raw(),
     ValidRange = 0x2906,
     ExternalReportReference = 0x2907,
     ReportReference = 0x2908,

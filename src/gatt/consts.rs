@@ -1,10 +1,12 @@
+use std::num::NonZeroU8;
+
 use bitflags::bitflags;
 
 use crate::gap::Uuid16;
 
 /// GATT profile attribute types ([Vol 3] Part G, Section 3.4).
 #[allow(missing_debug_implementations)]
-pub struct Type;
+pub(crate) struct Type;
 
 impl Type {
     /// Primary Service Declaration.
@@ -32,7 +34,7 @@ impl Type {
 bitflags! {
     /// Characteristic properties ([Vol 3] Part G, Section 3.3.1.1).
     #[repr(transparent)]
-    pub struct Props: u8 {
+    pub struct Prop: u8 {
         /// Permits broadcasts of the Characteristic Value using Server
         /// Characteristic Configuration Descriptor. If set, the Server
         /// Characteristic Configuration Descriptor shall exist.
@@ -63,7 +65,7 @@ bitflags! {
 bitflags! {
     /// Characteristic extended properties ([Vol 3] Part G, Section 3.3.3.1).
     #[repr(transparent)]
-    pub struct ExtProps: u16 {
+    pub struct ExtProp: u16 {
         /// Permits reliable writes of the Characteristic Value.
         const RELIABLE_WRITE = 1 << 0;
         /// Permits writes to the Characteristic User Description descriptor.
@@ -98,7 +100,7 @@ bitflags! {
 )]
 #[non_exhaustive]
 #[repr(u8)]
-pub enum FmtType {
+pub enum Format {
     /// Unsigned 1-bit (0 = false; 1 = true).
     Bool = 0x01,
     /// Unsigned 2-bit integer.
@@ -146,7 +148,7 @@ pub enum FmtType {
     /// IEEE 11073-20601 32-bit FLOAT.
     MedF32 = 0x17,
     /// IEEE 11073-20601 nomenclature code.
-    U16x2 = 0x18,
+    U16x2 = 0x18, // TODO: Proper name?
     /// UTF-8 string.
     Utf8 = 0x19,
     /// UTF-16 string.
@@ -190,7 +192,7 @@ pub enum Unit {
     AmperesPerSquareMetre = 0x2718,
     AmperesPerMetre = 0x2719,
     MolesPerCubicMetre = 0x271A,
-    KilogramsPerCubicMetreConcentration = 0x271B,
+    ConcentrationKilogramsPerCubicMetre = 0x271B,
     CandelasPerSquareMetre = 0x271C,
     RefractiveIndex = 0x271D,
     RelativePermeability = 0x271E,
@@ -221,7 +223,7 @@ pub enum Unit {
     NewtonsPerMetre = 0x2742,
     RadiansPerSecond = 0x2743,
     RadiansPerSecondSquared = 0x2744,
-    WattsPerSquareMetreFlux = 0x2745,
+    FluxWattsPerSquareMetre = 0x2745,
     JoulesPerKelvin = 0x2746,
     JoulesPerKilogramKelvin = 0x2747,
     JoulesPerKilogram = 0x2748,
@@ -230,7 +232,7 @@ pub enum Unit {
     VoltsPerMetre = 0x274B,
     CoulombsPerCubicMetre = 0x274C,
     CoulombsPerSquareMetre = 0x274D,
-    CoulombsPerSquareMetreFlux = 0x274E,
+    FluxCoulombsPerSquareMetre = 0x274E,
     FaradsPerMetre = 0x274F,
     HenriesPerMetre = 0x2750,
     JoulesPerMole = 0x2751,
@@ -297,4 +299,78 @@ pub enum Unit {
     MilligramsPerDecilitrePerMinute = 0x27C6,
     KilovoltAmpereHours = 0x27C7,
     VoltAmperes = 0x27C8,
+}
+
+/// Characteristic presentation format description
+/// ([Assigned Numbers] Section 2.4.2).
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, strum::Display)]
+#[non_exhaustive]
+#[repr(u8)]
+pub enum Description {
+    Unknown,
+    Nth(NonZeroU8),
+    Front,
+    Back,
+    Top,
+    Bottom,
+    Upper,
+    Lower,
+    Main,
+    Backup,
+    Auxiliary,
+    Supplementary,
+    Flash,
+    Inside,
+    Outside,
+    Left,
+    Right,
+    Internal,
+    External,
+}
+
+impl Description {
+    /// Creates a description for the `N`th item, where `N > 0`.
+    #[inline]
+    #[must_use]
+    pub const fn nth(n: u8) -> Self {
+        // TODO: Use expect when const stable
+        match NonZeroU8::new(n) {
+            Some(n) => Self::Nth(n),
+            None => panic!("n cannot be zero"),
+        }
+    }
+
+    /// Returns the raw description namespace.
+    #[inline]
+    #[must_use]
+    pub const fn ns(self) -> u8 {
+        0x01
+    }
+
+    /// Returns the raw description ID.
+    #[must_use]
+    pub const fn raw(self) -> u16 {
+        use Description::*;
+        match self {
+            Unknown => 0x0000,
+            Nth(n) => n.get() as u16,
+            Front => 0x0100,
+            Back => 0x0101,
+            Top => 0x0102,
+            Bottom => 0x0103,
+            Upper => 0x0104,
+            Lower => 0x0105,
+            Main => 0x0106,
+            Backup => 0x0107,
+            Auxiliary => 0x0108,
+            Supplementary => 0x0109,
+            Flash => 0x010A,
+            Inside => 0x010B,
+            Outside => 0x010C,
+            Left => 0x010D,
+            Right => 0x010E,
+            Internal => 0x010F,
+            External => 0x0110,
+        }
+    }
 }
