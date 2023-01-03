@@ -198,6 +198,7 @@ impl From<Uuid16> for u16 {
 macro_rules! sig_enum {
     ($($t:ty)*) => {$(
         impl $t {
+            /// Returns the `Uuid16` representation of the variant.
             #[inline]
             #[must_use]
             pub const fn uuid16(self) -> Uuid16 {

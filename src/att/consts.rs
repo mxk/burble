@@ -127,8 +127,8 @@ impl Opcode {
     /// ([Vol 3] Part F, Section 3.4.9).
     pub(crate) const fn access(self) -> Option<Access> {
         use Opcode::*;
-        const READ: Option<Access> = Some(Access::read());
-        const WRITE: Option<Access> = Some(Access::write());
+        const READ: Option<Access> = Some(Access::READ);
+        const WRITE: Option<Access> = Some(Access::WRITE);
         #[allow(clippy::match_same_arms)]
         match self {
             ErrorRsp => None,

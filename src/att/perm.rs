@@ -13,23 +13,17 @@ type Result<T> = std::result::Result<T, ErrorCode>;
 pub struct Access(Perm);
 
 impl Access {
-    /// Creates read access permission/request.
-    #[inline]
-    pub const fn read() -> Self {
-        Self(Perm::READ)
-    }
+    /// No access.
+    pub const NONE: Self = Self(Perm::empty());
 
-    /// Creates write access permission/request.
-    #[inline]
-    pub const fn write() -> Self {
-        Self(Perm::WRITE)
-    }
+    /// Read access permission/request.
+    pub const READ: Self = Self(Perm::READ);
 
-    /// Creates read/write access permission/request.
-    #[inline]
-    pub const fn read_write() -> Self {
-        Self(Perm::READ_WRITE)
-    }
+    /// Write access permission/request.
+    pub const WRITE: Self = Self(Perm::WRITE);
+
+    /// Read/write access permission/request.
+    pub const READ_WRITE: Self = Self(Perm::READ_WRITE);
 
     /// Sets the authentication flag.
     #[inline]
@@ -242,7 +236,7 @@ mod tests {
         fn test(perm: Access, req: Access, want: Result<()>) {
             assert_eq!(perm.0.test(req.0), want);
         }
-        let (ro, wo, rw) = (Access::read(), Access::write(), Access::read_write());
+        let (ro, wo, rw) = (Access::READ, Access::WRITE, Access::READ_WRITE);
 
         test(ro, ro, Ok(()));
         test(ro, wo, Err(WriteNotPermitted));
@@ -282,9 +276,9 @@ mod tests {
         fn test(ps: Perms, req: Access, want: Result<()>) {
             assert_eq!(ps.test(req), want);
         }
-        let (ro, wo, rw) = (Access::read(), Access::write(), Access::read_write());
+        let (ro, wo, rw) = (Access::READ, Access::WRITE, Access::READ_WRITE);
 
-        let ps = Access::read().authn() | Access::read_write().authz().key_len(128);
+        let ps = Access::READ.authn() | Access::READ_WRITE.authz().key_len(128);
 
         test(ps, Access(Perm::default()), Err(RequestNotSupported));
 

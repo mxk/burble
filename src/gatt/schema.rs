@@ -104,7 +104,7 @@ impl Schema {
             s.attr.push(Attr {
                 hdl,
                 typ: Some(typ),
-                perms: Perms::new(Access::read()),
+                perms: Perms::new(Access::READ),
                 off,
                 len: val.len() as _,
             });
