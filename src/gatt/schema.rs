@@ -1,6 +1,5 @@
 use std::fmt::Debug;
 use std::marker::PhantomData;
-use std::mem;
 use std::ops::{Deref, DerefMut};
 
 use smallvec::SmallVec;
@@ -33,11 +32,7 @@ impl Schema {
     #[inline]
     #[must_use]
     pub fn build() -> SchemaBuilder {
-        SchemaBuilder {
-            attr: Vec::with_capacity(128),
-            data: Vec::with_capacity(1024),
-            ..SchemaBuilder::default()
-        }
+        SchemaBuilder::new()
     }
 
     /// Returns the database hash ([Vol 3] Part G, Section 7.3).
@@ -59,18 +54,6 @@ impl Schema {
             },
             Uuid16::as_uuid,
         )
-    }
-}
-
-impl CommonOps for Schema {
-    #[inline(always)]
-    fn attr(&self) -> &[Attr] {
-        &self.attr
-    }
-
-    #[inline(always)]
-    fn data(&self) -> &[u8] {
-        &self.data
     }
 }
 
@@ -157,6 +140,30 @@ trait CommonOps {
     }
 }
 
+impl CommonOps for Schema {
+    #[inline(always)]
+    fn attr(&self) -> &[Attr] {
+        &self.attr
+    }
+
+    #[inline(always)]
+    fn data(&self) -> &[u8] {
+        &self.data
+    }
+}
+
+impl CommonOps for SchemaBuilder {
+    #[inline(always)]
+    fn attr(&self) -> &[Attr] {
+        &self.attr
+    }
+
+    #[inline(always)]
+    fn data(&self) -> &[u8] {
+        &self.data
+    }
+}
+
 /// Schema builder used to define services, characteristics, and descriptors.
 #[derive(Debug, Default)]
 pub struct SchemaBuilder {
@@ -169,6 +176,17 @@ pub struct SchemaBuilder {
 }
 
 impl SchemaBuilder {
+    /// Creates a new schema builder.
+    #[inline]
+    #[must_use]
+    fn new() -> Self {
+        Self {
+            attr: Vec::with_capacity(128),
+            data: Vec::with_capacity(1024),
+            ..Self::default()
+        }
+    }
+
     /// Returns the final read-only schema.
     #[inline]
     #[must_use]
@@ -209,7 +227,7 @@ impl SchemaBuilder {
         (hdl, chars(self.builder()))
     }
 
-    /// Declares a primary or secondary service and any includes
+    /// Declares a primary or secondary service and any included services
     /// ([Vol 3] Part G, Section 3.2).
     pub fn service(&mut self, typ: Uuid16, uuid: Uuid, includes: &[Handle]) -> Handle {
         let hdl = self.decl(typ, |v| v.uuid(uuid));
@@ -244,15 +262,6 @@ impl SchemaBuilder {
         let mut b = StructBuf::new(1 + 2 + 16);
         val(&mut b.append());
         append_attr(self, typ, &b)
-    }
-
-    /// Creates a generic attribute with an externally stored value.
-    fn new_attr(&mut self, typ: Uuid, perms: Perms) -> Handle {
-        let typ16 = typ.as_uuid16();
-        if typ16.is_none() {
-            self.append_data(u128::from(typ).to_le_bytes());
-        }
-        self.append_attr(self.next_handle(), typ16, perms)
     }
 
     /// Returns the next unused handle.
@@ -329,22 +338,22 @@ impl SchemaBuilder {
     }
 }
 
-impl CommonOps for SchemaBuilder {
-    #[inline(always)]
-    fn attr(&self) -> &[Attr] {
-        &self.attr
-    }
-
-    #[inline(always)]
-    fn data(&self) -> &[u8] {
-        &self.data
-    }
-}
-
 /// Service and characteristic schema builder.
 #[derive(Debug)]
 #[repr(transparent)]
 pub struct Builder<T>(SchemaBuilder, PhantomData<T>);
+
+impl<T> Builder<T> {
+    /// Creates a generic attribute with an externally stored value.
+    fn attr(&mut self, typ: Uuid, perms: Perms) -> Handle {
+        let typ16 = typ.as_uuid16();
+        if typ16.is_none() {
+            self.append_data(u128::from(typ).to_le_bytes());
+        }
+        let hdl = self.next_handle();
+        self.append_attr(hdl, typ16, perms)
+    }
+}
 
 impl<T> Deref for Builder<T> {
     type Target = SchemaBuilder;
@@ -417,11 +426,14 @@ impl Builder<CharacteristicDescriptors> {
     /// ([Vol 3] Part G, Section 3.3.3).
     #[inline]
     pub fn descriptor(&mut self, uuid: impl Into<Uuid>, perms: impl Into<Perms>) -> Handle {
-        self.new_attr(uuid.into(), perms.into())
+        self.attr(uuid.into(), perms.into())
     }
 
     /// Declares a Characteristic Extended Properties descriptor
     /// ([Vol 3] Part G, Section 3.3.3.1).
+    ///
+    /// This descriptor will be added automatically if the characteristic
+    /// properties contain `EXT_PROPS` flag.
     pub fn ext_props(&mut self, props: ExtProp) {
         assert!(
             self.need_ext_props,
@@ -439,7 +451,7 @@ impl Builder<CharacteristicDescriptors> {
     pub fn client_cfg(&mut self, perms: impl Into<Perms>) -> Handle {
         assert!(!self.have_cccd, "descriptor already exists");
         self.have_cccd = true;
-        self.new_attr(
+        self.attr(
             Type::CLIENT_CHARACTERISTIC_CONFIGURATION.as_uuid(),
             perms.into(),
         )
@@ -463,11 +475,14 @@ impl Builder<CharacteristicDescriptors> {
 
     /// Declares a Characteristic Aggregate Format descriptor
     /// ([Vol 3] Part G, Section 3.3.3.6).
-    pub fn aggregate_fmt(&mut self, hdls: impl Iterator<Item = Handle>) {
+    ///
+    /// This descriptor will be added automatically when more than one
+    /// Presentation Format descriptor is present.
+    pub fn aggregate_fmt(&mut self, hdls: impl AsRef<[Handle]>) {
         assert!(!self.have_aggregate_fmt, "descriptor already exists");
         self.have_aggregate_fmt = true;
         self.decl(Type::CHARACTERISTIC_AGGREGATE_FORMAT, |v| {
-            for hdl in hdls {
+            for &hdl in hdls.as_ref() {
                 v.u16(hdl);
             }
         });
@@ -479,8 +494,9 @@ impl Builder<CharacteristicDescriptors> {
             self.ext_props(ExtProp::empty());
         }
         if !self.have_aggregate_fmt && self.fmt.len() > 1 {
-            let fmt = mem::take(&mut self.fmt);
-            self.aggregate_fmt(fmt.into_iter());
+            let fmt = std::mem::take(&mut self.fmt);
+            self.aggregate_fmt(&fmt);
+            self.fmt = fmt; // Preserve any allocated capacity
         }
     }
 }
