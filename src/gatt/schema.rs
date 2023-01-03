@@ -1,6 +1,6 @@
 use std::fmt::Debug;
-use std::ops::{Deref, DerefMut};
-use std::{mem, u128};
+use std::mem;
+use std::ops::{Deref, DerefMut, Range};
 
 use structbuf::{Pack, Packer, StructBuf, Unpack};
 
@@ -9,25 +9,31 @@ use crate::gap::{Uuid, Uuid16};
 
 use super::*;
 
-/// Schema data offset type. `u16` is enough for 3k 128-bit characteristics.
-type Offset = u16;
-
-/// Database schema.
+/// Read-only database schema.
 ///
 /// Defines the structure of all services, assigns attribute handles, and
-/// contains all attribute values required to calculate the database hash
-/// ([Vol 3] Part G, Section 7.3.1).
+/// contains all attribute values required to calculate the database hash.
 #[derive(Clone, Debug, Default)]
 pub struct Schema {
     /// Attribute metadata sorted by handle.
     attr: Vec<Attr>,
-    /// Concatenated data for GATT profile attributes. For 128-bit attributes,
-    /// the data is preceded by a 16-byte UUID. 128-bit characteristic
-    /// declaration and subsequent value share the same UUID:
-    /// `<props, handle, (uuid>, ...)`.
+    /// Concatenated GATT profile attribute values and 128-bit UUIDs.
     data: Vec<u8>,
     /// Database hash.
     hash: u128,
+}
+
+/// Schema data index type. `u16` is enough for 3k 128-bit characteristics.
+type Idx = u16;
+
+/// Attribute entry.
+#[derive(Clone, Debug)]
+#[must_use]
+struct Attr {
+    hdl: Handle,
+    typ: Option<Uuid16>,
+    val: Range<Idx>,
+    perms: Perms,
 }
 
 impl Schema {
@@ -87,7 +93,7 @@ impl Schema {
     /// Defines a service include ([Vol 3] Part G, Section 3.2).
     fn include(&mut self, hdl: Handle) {
         let (start, end) = self.service_group(hdl).expect("invalid service handle");
-        let uuid = (start.len == 2).then(|| self.value(start).unpack().u16());
+        let uuid = (start.val.len() == 2).then(|| self.value(start).unpack().u16());
         let end = end.hdl;
         self.decl(Type::INCLUDE, |v| {
             v.u16(hdl).u16(end);
@@ -98,41 +104,31 @@ impl Schema {
     /// Creates a read-only GATT profile declaration with value set by `val`.
     #[inline]
     fn decl(&mut self, typ: Uuid16, val: impl FnOnce(&mut Packer)) -> Handle {
-        fn push(s: &mut Schema, typ: Uuid16, val: &[u8]) -> Handle {
-            let (hdl, off) = s.next_attr();
-            #[allow(clippy::cast_possible_truncation)]
+        fn append_attr(s: &mut Schema, typ: Uuid16, val: &[u8]) -> Handle {
+            let hdl = s.next_handle();
+            let val = s.append_data(val);
             s.attr.push(Attr {
                 hdl,
                 typ: Some(typ),
+                val,
                 perms: Perms::new(Access::READ),
-                off,
-                len: val.len() as _,
             });
-            s.data.extend_from_slice(val);
             hdl
         }
         // Maximum length of a characteristic declaration value, which is the
         // longest value stored in the schema ([Vol 3] Part G, Section 3.3.1).
         let mut b = StructBuf::new(1 + 2 + 16);
         val(&mut b.append());
-        push(self, typ, &b)
+        append_attr(self, typ, &b)
     }
 
-    /// Creates a generic attribute.
+    /// Creates a generic attribute with an externally stored value.
     fn attr(&mut self, typ: Uuid, perms: Perms) -> Handle {
-        let (hdl, off) = self.next_attr();
         let typ16 = typ.as_uuid16();
         if typ16.is_none() {
-            self.data.extend_from_slice(&u128::from(typ).to_le_bytes());
+            self.append_data(u128::from(typ).to_le_bytes());
         }
-        self.attr.push(Attr {
-            hdl,
-            typ: typ16,
-            perms,
-            off,
-            len: 0,
-        });
-        hdl
+        self.append_attr(self.next_handle(), typ16, perms)
     }
 
     /// Returns the next unused handle.
@@ -143,21 +139,42 @@ impl Schema {
         })
     }
 
-    /// Returns the next unused handle and data offset for a new attribute.
+    /// Appends a new attribute entry. If `typ` is `None`, then the last 16 data
+    /// bytes must contain the 128-bit UUID.
     #[inline]
-    fn next_attr(&self) -> (Handle, u16) {
-        let off = Offset::try_from(self.data.len())
-            .expect("schema data overflow (see Offset type in gatt/schema.rs)");
-        (self.next_handle(), off)
+    fn append_attr(&mut self, hdl: Handle, typ: Option<Uuid16>, perms: Perms) -> Handle {
+        #[allow(clippy::cast_possible_truncation)]
+        let idx = match typ {
+            None => (self.data.len() - 16) as Idx,
+            Some(_) => 0,
+        };
+        self.attr.push(Attr {
+            hdl,
+            typ,
+            val: idx..idx,
+            perms,
+        });
+        hdl
+    }
+
+    /// Appends `v` to schema data and returns the resulting range.
+    #[inline]
+    fn append_data(&mut self, v: impl AsRef<[u8]>) -> Range<Idx> {
+        #[allow(clippy::cast_possible_truncation)]
+        let start = self.data.len() as Idx;
+        self.data.extend_from_slice(v.as_ref());
+        let end = Idx::try_from(self.data.len())
+            .expect("schema data overflow (see Idx type in gatt/schema.rs)");
+        start..end
     }
 
     /// Returns the index and entry of the specified handle or [`None`] if the
     /// handle is invalid.
     #[inline]
     fn get(&self, hdl: Handle) -> Option<(usize, &Attr)> {
-        fn search(hdl: Handle, attrs: &[Attr]) -> Option<(usize, &Attr)> {
+        fn search(attrs: &[Attr], hdl: Handle) -> Option<(usize, &Attr)> {
             attrs.binary_search_by(|at| at.hdl.cmp(&hdl)).ok().map(|i| {
-                // SAFETY: Entry was found at i
+                // SAFETY: Entry was found at `i`
                 (i, unsafe { attrs.get_unchecked(i) })
             })
         }
@@ -171,17 +188,17 @@ impl Schema {
             Some(_) => unsafe { self.attr.get_unchecked(..i) },
             None => &self.attr,
         };
-        search(hdl, attrs)
+        search(attrs, hdl)
     }
 
     /// Returns the attribute type.
     #[inline]
     fn typ(&self, at: &Attr) -> Uuid {
         at.typ.map_or_else(
-            // SAFETY: 128-bit UUID is at self.data[at.off..at.off+16]
+            // SAFETY: 128-bit UUID is at self.data[at.val.start..]
             || unsafe {
                 #[allow(clippy::cast_ptr_alignment)]
-                let p = self.data.as_ptr().add(usize::from(at.off)).cast::<u128>();
+                let p = (self.data.as_ptr().add(usize::from(at.val.start))).cast::<u128>();
                 Uuid::new_unchecked(u128::from_le(p.read_unaligned()))
             },
             Uuid16::as_uuid,
@@ -191,9 +208,9 @@ impl Schema {
     /// Returns the attribute value.
     #[inline]
     fn value(&self, at: &Attr) -> &[u8] {
-        let i = usize::from(at.off) + (usize::from(at.typ.is_none()) << 4);
-        // SAFETY: i..i + at.len is always valid
-        unsafe { self.data.get_unchecked(i..i + usize::from(at.len)) }
+        let val = at.val.start as usize..at.val.end as usize;
+        // SAFETY: self.data[val] is always valid
+        unsafe { self.data.get_unchecked(val) }
     }
 
     /// Returns the start and end entries of the service group defined by `hdl`
@@ -249,17 +266,6 @@ impl Schema {
     }
 }
 
-/// Attribute entry. 128-bit UUIDs are stored in the schema data at `off`.
-#[derive(Clone, Debug)]
-#[must_use]
-struct Attr {
-    hdl: Handle,
-    typ: Option<Uuid16>,
-    perms: Perms,
-    off: Offset,
-    len: u8,
-}
-
 /// Schema builder used to define services and characteristics.
 #[allow(missing_debug_implementations)]
 pub struct Builder<'a, T>(&'a mut Schema, T);
@@ -312,20 +318,10 @@ impl Builder<'_, Characteristics> {
     /// Adds characteristic and characteristic value declarations.
     fn decl_value(&mut self, uuid: Uuid, props: Prop, perms: Perms) -> Handle {
         let hdl = self.next_handle().next().expect("maximum handle reached");
-        #[allow(clippy::cast_possible_truncation)]
-        let off = (self.data.len() + 3) as u16;
         self.decl(Type::CHARACTERISTIC, |v| {
             v.u8(props.bits()).u16(hdl).uuid(uuid);
         });
-        self.next_attr(); // Ensure that `off` is valid
-        self.attr.push(Attr {
-            hdl,
-            typ: uuid.as_uuid16(),
-            perms,
-            off,
-            len: 0,
-        });
-        hdl
+        self.append_attr(hdl, uuid.as_uuid16(), perms)
     }
 }
 
