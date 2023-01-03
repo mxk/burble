@@ -219,6 +219,34 @@ impl Schema {
         // SAFETY: i and i + n are in bounds
         Some(unsafe { (self.attr.get_unchecked(i), self.attr.get_unchecked(i + n)) })
     }
+
+    /// Calculates database hash ([Vol 3] Part G, Section 7.3.1).
+    fn calc_hash(&self) -> u128 {
+        use aes::Aes128;
+        use cmac::digest::{FixedOutput, Key};
+        use cmac::{Cmac, Mac};
+        let mut m = Cmac::<Aes128>::new(&Key::<Aes128>::default());
+        for at in &self.attr {
+            let Some(typ) = at.typ else { continue };
+            let val = match typ {
+                Type::PRIMARY_SERVICE
+                | Type::SECONDARY_SERVICE
+                | Type::INCLUDE
+                | Type::CHARACTERISTIC
+                | Type::CHARACTERISTIC_EXTENDED_PROPERTIES => self.value(at),
+                Type::CHARACTERISTIC_USER_DESCRIPTION
+                | Type::CLIENT_CHARACTERISTIC_CONFIGURATION
+                | Type::SERVER_CHARACTERISTIC_CONFIGURATION
+                | Type::CHARACTERISTIC_PRESENTATION_FORMAT
+                | Type::CHARACTERISTIC_AGGREGATE_FORMAT => &[],
+                _ => continue,
+            };
+            m.update(&u16::from(at.hdl).to_le_bytes());
+            m.update(&u16::from(typ).to_le_bytes());
+            m.update(val);
+        }
+        u128::from_be_bytes(*m.finalize_fixed().as_ref())
+    }
 }
 
 /// Attribute entry. 128-bit UUIDs are stored in the schema data at `off`.
@@ -407,6 +435,8 @@ mod tests {
     use std::ops::RangeInclusive;
     use std::ptr::addr_of;
 
+    use crate::gap::{CharacteristicId, GattServiceId};
+
     use super::*;
 
     #[test]
@@ -426,5 +456,72 @@ mod tests {
         let (h3, _) = s.primary_service(Uuid16::sig(3), [], |_| {});
         eq(&s, h2, 1..=2);
         eq(&s, h3, 3..=3);
+    }
+
+    #[test]
+    fn hash() {
+        let mut s = Schema::new();
+        s.primary_service(GattServiceId::GenericAccess, [], |s| {
+            s.characteristic(
+                CharacteristicId::DeviceName,
+                Prop::READ | Prop::WRITE,
+                Access::READ_WRITE,
+                |_| {},
+            );
+            s.characteristic(
+                CharacteristicId::Appearance,
+                Prop::READ,
+                Access::READ,
+                |_| {},
+            )
+        });
+        s.primary_service(GattServiceId::GenericAttribute, [], |s| {
+            s.characteristic(
+                CharacteristicId::ServiceChanged,
+                Prop::INDICATE,
+                Access::NONE,
+                |s| {
+                    s.client_cfg(Access::READ_WRITE);
+                },
+            );
+            s.characteristic(
+                CharacteristicId::ClientSupportedFeatures,
+                Prop::READ | Prop::WRITE,
+                Access::READ_WRITE,
+                |_| {},
+            );
+            s.characteristic(
+                CharacteristicId::DatabaseHash,
+                Prop::READ,
+                Access::READ,
+                |_| {},
+            );
+        });
+        s.primary_service(GattServiceId::Glucose, [], |s| {
+            // Hack to include a service that hasn't been defined yet
+            s.decl(Type::INCLUDE, |v| {
+                v.u16(0x14_u16).u16(0x16_u16).u16(0x180F_u16);
+            });
+            s.characteristic(
+                CharacteristicId::GlucoseMeasurement,
+                Prop::READ | Prop::INDICATE | Prop::EXT_PROPS,
+                Access::READ,
+                |s| {
+                    s.client_cfg(Access::READ_WRITE);
+                },
+            );
+        });
+        s.secondary_service(GattServiceId::Battery, [], |s| {
+            s.characteristic(
+                CharacteristicId::BatteryLevel,
+                Prop::READ,
+                Access::READ,
+                |_| {},
+            );
+        });
+        assert_eq!(
+            s.calc_hash(),
+            0xF1_CA_2D_48_EC_F5_8B_AC_8A_88_30_BB_B9_FB_A9_90
+        );
     }
 }
