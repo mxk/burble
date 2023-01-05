@@ -18,7 +18,7 @@ pub use {consts::*, handle::*};
 
 use crate::hci::ACL_HDR;
 use crate::host::Transfer;
-use crate::{hci, host};
+use crate::{att, hci, host};
 
 mod chan;
 mod consts;
@@ -95,8 +95,8 @@ impl<T: host::Transport + 'static> ChanManager<T> {
 
     /// Returns the Attribute Protocol (ATT) fixed channel for the specified
     /// LE-U logical link.
-    pub(crate) fn att_chan(&mut self, link: LeU) -> Option<BasicChan<T>> {
-        self.conns.get_mut(&link).and_then(|cn| cn.att_opt.take())
+    pub(crate) fn att_chan(&mut self, link: LeU) -> Option<att::Bearer<T>> {
+        (self.conns.get_mut(&link)).and_then(|cn| cn.att_opt.take().map(att::Bearer::new))
     }
 
     /// Returns the Security Manager (SM) fixed channel for the specified LE-U

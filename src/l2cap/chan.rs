@@ -65,7 +65,7 @@ impl<T: host::Transport> BasicChan<T> {
     }
 
     /// Receives the next inbound SDU. This method is cancel safe.
-    pub async fn recv(&mut self) -> Result<Sdu<T>> {
+    pub async fn recv(&self) -> Result<Sdu<T>> {
         let mut cs = self.raw.state.lock();
         loop {
             cs.err(self.raw.cid)?;
@@ -78,7 +78,7 @@ impl<T: host::Transport> BasicChan<T> {
 
     /// Returns the next inbound SDU that matches filter `f`. All other SDUs
     /// stay in the buffer.
-    pub async fn recv_filter(&mut self, f: impl Fn(Unpacker) -> bool + Send) -> Result<Sdu<T>> {
+    pub async fn recv_filter(&self, f: impl Fn(Unpacker) -> bool + Send) -> Result<Sdu<T>> {
         let mut cs = self.raw.state.lock();
         let mut skip = 0;
         loop {

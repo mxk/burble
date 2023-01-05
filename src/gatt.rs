@@ -2,11 +2,10 @@
 
 #![allow(dead_code)] // TODO: Remove
 
-pub use {consts::*, schema::*, server::*};
+pub use {consts::*, db::*, schema::*, server::*};
 
 use crate::att::*;
 
-mod char;
 mod consts;
 mod db;
 mod schema;

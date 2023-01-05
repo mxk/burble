@@ -3,13 +3,12 @@
 #![allow(dead_code)] // TODO: Remove
 
 use std::fmt::Debug;
-use std::sync::Arc;
 use std::time::Duration;
 
 use structbuf::{Pack, Packer, Unpacker};
 use tracing::{debug, error, warn};
 
-pub(crate) use {consts::*, handle::*, pdu::*, perm::*, server::*};
+pub(crate) use {consts::*, handle::*, pdu::*, perm::*};
 
 use crate::gap::Uuid;
 use crate::l2cap::{BasicChan, Sdu};
@@ -19,7 +18,6 @@ mod consts;
 mod handle;
 mod pdu;
 mod perm;
-mod server;
 
 /// Error type returned by the ATT layer.
 #[derive(Clone, Debug, thiserror::Error)]
@@ -55,26 +53,22 @@ impl ErrorRsp {
 
 /// ATT bearer ([Vol 3] Part F, Section 3.2.11).
 #[derive(Debug)]
-pub struct Bearer<T: host::Transport> {
-    ch: BasicChan<T>,
-    srv: Arc<Server>,
-    min_mtu: u16,
-}
+#[repr(transparent)]
+pub struct Bearer<T: host::Transport>(BasicChan<T>);
 
 impl<T: host::Transport> Bearer<T> {
     /// Creates an ATT bearer by associating an L2CAP channel with an ATT
     /// server.
     #[inline]
     #[must_use]
-    pub(super) const fn new(ch: BasicChan<T>, srv: Arc<Server>) -> Self {
-        let min_mtu = ch.mtu();
-        Self { ch, srv, min_mtu }
+    pub(crate) const fn new(ch: BasicChan<T>) -> Self {
+        Self(ch)
     }
 
     /// Returns the next command, request, notification, or indication PDU. This
     /// method is cancel safe.
-    pub async fn recv(&mut self) -> Result<Pdu<T>> {
-        let sdu = self.ch.recv().await?;
+    pub async fn recv(&self) -> Result<Pdu<T>> {
+        let sdu = self.0.recv().await?;
         // [Vol 3] Part F, Section 3.3
         let Some(&op) = sdu.as_ref().first() else {
             warn!("Empty PDU");
@@ -112,33 +106,25 @@ impl<T: host::Transport> Bearer<T> {
     }
 
     /// Handles `ATT_EXCHANGE_MTU_REQ` ([Vol 3] Part F, Section 3.4.2.1).
-    async fn handle_exchange_mtu_req(&mut self, pdu: Pdu<T>) {
-        let Ok((cli_mtu, srv_mtu)) = self.validate(pdu.exchange_mtu_req(), |mtu| {
-            if self.min_mtu <= mtu {
-                Ok((mtu, self.ch.preferred_mtu()))
-            } else {
-                Err(pdu.err(ErrorCode::RequestNotSupported))
-            }
-        }).await else { return };
+    pub(crate) async fn handle_exchange_mtu_req(&mut self, pdu: Pdu<T>) -> Result<()> {
+        let (cli_mtu, srv_mtu) = self
+            .validate(pdu.exchange_mtu_req(), |mtu| {
+                // This procedure can only be performed once, so the current MTU
+                // is the minimum one allowed for the channel.
+                if self.0.mtu() <= mtu {
+                    Ok((mtu, self.0.preferred_mtu()))
+                } else {
+                    Err(pdu.err(ErrorCode::RequestNotSupported))
+                }
+            })
+            .await?;
         // TODO: Increase server MTU if the controller's ACL data packet limits
         // are too small.
-        if let Err(e) = self.exchange_mtu_rsp(srv_mtu).await {
-            error!("MTU exchange failed: {e}");
-            return;
-        }
+        self.exchange_mtu_rsp(srv_mtu).await?;
         let min = cli_mtu.min(srv_mtu);
-        debug!("{} ATT_MTU={min}", self.ch.cid());
-        self.ch.set_mtu(min);
-    }
-
-    /// Handles `ATT_FIND_INFORMATION_REQ` ([Vol 3] Part F, Section 3.4.3.1).
-    async fn handle_find_information_req(&self, pdu: Pdu<T>) {
-        let Ok(it) = self.validate(pdu.find_information_req(), |hdls| {
-            self.srv.types(hdls).ok_or_else(|| pdu.hdl_err(Some(hdls.start), ErrorCode::AttributeNotFound))
-        }).await else { return };
-        if let Err(e) = self.find_information_rsp(it).await {
-            error!("Find information response error: {e}");
-        }
+        debug!("{} ATT_MTU={min}", self.0.cid());
+        self.0.set_mtu(min);
+        Ok(())
     }
 
     /// Receives a response or confirmation PDU ([Vol 3] Part F, Section 3.4.9).
@@ -152,7 +138,7 @@ impl<T: host::Transport> Bearer<T> {
         // Transaction timeout ([Vol 3] Part F, Section 3.3.3)
         let r = tokio::time::timeout(
             Duration::from_secs(30),
-            self.ch.recv_filter(|mut pdu| {
+            self.0.recv_filter(|mut pdu| {
                 let op = pdu.u8();
                 op == want || (op == err && err != 0 && pdu.u8() == want)
             }),
@@ -195,7 +181,7 @@ impl<T: host::Transport> Bearer<T> {
     /// opcode.
     #[inline]
     fn pack(&self, op: Opcode, f: impl FnOnce(&mut Packer)) -> Sdu<T> {
-        let mut sdu = self.ch.new_sdu();
+        let mut sdu = self.0.new_sdu();
         f(sdu.append().u8(op));
         sdu
     }
@@ -203,6 +189,6 @@ impl<T: host::Transport> Bearer<T> {
     /// Sends an SDU over the channel.
     #[inline]
     async fn send(&self, sdu: Sdu<T>) -> Result<()> {
-        Ok(self.ch.send(sdu).await?)
+        Ok(self.0.send(sdu).await?)
     }
 }

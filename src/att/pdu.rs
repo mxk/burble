@@ -117,7 +117,7 @@ impl<T: host::Transport> Bearer<T> {
 impl<T: host::Transport> Pdu<T> {
     /// Returns `ATT_FIND_INFORMATION_REQ` PDU parameters
     /// ([Vol 3] Part F, Section 3.4.3.1).
-    pub(super) fn find_information_req(&self) -> RspResult<HandleRange> {
+    pub fn find_information_req(&self) -> RspResult<HandleRange> {
         self.unpack(Opcode::FindInformationReq, |p| self.handle_range(p))
     }
 
@@ -135,7 +135,7 @@ impl<T: host::Transport> Pdu<T> {
 impl<T: host::Transport> Bearer<T> {
     /// Sends an `ATT_FIND_INFORMATION_RSP` PDU
     /// ([Vol 3] Part F, Section 3.4.3.2).
-    pub(super) async fn find_information_rsp(
+    pub async fn find_information_rsp(
         &self,
         it: impl Iterator<Item = (Handle, Uuid)> + Send,
     ) -> Result<()> {
