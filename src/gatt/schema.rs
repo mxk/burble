@@ -71,10 +71,9 @@ impl Attr {
     /// Returns whether the attribute is a service declaration.
     #[inline(always)]
     const fn is_service(&self) -> bool {
-        matches!(
-            self.typ,
-            Some(Type::PRIMARY_SERVICE | Type::SECONDARY_SERVICE)
-        )
+        const PRI: Uuid16 = Declaration::PrimaryService.uuid16();
+        const SEC: Uuid16 = Declaration::SecondaryService.uuid16();
+        matches!(self.typ, Some(PRI | SEC))
     }
 
     /// Returns the attribute value length.
@@ -206,10 +205,10 @@ impl SchemaBuilder {
     pub fn primary_service<T>(
         &mut self,
         uuid: impl Into<Uuid>,
-        includes: impl AsRef<[Handle]>,
+        include: impl AsRef<[Handle]>,
         chars: impl FnOnce(&mut Builder<ServiceCharacteristics>) -> T,
     ) -> (Handle, T) {
-        let hdl = self.service(Type::PRIMARY_SERVICE, uuid.into(), includes.as_ref());
+        let hdl = self.service(Declaration::PrimaryService, uuid.into(), include.as_ref());
         (hdl, chars(self.builder()))
     }
 
@@ -220,22 +219,22 @@ impl SchemaBuilder {
     pub fn secondary_service<T>(
         &mut self,
         uuid: impl Into<Uuid>,
-        includes: impl AsRef<[Handle]>,
+        include: impl AsRef<[Handle]>,
         chars: impl FnOnce(&mut Builder<ServiceCharacteristics>) -> T,
     ) -> (Handle, T) {
-        let hdl = self.service(Type::SECONDARY_SERVICE, uuid.into(), includes.as_ref());
+        let hdl = self.service(Declaration::SecondaryService, uuid.into(), include.as_ref());
         (hdl, chars(self.builder()))
     }
 
     /// Declares a primary or secondary service and any included services
     /// ([Vol 3] Part G, Section 3.2).
-    pub fn service(&mut self, typ: Uuid16, uuid: Uuid, includes: &[Handle]) -> Handle {
+    pub fn service(&mut self, typ: Declaration, uuid: Uuid, include: &[Handle]) -> Handle {
         let hdl = self.decl(typ, |v| v.uuid(uuid));
-        for &inc in includes {
+        for &inc in include {
             let (start, end) = ends_of(self.service_group(inc)).expect("invalid service handle");
             let uuid = (start.len() == 2).then(|| self.value(start).unpack().u16());
             let end = end.hdl;
-            self.decl(Type::INCLUDE, |v| {
+            self.decl(Declaration::Include, |v| {
                 v.u16(inc).u16(end);
                 uuid.map(|u| v.u16(u));
             });
@@ -245,7 +244,7 @@ impl SchemaBuilder {
 
     /// Creates a read-only GATT profile declaration with value set by `val`.
     #[inline]
-    fn decl(&mut self, typ: Uuid16, val: impl FnOnce(&mut Packer)) -> Handle {
+    fn decl(&mut self, typ: impl Into<Uuid16>, val: impl FnOnce(&mut Packer)) -> Handle {
         fn append_attr(this: &mut SchemaBuilder, typ: Uuid16, val: &[u8]) -> Handle {
             let hdl = this.next_handle();
             let val = this.append_data(val);
@@ -261,7 +260,7 @@ impl SchemaBuilder {
         // longest value stored in the schema ([Vol 3] Part G, Section 3.3.1).
         let mut b = StructBuf::new(1 + 2 + 16);
         val(&mut b.append());
-        append_attr(self, typ, &b)
+        append_attr(self, typ.into(), &b)
     }
 
     /// Returns the next unused handle.
@@ -307,21 +306,23 @@ impl SchemaBuilder {
         use aes::Aes128;
         use cmac::digest::{FixedOutput, Key};
         use cmac::{Cmac, Mac};
+        use Descriptor::*;
         let mut m = Cmac::<Aes128>::new(&Key::<Aes128>::default());
         for at in &self.attr {
             let Some(typ) = at.typ else { continue };
-            let val = match typ {
-                Type::PRIMARY_SERVICE
-                | Type::SECONDARY_SERVICE
-                | Type::INCLUDE
-                | Type::CHARACTERISTIC
-                | Type::CHARACTERISTIC_EXTENDED_PROPERTIES => self.value(at),
-                Type::CHARACTERISTIC_USER_DESCRIPTION
-                | Type::CLIENT_CHARACTERISTIC_CONFIGURATION
-                | Type::SERVER_CHARACTERISTIC_CONFIGURATION
-                | Type::CHARACTERISTIC_PRESENTATION_FORMAT
-                | Type::CHARACTERISTIC_AGGREGATE_FORMAT => &[],
-                _ => continue,
+            let val = match Declaration::try_from(typ) {
+                Ok(_) => self.value(at),
+                _ => match Descriptor::try_from(typ) {
+                    Ok(CharacteristicExtendedProperties) => self.value(at),
+                    Ok(
+                        CharacteristicUserDescription
+                        | ClientCharacteristicConfiguration
+                        | ServerCharacteristicConfiguration
+                        | CharacteristicPresentationFormat
+                        | CharacteristicAggregateFormat,
+                    ) => &[],
+                    _ => continue,
+                },
             };
             m.update(&u16::from(at.hdl).to_le_bytes());
             m.update(&u16::from(typ).to_le_bytes());
@@ -400,7 +401,7 @@ impl Builder<ServiceCharacteristics> {
     /// Adds characteristic and characteristic value declarations.
     fn decl_value(&mut self, uuid: Uuid, props: Prop, perms: Perms) -> Handle {
         let hdl = self.next_handle().next().expect("maximum handle reached");
-        self.decl(Type::CHARACTERISTIC, |v| {
+        self.decl(Declaration::Characteristic, |v| {
             v.u8(props.bits()).u16(hdl).uuid(uuid);
         });
         self.append_attr(hdl, uuid.as_uuid16(), perms)
@@ -440,7 +441,7 @@ impl Builder<CharacteristicDescriptors> {
             "EXT_PROPS not set or descriptor already exists"
         );
         self.need_ext_props = false;
-        self.decl(Type::CHARACTERISTIC_EXTENDED_PROPERTIES, |v| {
+        self.decl(Descriptor::CharacteristicExtendedProperties, |v| {
             v.u16(props.bits());
         });
     }
@@ -452,7 +453,7 @@ impl Builder<CharacteristicDescriptors> {
         assert!(!self.have_cccd, "descriptor already exists");
         self.have_cccd = true;
         self.attr(
-            Type::CLIENT_CHARACTERISTIC_CONFIGURATION.as_uuid(),
+            Descriptor::ClientCharacteristicConfiguration.uuid(),
             perms.into(),
         )
     }
@@ -466,8 +467,8 @@ impl Builder<CharacteristicDescriptors> {
         unit: Unit,
         desc: Description,
     ) -> Handle {
-        let hdl = self.decl(Type::CHARACTERISTIC_PRESENTATION_FORMAT, |v| {
-            v.u8(fmt).i8(exp).u16(unit).u8(desc.ns()).u16(desc.raw());
+        let hdl = self.decl(Descriptor::CharacteristicPresentationFormat, |v| {
+            v.u8(fmt).i8(exp).u16(unit).u8(desc.ns()).u16(desc);
         });
         self.fmt.push(hdl);
         hdl
@@ -481,7 +482,7 @@ impl Builder<CharacteristicDescriptors> {
     pub fn aggregate_fmt(&mut self, hdls: impl AsRef<[Handle]>) {
         assert!(!self.have_aggregate_fmt, "descriptor already exists");
         self.have_aggregate_fmt = true;
-        self.decl(Type::CHARACTERISTIC_AGGREGATE_FORMAT, |v| {
+        self.decl(Descriptor::CharacteristicAggregateFormat, |v| {
             for &hdl in hdls.as_ref() {
                 v.u16(hdl);
             }
@@ -501,6 +502,7 @@ impl Builder<CharacteristicDescriptors> {
     }
 }
 
+/// Packer extension functions.
 trait UuidPacker {
     fn uuid(&mut self, u: impl Into<Uuid>);
 }
@@ -531,83 +533,83 @@ const fn ends_of<T>(v: &[T]) -> Option<(&T, &T)> {
 mod tests {
     use std::assert_eq;
     use std::ops::RangeInclusive;
-    use std::ptr::addr_of;
-
-    use crate::gap::{CharacteristicId, GattServiceId};
 
     use super::*;
 
     #[test]
     fn service_group() {
-        fn eq(b: &SchemaBuilder, h: Handle, r: RangeInclusive<usize>) {
+        fn eq(b: &SchemaBuilder, h: Handle, r: RangeInclusive<isize>) {
             let (start, end) = ends_of(b.service_group(h)).unwrap();
-            assert_eq!(start as *const _, addr_of!(b.attr[*r.start()]));
-            assert_eq!(end as *const _, addr_of!(b.attr[*r.end()]));
+            // SAFETY: start and end are entries in b.attr
+            unsafe {
+                let base = b.attr.as_ptr();
+                assert_eq!(
+                    (start as *const Attr).offset_from(base)
+                        ..=(end as *const Attr).offset_from(base),
+                    r
+                );
+            }
         }
 
         let mut b = Schema::build();
-        let (h1, _) = b.primary_service(Uuid16::sig(1), [], |_| {});
-        let (h2, _) = b.primary_service(Uuid16::sig(2), [h1], |_| {});
+        let (h1, _) = b.primary_service(Service::GenericAccess, [], |_| {});
+        let (h2, _) = b.primary_service(Service::GenericAttribute, [h1], |_| {});
         eq(&b, h1, 0..=0);
         eq(&b, h2, 1..=2);
 
-        let (h3, _) = b.primary_service(Uuid16::sig(3), [], |_| {});
+        let (h3, _) = b.primary_service(Service::Battery, [], |_| {});
         eq(&b, h2, 1..=2);
         eq(&b, h3, 3..=3);
     }
 
+    /// Example database hash ([Vol 3] Part G, Appendix B).
     #[test]
     fn hash() {
         let mut b = Schema::build();
-        b.primary_service(GattServiceId::GenericAccess, [], |b| {
+        b.primary_service(Service::GenericAccess, [], |b| {
             b.characteristic(
-                CharacteristicId::DeviceName,
+                Characteristic::DeviceName,
                 Prop::READ | Prop::WRITE,
                 Access::READ_WRITE,
                 |_| {},
             );
-            b.characteristic(
-                CharacteristicId::Appearance,
-                Prop::READ,
-                Access::READ,
-                |_| {},
-            )
+            b.characteristic(Characteristic::Appearance, Prop::READ, Access::READ, |_| {})
         });
-        b.primary_service(GattServiceId::GenericAttribute, [], |b| {
+        b.primary_service(Service::GenericAttribute, [], |b| {
             b.characteristic(
-                CharacteristicId::ServiceChanged,
+                Characteristic::ServiceChanged,
                 Prop::INDICATE,
                 Access::NONE,
                 |b| b.client_cfg(Access::READ_WRITE),
             );
             b.characteristic(
-                CharacteristicId::ClientSupportedFeatures,
+                Characteristic::ClientSupportedFeatures,
                 Prop::READ | Prop::WRITE,
                 Access::READ_WRITE,
                 |_| {},
             );
             b.characteristic(
-                CharacteristicId::DatabaseHash,
+                Characteristic::DatabaseHash,
                 Prop::READ,
                 Access::READ,
                 |_| {},
             );
         });
-        b.primary_service(GattServiceId::Glucose, [], |b| {
+        b.primary_service(Service::Glucose, [], |b| {
             // Hack to include a service that hasn't been defined yet
-            b.decl(Type::INCLUDE, |v| {
-                v.u16(0x14_u16).u16(0x16_u16).u16(0x180F_u16);
+            b.decl(Declaration::Include, |v| {
+                v.u16(0x0014_u16).u16(0x0016_u16).u16(0x180F_u16);
             });
             b.characteristic(
-                CharacteristicId::GlucoseMeasurement,
+                Characteristic::GlucoseMeasurement,
                 Prop::READ | Prop::INDICATE | Prop::EXT_PROPS,
                 Access::READ,
                 |b| b.client_cfg(Access::READ_WRITE),
             );
         });
-        b.secondary_service(GattServiceId::Battery, [], |b| {
+        b.secondary_service(Service::Battery, [], |b| {
             b.characteristic(
-                CharacteristicId::BatteryLevel,
+                Characteristic::BatteryLevel,
                 Prop::READ,
                 Access::READ,
                 |_| {},

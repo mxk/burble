@@ -38,20 +38,24 @@ impl ResponseDataMut {
 
     /// Appends service class UUIDs ([CSS] Part A, Section 1.1). Each UUID is
     /// encoded in the optimal format.
-    pub fn service_class<T: Copy + Into<Uuid>>(&mut self, complete: bool, v: &[T]) -> &mut Self {
+    pub fn service_class<T: Copy + Into<Uuid>>(
+        &mut self,
+        complete: bool,
+        uuids: &[T],
+    ) -> &mut Self {
         let typ = u8::from(ResponseDataType::IncompleteServiceClass16) + u8::from(complete);
         self.maybe_put(complete, typ, |b| {
-            v.iter().filter_map(|&u| u.into().as_u16()).for_each(|v| {
+            (uuids.iter().filter_map(|&u| u.into().as_u16())).for_each(|v| {
                 b.u16(v);
             });
         });
         self.maybe_put(complete, typ + 2, |b| {
-            v.iter().filter_map(|&u| u.into().as_u32()).for_each(|v| {
+            (uuids.iter().filter_map(|&u| u.into().as_u32())).for_each(|v| {
                 b.u32(v);
             });
         });
         self.maybe_put(complete, typ + 4, |b| {
-            v.iter().filter_map(|&u| u.into().as_u128()).for_each(|v| {
+            (uuids.iter().filter_map(|&u| u.into().as_u128())).for_each(|v| {
                 b.u128(v);
             });
         })
@@ -158,6 +162,8 @@ impl Default for ResponseDataMut {
 
 #[cfg(test)]
 mod tests {
+    use crate::sdp::ServiceClass;
+
     use super::*;
 
     #[test]
@@ -165,7 +171,7 @@ mod tests {
         let mut eir = ResponseDataMut::new();
         eir.local_name(true, "Phone").service_class(
             true,
-            &[ServiceClassId::Panu, ServiceClassId::HandsfreeAudioGateway],
+            &[ServiceClass::Panu, ServiceClass::HandsfreeAudioGateway],
         );
         let want = &[
             0x06, // Length of this Data
