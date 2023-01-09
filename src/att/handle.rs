@@ -71,16 +71,34 @@ impl From<Handle> for usize {
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 #[must_use]
 pub struct HandleRange {
-    pub start: Handle,
-    pub end: Handle,
+    start: Handle,
+    end: Handle,
 }
 
 impl HandleRange {
+    /// Handle range that includes all possible handles.
+    pub const ALL: Self = Self {
+        start: Handle::MIN,
+        end: Handle::MAX,
+    };
+
     /// Creates a new handle range `start..=end`.
     #[inline]
     pub const fn new(start: Handle, end: Handle) -> Self {
         assert!(start.0.get() <= end.0.get());
         Self { start, end }
+    }
+
+    /// Returns the starting handle.
+    #[inline(always)]
+    pub const fn start(self) -> Handle {
+        self.start
+    }
+
+    /// Returns the ending handle.
+    #[inline(always)]
+    pub const fn end(self) -> Handle {
+        self.end
     }
 }
 
@@ -102,5 +120,13 @@ impl RangeBounds<Handle> for HandleRange {
         U: ?Sized + PartialOrd<Handle>,
     {
         self.start <= *item && *item <= self.end
+    }
+}
+
+impl Default for HandleRange {
+    /// Returns a handle range that includes all possible handles.
+    #[inline(always)]
+    fn default() -> Self {
+        Self::ALL
     }
 }

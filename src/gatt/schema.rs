@@ -1,6 +1,6 @@
 use std::fmt::Debug;
 use std::marker::PhantomData;
-use std::ops::{Deref, DerefMut};
+use std::ops::{Deref, DerefMut, Range};
 
 use smallvec::SmallVec;
 use structbuf::{Pack, Packer, StructBuf, Unpack};
@@ -42,6 +42,47 @@ impl Schema {
         self.hash
     }
 
+    /// Returns an iterator over primary services or [`None`] if there are no
+    /// primary services in the specified handle range.
+    pub(crate) fn primary_services(&self, hdls: HandleRange) -> Option<PrimaryServices> {
+        let r = self.get_range(hdls)?;
+        Some(PrimaryServices {
+            schema: self,
+            rng: r.off + r.attr.iter().position(Attr::is_primary_service)?..r.off + r.attr.len(),
+        })
+    }
+
+    /// Returns the next attribute group defined by start (inclusive) and end
+    /// (exclusive) functions, where the starting index must be in the specified
+    /// range.
+    ///
+    /// # Safety
+    ///
+    /// `rng` must be a valid subslice of all attributes.
+    unsafe fn next_group(
+        &self,
+        rng: Range<usize>,
+        start: impl Fn(&Attr) -> bool,
+        end: impl Fn(&Attr) -> bool,
+    ) -> Option<AttrRange> {
+        let i = rng.start + self.attr.get_unchecked(rng).iter().position(start)?;
+        let j = (self.attr.get_unchecked(i + 1..).iter().position(end))
+            .map_or(self.attr.len(), |j| i + 1 + j);
+        Some(self.range(i..j))
+    }
+
+    /// Returns all attributes within the specified handle range or [`None`] if
+    /// the handle range is empty.
+    fn get_range(&self, hdls: HandleRange) -> Option<AttrRange> {
+        let i = self
+            .get(hdls.start())
+            .map_or_else(|i| (i < self.attr.len()).then_some(i), |(i, _)| Some(i))?;
+        let j = self
+            .get(hdls.end())
+            .map_or_else(|j| (j > 0).then_some(j), |(j, _)| Some(j + 1))?;
+        Some(self.range(i..j))
+    }
+
     /// Returns the attribute type.
     #[inline]
     fn typ(&self, at: &Attr) -> Uuid {
@@ -68,18 +109,84 @@ struct Attr {
 }
 
 impl Attr {
+    const PRI: Uuid16 = Declaration::PrimaryService.uuid16();
+    const SEC: Uuid16 = Declaration::SecondaryService.uuid16();
+
     /// Returns whether the attribute is a service declaration.
     #[inline(always)]
     const fn is_service(&self) -> bool {
-        const PRI: Uuid16 = Declaration::PrimaryService.uuid16();
-        const SEC: Uuid16 = Declaration::SecondaryService.uuid16();
-        matches!(self.typ, Some(PRI | SEC))
+        matches!(self.typ, Some(Self::PRI | Self::SEC))
+    }
+
+    /// Returns whether the attribute is a primary service declaration.
+    #[inline(always)]
+    const fn is_primary_service(&self) -> bool {
+        matches!(self.typ, Some(Self::PRI))
     }
 
     /// Returns the attribute value length.
     #[inline(always)]
     const fn len(&self) -> usize {
         self.val.1 as usize - self.val.0 as usize
+    }
+}
+
+/// A non-empty subset of attributes.
+#[derive(Clone, Copy, Debug)]
+struct AttrRange<'a> {
+    off: usize,
+    attr: &'a [Attr],
+}
+
+impl AttrRange<'_> {
+    /// Returns the first attribute.
+    #[inline(always)]
+    fn first(&self) -> &Attr {
+        // SAFETY: self.attr is non-empty
+        unsafe { self.attr.get_unchecked(0) }
+    }
+
+    /// Returns the last attribute.
+    #[inline(always)]
+    fn last(&self) -> &Attr {
+        // SAFETY: self.attr is non-empty
+        unsafe { self.attr.get_unchecked(self.attr.len() - 1) }
+    }
+}
+
+impl Deref for AttrRange<'_> {
+    type Target = [Attr];
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        self.attr
+    }
+}
+
+/// Iterator over primary services within a handle range.
+#[derive(Clone, Debug)]
+pub struct PrimaryServices<'a> {
+    schema: &'a Schema,
+    rng: Range<usize>,
+}
+
+impl<'a> Iterator for PrimaryServices<'a> {
+    type Item = (Handle, Handle, &'a [u8]);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        // SAFETY: self.rng is always a valid subslice
+        let g = unsafe {
+            self.schema
+                .next_group(self.rng.clone(), Attr::is_primary_service, Attr::is_service)?
+        };
+        self.rng.start = self.rng.end.min(g.off + g.attr.len());
+        let first = g.first();
+        Some((first.hdl, g.last().hdl, self.schema.value(first)))
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (0, Some(self.rng.end - self.rng.start))
     }
 }
 
@@ -92,23 +199,38 @@ trait CommonOps {
     #[must_use]
     fn data(&self) -> &[u8];
 
-    /// Returns the index and attribute entry of the specified handle or
-    /// [`None`] if the handle is invalid.
+    /// Returns an attribute range.
+    #[inline(always)]
+    fn range(&self, r: Range<usize>) -> AttrRange {
+        debug_assert!(r.start < r.end && r.end <= self.attr().len());
+        AttrRange {
+            off: r.start,
+            // SAFETY: r is a valid non-empty range
+            attr: unsafe { self.attr().get_unchecked(r) },
+        }
+    }
+
+    /// Returns the index and attribute entry of the specified handle or the
+    /// index where the handle can be inserted.
     #[inline]
-    #[must_use]
-    fn get(&self, hdl: Handle) -> Option<(usize, &Attr)> {
-        fn search(attr: &[Attr], hdl: Handle) -> Option<(usize, &Attr)> {
-            attr.binary_search_by(|at| at.hdl.cmp(&hdl)).ok().map(|i| {
-                // SAFETY: Attribute was found at `i`
-                (i, unsafe { attr.get_unchecked(i) })
-            })
+    fn get(&self, hdl: Handle) -> std::result::Result<(usize, &Attr), usize> {
+        fn search(attr: &[Attr], hdl: Handle) -> std::result::Result<(usize, &Attr), usize> {
+            // Handle will often be 0xFFFF, so do an explicit comparison with
+            // the last entry to avoid doing a binary search.
+            match *attr {
+                [] => Err(0),
+                [.., ref last] if last.hdl < hdl => Err(attr.len()),
+                _ => (attr.binary_search_by(|at| at.hdl.cmp(&hdl)))
+                    // SAFETY: Attribute was found at `i`
+                    .map(|i| unsafe { (i, attr.get_unchecked(i)) }),
+            }
         }
         let i = usize::from(hdl) - 1;
         // The attribute can exist either at or before index `i` (if there are
         // gaps). Most of the time, the 1-based handle value should also be the
         // 0-based index.
         let attr = match self.attr().get(i) {
-            Some(at) if at.hdl == hdl => return Some((i, at)),
+            Some(at) if at.hdl == hdl => return Ok((i, at)),
             // SAFETY: `i` is in bounds
             Some(_) => unsafe { self.attr().get_unchecked(..i) },
             None => self.attr(),
@@ -124,18 +246,17 @@ trait CommonOps {
         unsafe { (self.data()).get_unchecked(at.val.0 as usize..at.val.1 as usize) }
     }
 
-    /// Returns all attributes of the service group defined by `hdl` or an empty
-    /// slice if the handle does not refer to a service.
-    fn service_group(&self, hdl: Handle) -> &[Attr] {
-        let Some((i, at)) = self.get(hdl) else { return &[] };
-        if !at.is_service() {
-            return &[];
-        }
-        let mut it = self.attr().iter();
-        it.nth(i);
-        let j = (it.position(Attr::is_service)).map_or(self.attr().len(), |n| i + 1 + n);
-        // SAFETY: `i..j` is in bounds
-        unsafe { self.attr().get_unchecked(i..j) }
+    /// Returns all attributes of the service group defined by `hdl` or [`None`]
+    /// if the handle does not refer to a service.
+    fn service_group(&self, hdl: Handle) -> Option<AttrRange> {
+        let Ok((i, at)) = self.get(hdl) else { return None };
+        at.is_service().then(|| {
+            // SAFETY: i < self.attr.len()
+            let j = unsafe { self.attr().get_unchecked(i + 1..).iter() }
+                .position(Attr::is_service)
+                .map_or(self.attr().len(), |n| i + 1 + n);
+            self.range(i..j)
+        })
     }
 }
 
@@ -231,9 +352,9 @@ impl SchemaBuilder {
     pub fn service(&mut self, typ: Declaration, uuid: Uuid, include: &[Handle]) -> Handle {
         let hdl = self.decl(typ, |v| v.uuid(uuid));
         for &inc in include {
-            let (start, end) = ends_of(self.service_group(inc)).expect("invalid service handle");
-            let uuid = (start.len() == 2).then(|| self.value(start).unpack().u16());
-            let end = end.hdl;
+            let g = self.service_group(inc).expect("invalid service handle");
+            let uuid = (g.first().len() == 2).then(|| self.value(g.first()).unpack().u16());
+            let end = g.last().hdl;
             self.decl(Declaration::Include, |v| {
                 v.u16(inc).u16(end);
                 uuid.map(|u| v.u16(u));
@@ -532,34 +653,25 @@ const fn ends_of<T>(v: &[T]) -> Option<(&T, &T)> {
 #[cfg(test)]
 mod tests {
     use std::assert_eq;
-    use std::ops::RangeInclusive;
 
     use super::*;
 
     #[test]
     fn service_group() {
-        fn eq(b: &SchemaBuilder, h: Handle, r: RangeInclusive<isize>) {
-            let (start, end) = ends_of(b.service_group(h)).unwrap();
-            // SAFETY: start and end are entries in b.attr
-            unsafe {
-                let base = b.attr.as_ptr();
-                assert_eq!(
-                    (start as *const Attr).offset_from(base)
-                        ..=(end as *const Attr).offset_from(base),
-                    r
-                );
-            }
+        fn eq(b: &SchemaBuilder, h: Handle, r: Range<usize>) {
+            let g = b.service_group(h).unwrap();
+            assert_eq!(g.off..g.off + g.attr.len(), r);
         }
 
         let mut b = Schema::build();
         let (h1, _) = b.primary_service(Service::GenericAccess, [], |_| {});
         let (h2, _) = b.primary_service(Service::GenericAttribute, [h1], |_| {});
-        eq(&b, h1, 0..=0);
-        eq(&b, h2, 1..=2);
+        eq(&b, h1, 0..1);
+        eq(&b, h2, 1..3);
 
         let (h3, _) = b.primary_service(Service::Battery, [], |_| {});
-        eq(&b, h2, 1..=2);
-        eq(&b, h3, 3..=3);
+        eq(&b, h2, 1..3);
+        eq(&b, h3, 3..4);
     }
 
     /// Example database hash ([Vol 3] Part G, Appendix B).

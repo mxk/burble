@@ -20,8 +20,8 @@ impl<T: host::Transport> Server<T> {
     }
 
     /// Handles server configuration procedures ([Vol 3] Part G, Section 4.3).
-    pub async fn config(&mut self) -> Result<()> {
-        let pdu = self.br.recv().await?;
+    pub async fn configure(&mut self) -> Result<()> {
+        let pdu = self.br.recv().await?; // TODO: Timeout?
         if pdu.opcode() == Opcode::ExchangeMtuReq {
             self.br.handle_exchange_mtu_req(pdu).await
         } else {
@@ -38,23 +38,36 @@ impl<T: host::Transport> Server<T> {
 
     /// Handles one client request.
     async fn handle_req(&self, pdu: Pdu<T>) -> Result<()> {
+        use Opcode::*;
         #[allow(clippy::match_same_arms)]
         match pdu.opcode() {
-            Opcode::FindInformationReq => {}
-            Opcode::FindByTypeValueReq => {}
-            Opcode::ReadByTypeReq => {}
-            Opcode::ReadReq => {}
-            Opcode::ReadBlobReq => {}
-            Opcode::ReadMultipleReq => {}
-            Opcode::ReadByGroupTypeReq => {}
-            Opcode::WriteReq => {}
-            Opcode::WriteCmd => {}
-            Opcode::PrepareWriteReq => {}
-            Opcode::ExecuteWriteReq => {}
-            Opcode::ReadMultipleVariableReq => {}
-            Opcode::SignedWriteCmd => {}
-            op => (self.br.error_rsp(op, None, ErrorCode::RequestNotSupported)).await?,
+            FindInformationReq => unimplemented!(),
+            FindByTypeValueReq => unimplemented!(),
+            ReadByTypeReq => unimplemented!(),
+            ReadReq => unimplemented!(),
+            ReadBlobReq => unimplemented!(),
+            ReadMultipleReq => unimplemented!(),
+            ReadByGroupTypeReq => self.discover_all_primary_services(pdu).await,
+            WriteReq => unimplemented!(),
+            WriteCmd => unimplemented!(),
+            PrepareWriteReq => unimplemented!(),
+            ExecuteWriteReq => unimplemented!(),
+            ReadMultipleVariableReq => unimplemented!(),
+            SignedWriteCmd => unimplemented!(),
+            op => (self.br.error_rsp(op, None, ErrorCode::RequestNotSupported)).await,
         }
-        Ok(())
+    }
+
+    /// Handles "Discover All Primary Services" procedure
+    /// ([Vol 3] Part G, Section 4.4.1).
+    async fn discover_all_primary_services(&self, pdu: Pdu<T>) -> Result<()> {
+        let v = self.br.check(pdu.read_by_group_type_req(), |(hdls, uuid)| {
+            if uuid != Declaration::PrimaryService {
+                return Err(pdu.err(ErrorCode::UnsupportedGroupType));
+            }
+            (self.db.primary_services(hdls))
+                .ok_or_else(|| pdu.hdl_err(hdls.start(), ErrorCode::AttributeNotFound))
+        });
+        self.br.read_by_group_type_rsp(v.await?).await
     }
 }

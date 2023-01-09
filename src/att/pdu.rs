@@ -28,8 +28,8 @@ impl<T: host::Transport> Pdu<T> {
 
     /// Returns a handle-specific error response.
     #[inline]
-    pub fn hdl_err(&self, hdl: Option<Handle>, err: ErrorCode) -> ErrorRsp {
-        self.opcode().hdl_err(hdl, err)
+    pub fn hdl_err(&self, hdl: impl Into<Option<Handle>>, err: ErrorCode) -> ErrorRsp {
+        self.opcode().hdl_err(hdl.into(), err)
     }
 
     /// Returns the result of calling `f` to unpack the PDU.
@@ -72,6 +72,13 @@ impl<T: host::Transport> Pdu<T> {
     }
 }
 
+impl<T: host::Transport> From<Pdu<T>> for Opcode {
+    #[inline(always)]
+    fn from(pdu: Pdu<T>) -> Self {
+        pdu.opcode()
+    }
+}
+
 //
 // Error handling ([Vol 3] Part F, Section 3.4.1)
 //
@@ -80,8 +87,13 @@ impl<T: host::Transport> Pdu<T> {
 impl<T: host::Transport> Bearer<T> {
     /// Sends an `ATT_ERROR_RSP` PDU ([Vol 3] Part F, Section 3.4.1.1).
     #[inline]
-    pub async fn error_rsp(&self, req: Opcode, hdl: Option<Handle>, err: ErrorCode) -> Result<()> {
-        self.raw_error_rsp(req as u8, hdl, err).await
+    pub async fn error_rsp(
+        &self,
+        req: impl Into<Opcode> + Send,
+        hdl: impl Into<Option<Handle>> + Send,
+        err: ErrorCode,
+    ) -> Result<()> {
+        self.raw_error_rsp(req.into() as u8, hdl.into(), err).await
     }
 }
 
@@ -126,7 +138,7 @@ impl<T: host::Transport> Pdu<T> {
     pub fn find_by_type_value_req(&self) -> RspResult<(HandleRange, Uuid16, &[u8])> {
         self.unpack(Opcode::FindByTypeValueReq, |p| {
             let range = self.handle_range(p)?;
-            Ok((range, self.uuid16(p, Some(range.start))?, take(p)))
+            Ok((range, self.uuid16(p, Some(range.start()))?, take(p)))
         })
     }
 }
@@ -226,9 +238,9 @@ impl<T: host::Transport> Pdu<T> {
         self.unpack(op, |p| {
             let range = self.handle_range(p)?;
             let uuid = if p.len() == 2 {
-                self.uuid16(p, Some(range.start))?.as_uuid()
+                self.uuid16(p, Some(range.start()))?.as_uuid()
             } else {
-                self.uuid(p, Some(range.start))?
+                self.uuid(p, Some(range.start()))?
             };
             Ok((range, uuid))
         })

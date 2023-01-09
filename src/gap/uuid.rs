@@ -216,10 +216,25 @@ macro_rules! uuid16_enum {
             }
         }
 
+        impl ::core::cmp::PartialEq<$crate::gap::Uuid> for $t {
+            #[inline(always)]
+            fn eq(&self, rhs: &$crate::gap::Uuid) -> bool {
+                // Converting to 128-bit avoids branches
+                self.uuid() == *rhs
+            }
+        }
+
         impl ::core::cmp::PartialEq<$crate::gap::Uuid16> for $t {
             #[inline(always)]
             fn eq(&self, rhs: &$crate::gap::Uuid16) -> bool {
                 *self as u16 == rhs.raw()
+            }
+        }
+
+        impl ::core::cmp::PartialEq<$t> for $crate::gap::Uuid {
+            #[inline(always)]
+            fn eq(&self, rhs: &$t) -> bool {
+                *self == rhs.uuid()
             }
         }
 

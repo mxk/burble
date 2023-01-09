@@ -86,10 +86,9 @@ impl<T: host::Transport> Bearer<T> {
         Ok(Pdu(sdu))
     }
 
-    /// Calls function `f` to perform additional validation of the received
-    /// request.
-    #[inline]
-    pub async fn validate<P: Send, R>(
+    /// Calls `f` to perform additional validation of the received request.
+    #[inline(always)]
+    pub async fn check<P: Send, R>(
         &self,
         params: RspResult<P>,
         f: impl FnOnce(P) -> RspResult<R> + Send,
@@ -107,17 +106,16 @@ impl<T: host::Transport> Bearer<T> {
 
     /// Handles `ATT_EXCHANGE_MTU_REQ` ([Vol 3] Part F, Section 3.4.2.1).
     pub(crate) async fn handle_exchange_mtu_req(&mut self, pdu: Pdu<T>) -> Result<()> {
-        let (cli_mtu, srv_mtu) = self
-            .validate(pdu.exchange_mtu_req(), |mtu| {
-                // This procedure can only be performed once, so the current MTU
-                // is the minimum one allowed for the channel.
-                if self.0.mtu() <= mtu {
-                    Ok((mtu, self.0.preferred_mtu()))
-                } else {
-                    Err(pdu.err(ErrorCode::RequestNotSupported))
-                }
-            })
-            .await?;
+        let v = self.check(pdu.exchange_mtu_req(), |mtu| {
+            // This procedure can only be performed once, so the current MTU
+            // is the minimum one allowed for the channel.
+            if self.0.mtu() <= mtu {
+                Ok((mtu, self.0.preferred_mtu()))
+            } else {
+                Err(pdu.err(ErrorCode::RequestNotSupported))
+            }
+        });
+        let (cli_mtu, srv_mtu) = v.await?;
         // TODO: Increase server MTU if the controller's ACL data packet limits
         // are too small.
         self.exchange_mtu_rsp(srv_mtu).await?;

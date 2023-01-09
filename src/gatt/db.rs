@@ -1,6 +1,5 @@
 use std::collections::HashMap;
-
-use structbuf::StructBuf;
+use std::ops::Deref;
 
 use super::*;
 
@@ -9,7 +8,7 @@ use super::*;
 #[must_use]
 pub struct Db {
     schema: Schema,
-    vals: parking_lot::Mutex<HashMap<Handle, StructBuf>>,
+    vals: parking_lot::Mutex<HashMap<Handle, Vec<u8>>>,
 }
 
 impl Db {
@@ -20,5 +19,14 @@ impl Db {
             schema,
             vals: parking_lot::Mutex::new(HashMap::new()),
         }
+    }
+}
+
+impl Deref for Db {
+    type Target = Schema;
+
+    #[inline(always)]
+    fn deref(&self) -> &Self::Target {
+        &self.schema
     }
 }
