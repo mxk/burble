@@ -3,6 +3,9 @@
 use std::fmt::{Debug, Display, Formatter};
 use std::hash::{Hash, Hasher};
 use std::num::{NonZeroU128, NonZeroU16};
+use std::u16;
+
+use structbuf::Unpack;
 
 const SHIFT: u32 = u128::BITS - u32::BITS;
 const BASE: u128 = 0x00000000_0000_1000_8000_00805F9B34FB;
@@ -71,12 +74,33 @@ impl Uuid {
     pub fn as_u128(self) -> Option<u128> {
         (self.0.get() & MASK_32 != BASE).then_some(self.0.get())
     }
+
+    /// Returns the UUID as a little-endian byte array.
+    #[inline]
+    #[must_use]
+    pub const fn to_bytes(self) -> [u8; 16] {
+        self.0.get().to_le_bytes()
+    }
 }
 
 impl From<Uuid16> for Uuid {
     #[inline]
     fn from(u: Uuid16) -> Self {
         u.as_uuid()
+    }
+}
+
+impl TryFrom<&[u8]> for Uuid {
+    type Error = ();
+
+    #[inline]
+    fn try_from(v: &[u8]) -> Result<Self, Self::Error> {
+        match v.len() {
+            2 => Uuid16::new(v.unpack().u16()).map(Uuid16::as_uuid),
+            16 => Uuid::new(v.unpack().u128()),
+            _ => None,
+        }
+        .ok_or(())
     }
 }
 
@@ -147,6 +171,13 @@ impl Uuid16 {
     #[must_use]
     pub(crate) const fn raw(self) -> u16 {
         self.0.get()
+    }
+
+    /// Returns the UUID as a little-endian byte array.
+    #[inline]
+    #[must_use]
+    pub const fn to_bytes(self) -> [u8; 2] {
+        self.0.get().to_le_bytes()
     }
 }
 

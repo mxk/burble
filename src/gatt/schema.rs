@@ -42,33 +42,15 @@ impl Schema {
         self.hash
     }
 
-    /// Returns an iterator over primary services or [`None`] if there are no
-    /// primary services in the specified handle range.
-    pub(crate) fn primary_services(&self, hdls: HandleRange) -> Option<PrimaryServices> {
-        let r = self.get_range(hdls)?;
-        Some(PrimaryServices {
-            schema: self,
-            rng: r.off + r.attr.iter().position(Attr::is_primary_service)?..r.off + r.attr.len(),
-        })
-    }
-
-    /// Returns the next attribute group defined by start (inclusive) and end
-    /// (exclusive) functions, where the starting index must be in the specified
-    /// range.
-    ///
-    /// # Safety
-    ///
-    /// `rng` must be a valid subslice of all attributes.
-    unsafe fn next_group(
-        &self,
-        rng: Range<usize>,
-        start: impl Fn(&Attr) -> bool,
-        end: impl Fn(&Attr) -> bool,
-    ) -> Option<AttrRange> {
-        let i = rng.start + self.attr.get_unchecked(rng).iter().position(start)?;
-        let j = (self.attr.get_unchecked(i + 1..).iter().position(end))
-            .map_or(self.attr.len(), |j| i + 1 + j);
-        Some(self.range(i..j))
+    /// Returns an iterator over primary services with an optional UUID filter
+    /// or [`None`] if there are no primary services matching the criteria.
+    #[inline]
+    pub(crate) fn primary_services<'a, 'b>(
+        &'a self,
+        hdls: HandleRange,
+        uuid: &'b [u8],
+    ) -> Option<PrimaryServices<'a, 'b>> {
+        PrimaryServices::new(self, self.get_range(hdls)?.bounds(), uuid)
     }
 
     /// Returns all attributes within the specified handle range or [`None`] if
@@ -152,6 +134,12 @@ impl AttrRange<'_> {
         // SAFETY: self.attr is non-empty
         unsafe { self.attr.get_unchecked(self.attr.len() - 1) }
     }
+
+    /// Returns the bounds of the range within the entire set of attributes.
+    #[inline(always)]
+    const fn bounds(&self) -> Range<usize> {
+        self.off..self.off + self.attr.len()
+    }
 }
 
 impl Deref for AttrRange<'_> {
@@ -163,30 +151,69 @@ impl Deref for AttrRange<'_> {
     }
 }
 
-/// Iterator over primary services within a handle range.
+/// Iterator over primary services within a handle range with optional UUID
+/// matching.
 #[derive(Clone, Debug)]
-pub struct PrimaryServices<'a> {
+pub struct PrimaryServices<'a, 'b> {
     schema: &'a Schema,
     rng: Range<usize>,
+    uuid: &'b [u8],
 }
 
-impl<'a> Iterator for PrimaryServices<'a> {
+impl<'a, 'b> PrimaryServices<'a, 'b> {
+    /// Creates a primary service iterator.
+    #[inline]
+    fn new(schema: &'a Schema, rng: Range<usize>, uuid: &'b [u8]) -> Option<Self> {
+        let mut this = Self { schema, rng, uuid };
+        this.more().then_some(this)
+    }
+
+    /// Returns whether at least one more primary service is available.
+    fn more(&mut self) -> bool {
+        // SAFETY: self.rng is always a valid subslice
+        for at in unsafe { self.schema.attr.get_unchecked(self.rng.clone()) } {
+            if at.is_primary_service()
+                && (self.uuid.is_empty() || self.schema.value(at) == self.uuid)
+            {
+                return true;
+            }
+            self.rng.start += 1;
+        }
+        false
+    }
+}
+
+impl<'a> Iterator for PrimaryServices<'a, '_> {
     type Item = (Handle, Handle, &'a [u8]);
 
     fn next(&mut self) -> Option<Self::Item> {
-        // SAFETY: self.rng is always a valid subslice
-        let g = unsafe {
-            self.schema
-                .next_group(self.rng.clone(), Attr::is_primary_service, Attr::is_service)?
+        if self.rng.is_empty() {
+            return None;
+        }
+        let i = self.rng.start;
+        // SAFETY: i < self.schema.attr.len()
+        let j = unsafe { self.schema.attr.get_unchecked(i + 1..).iter() }
+            .position(Attr::is_service)
+            .map_or(self.schema.attr.len(), |j| i + 1 + j);
+        self.rng.start = j.min(self.rng.end);
+        let r = self.schema.range(i..j);
+        let decl = r.first();
+        let end = if j < self.schema.attr.len() {
+            self.more();
+            r.last().hdl
+        } else {
+            // The End Group Handle of the last service in a device can be
+            // 0xFFFF to avoid an extra round trip for the Attribute Not Found
+            // response ([Vol 3] Part G, Section 4.4.1).
+            Handle::MAX
         };
-        self.rng.start = self.rng.end.min(g.off + g.attr.len());
-        let first = g.first();
-        Some((first.hdl, g.last().hdl, self.schema.value(first)))
+        Some((decl.hdl, end, self.schema.value(decl)))
     }
 
     #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
-        (0, Some(self.rng.end - self.rng.start))
+        let n = self.rng.end - self.rng.start;
+        (usize::from(n > 0), Some(n))
     }
 }
 
@@ -211,7 +238,7 @@ trait CommonOps {
     }
 
     /// Returns the index and attribute entry of the specified handle or the
-    /// index where the handle can be inserted.
+    /// index where that handle could be inserted.
     #[inline]
     fn get(&self, hdl: Handle) -> std::result::Result<(usize, &Attr), usize> {
         fn search(attr: &[Attr], hdl: Handle) -> std::result::Result<(usize, &Attr), usize> {
@@ -226,16 +253,15 @@ trait CommonOps {
             }
         }
         let i = usize::from(hdl) - 1;
-        // The attribute can exist either at or before index `i` (if there are
-        // gaps). Most of the time, the 1-based handle value should also be the
-        // 0-based index.
-        let attr = match self.attr().get(i) {
+        // The attribute can exist at or, if there are gaps, before index `i`.
+        // Usually, the 1-based handle value should also be the 0-based index.
+        let prior = match self.attr().get(i) {
             Some(at) if at.hdl == hdl => return Ok((i, at)),
             // SAFETY: `i` is in bounds
             Some(_) => unsafe { self.attr().get_unchecked(..i) },
             None => self.attr(),
         };
-        search(attr, hdl)
+        search(prior, hdl)
     }
 
     /// Returns the attribute value.
@@ -634,7 +660,7 @@ impl UuidPacker for Packer<'_> {
     fn uuid(&mut self, u: impl Into<Uuid>) {
         let u = u.into();
         match u.as_u16() {
-            Some(v) => self.u16(v),
+            Some(u) => self.u16(u),
             None => self.u128(u),
         };
     }
@@ -677,6 +703,46 @@ mod tests {
     /// Example database hash ([Vol 3] Part G, Appendix B).
     #[test]
     fn hash() {
+        assert_eq!(
+            appendix_b().hash,
+            0xF1_CA_2D_48_EC_F5_8B_AC_8A_88_30_BB_B9_FB_A9_90
+        );
+    }
+
+    #[test]
+    fn primary_services() {
+        fn eq(v: Option<(Handle, Handle, &[u8])>, decl: u16, end: u16, uuid: impl Into<Uuid16>) {
+            let decl = Handle::new(decl).unwrap();
+            let end = Handle::new(end).unwrap();
+            assert_eq!(v, Some((decl, end, uuid.into().to_bytes().as_ref())));
+        }
+        let mut s = appendix_b();
+
+        let mut it = s.primary_services(HandleRange::ALL, &[]).unwrap();
+        eq(it.next(), 0x0001, 0x0005, Service::GenericAccess);
+        eq(it.next(), 0x0006, 0x000D, Service::GenericAttribute);
+        eq(it.next(), 0x000E, 0x0013, Service::Glucose);
+        assert_eq!(it.next(), None);
+        assert_eq!(it.next(), None);
+
+        let uuid = Service::GenericAttribute.uuid16().to_bytes();
+        let mut it = s.primary_services(HandleRange::ALL, &uuid).unwrap();
+        eq(it.next(), 0x0006, 0x000D, Service::GenericAttribute);
+        assert_eq!(it.next(), None);
+
+        // Remove the battery service
+        let mut v = s.attr.to_vec();
+        v.truncate(s.attr.len() - 3);
+        s.attr = v.into_boxed_slice();
+
+        let rng = HandleRange::new(Handle::new(0x0002).unwrap(), Handle::new(0x000E).unwrap());
+        let mut it = s.primary_services(rng, &[]).unwrap();
+        eq(it.next(), 0x0006, 0x000D, Service::GenericAttribute);
+        eq(it.next(), 0x000E, 0xFFFF, Service::Glucose);
+        assert_eq!(it.next(), None);
+    }
+
+    fn appendix_b() -> Schema {
         let mut b = Schema::build();
         b.primary_service(Service::GenericAccess, [], |b| {
             b.characteristic(
@@ -727,9 +793,6 @@ mod tests {
                 |_| {},
             );
         });
-        assert_eq!(
-            b.freeze().hash,
-            0xF1_CA_2D_48_EC_F5_8B_AC_8A_88_30_BB_B9_FB_A9_90
-        );
+        b.freeze()
     }
 }

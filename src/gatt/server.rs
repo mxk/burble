@@ -42,7 +42,7 @@ impl<T: host::Transport> Server<T> {
         #[allow(clippy::match_same_arms)]
         match pdu.opcode() {
             FindInformationReq => unimplemented!(),
-            FindByTypeValueReq => unimplemented!(),
+            FindByTypeValueReq => self.discover_primary_service_by_uuid(pdu).await,
             ReadByTypeReq => unimplemented!(),
             ReadReq => unimplemented!(),
             ReadBlobReq => unimplemented!(),
@@ -57,17 +57,34 @@ impl<T: host::Transport> Server<T> {
             op => (self.br.error_rsp(op, None, ErrorCode::RequestNotSupported)).await,
         }
     }
+}
 
+/// Primary service discovery ([Vol 3] Part G, Section 4.4).
+impl<T: host::Transport> Server<T> {
     /// Handles "Discover All Primary Services" procedure
     /// ([Vol 3] Part G, Section 4.4.1).
     async fn discover_all_primary_services(&self, pdu: Pdu<T>) -> Result<()> {
-        let v = self.br.check(pdu.read_by_group_type_req(), |(hdls, uuid)| {
-            if uuid != Declaration::PrimaryService {
+        let v = self.br.check(pdu.read_by_group_type_req(), |(hdls, typ)| {
+            if typ != Declaration::PrimaryService {
                 return Err(pdu.err(ErrorCode::UnsupportedGroupType));
             }
-            (self.db.primary_services(hdls))
+            (self.db.primary_services(hdls, &[]))
                 .ok_or_else(|| pdu.hdl_err(hdls.start(), ErrorCode::AttributeNotFound))
         });
         self.br.read_by_group_type_rsp(v.await?).await
+    }
+
+    /// Handles "Discover Primary Service by Service UUID" procedure
+    /// ([Vol 3] Part G, Section 4.4.2).
+    async fn discover_primary_service_by_uuid(&self, pdu: Pdu<T>) -> Result<()> {
+        let v = (self.br).check(pdu.find_by_type_value_req(), |(hdls, typ, uuid)| {
+            if typ != Declaration::PrimaryService {
+                return Err(pdu.err(ErrorCode::UnsupportedGroupType));
+            }
+            (self.db.primary_services(hdls, uuid))
+                .ok_or_else(|| pdu.hdl_err(hdls.start(), ErrorCode::AttributeNotFound))
+                .map(move |it| it.map(|(start, end, _)| (start, Some(end))))
+        });
+        self.br.find_by_type_value_rsp(v.await?).await
     }
 }
