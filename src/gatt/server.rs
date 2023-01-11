@@ -42,13 +42,13 @@ impl<T: host::Transport> Server<T> {
         use Opcode::*;
         #[allow(clippy::match_same_arms)]
         match pdu.opcode() {
-            FindInformationReq => unimplemented!(),
+            FindInformationReq => self.discover_characteristic_descriptors(pdu).await,
             FindByTypeValueReq => self.discover_primary_service_by_uuid(pdu).await,
             ReadByTypeReq => self.handle_read_by_type_req(pdu).await,
             ReadReq => unimplemented!(),
             ReadBlobReq => unimplemented!(),
             ReadMultipleReq => unimplemented!(),
-            ReadByGroupTypeReq => self.discover_all_primary_services(pdu).await,
+            ReadByGroupTypeReq => self.discover_primary_services(pdu).await,
             WriteReq => unimplemented!(),
             WriteCmd => unimplemented!(),
             PrepareWriteReq => unimplemented!(),
@@ -76,7 +76,7 @@ impl<T: host::Transport> Server<T> {
 impl<T: host::Transport> Server<T> {
     /// Handles "Discover All Primary Services" sub-procedure
     /// ([Vol 3] Part G, Section 4.4.1).
-    async fn discover_all_primary_services(&self, pdu: Pdu<T>) -> Result<()> {
+    async fn discover_primary_services(&self, pdu: Pdu<T>) -> Result<()> {
         let v = self.br.check(pdu.read_by_group_type_req(), |(hdls, typ)| {
             if typ != Declaration::PrimaryService {
                 return Err(pdu.err(ErrorCode::UnsupportedGroupType));
@@ -129,5 +129,20 @@ impl<T: host::Transport> Server<T> {
         };
         let it = (s.characteristics()).map(|s| (s.decl_handle(), s.decl_value()));
         self.br.read_by_type_rsp(hdls.start(), it).await
+    }
+}
+
+/// Characteristic descriptor discovery ([Vol 3] Part G, Section 4.7).
+impl<T: host::Transport> Server<T> {
+    /// Handles "Discover All Characteristic Descriptors"
+    /// ([Vol 3] Part G, Section 4.7.1).
+    async fn discover_characteristic_descriptors(&self, pdu: Pdu<T>) -> Result<()> {
+        let v = self.br.check(pdu.find_information_req(), |hdls| {
+            (self.db.descriptors(hdls))
+                .ok_or_else(|| pdu.hdl_err(hdls.start(), ErrorCode::InvalidHandle))
+                .map(|it| (hdls.start(), it))
+        });
+        let (start, it) = v.await?;
+        self.br.find_information_rsp(start, it).await
     }
 }

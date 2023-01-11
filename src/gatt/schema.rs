@@ -59,6 +59,20 @@ impl Schema {
         (hdls.end() == s.end_group_handle() || hdls.end() == s.attr.last().hdl).then_some(s)
     }
 
+    /// Returns an iterator over all descriptors for one characteristic or
+    /// [`None`] if the handle range is invalid.
+    #[must_use]
+    pub fn descriptors(
+        &self,
+        hdls: HandleRange,
+    ) -> Option<impl Iterator<Item = (Handle, Uuid)> + '_> {
+        // TODO: Verify that the range covers all descriptors for one characteristic
+        self.range(hdls).map(|g| {
+            (g.attr.iter())
+                .map_while(|at| (!at.is_service() && !at.is_char()).then(|| (at.hdl, self.typ(at))))
+        })
+    }
+
     /// Returns all attributes within the specified handle range or [`None`] if
     /// the handle range is empty.
     fn range(&self, hdls: HandleRange) -> Option<Group> {
