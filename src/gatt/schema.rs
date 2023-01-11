@@ -6,7 +6,7 @@ use smallvec::SmallVec;
 use structbuf::{Pack, Packer, StructBuf, Unpack};
 
 use crate::att::{Access, Handle, Perms};
-use crate::gap::{Uuid, Uuid16};
+use crate::gap::{Uuid, Uuid16, UuidVec};
 
 use super::*;
 
@@ -47,9 +47,7 @@ impl Schema {
     #[inline]
     #[must_use]
     pub fn primary_services(&self, hdls: HandleRange, uuid: Option<Uuid>) -> PrimaryServices {
-        let rng = self
-            .get_range(hdls)
-            .map_or(Range::default(), |r| r.bounds());
+        let rng = (self.get_range(hdls)).map_or(Range::default(), |r| r.bounds());
         PrimaryServices::new(self, rng, uuid)
     }
 
@@ -153,6 +151,65 @@ impl<'a> ServiceSchema<'a> {
     }
 }
 
+/// Iterator over primary services within a handle range with optional UUID
+/// matching.
+#[derive(Clone, Debug)]
+pub struct PrimaryServices<'a> {
+    schema: &'a Schema,
+    rng: Range<usize>,
+    uuid: UuidVec,
+}
+
+impl<'a> PrimaryServices<'a> {
+    /// Creates a primary service iterator.
+    #[inline]
+    fn new(schema: &'a Schema, rng: Range<usize>, uuid: Option<Uuid>) -> Self {
+        Self {
+            schema,
+            rng,
+            uuid: uuid.map_or(UuidVec::default(), UuidVec::new),
+        }
+    }
+
+    /// Returns whether at least one more primary service is available.
+    #[inline]
+    #[must_use]
+    fn more(&mut self) -> bool {
+        // SAFETY: self.rng is always a valid subslice
+        for at in unsafe { self.schema.attr.get_unchecked(self.rng.clone()) } {
+            if at.is_primary_service()
+                && (self.uuid.is_empty() || self.schema.value(at) == self.uuid.as_ref())
+            {
+                return true;
+            }
+            self.rng.start += 1;
+        }
+        false
+    }
+}
+
+impl<'a> Iterator for PrimaryServices<'a> {
+    type Item = ServiceSchema<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if !self.more() {
+            return None;
+        }
+        let i = self.rng.start;
+        // SAFETY: i < self.schema.attr.len()
+        let j = unsafe { self.schema.attr.get_unchecked(i + 1..).iter() }
+            .position(Attr::is_service)
+            .map_or(self.schema.attr.len(), |j| i + 1 + j);
+        self.rng.start = j.min(self.rng.end);
+        Some(ServiceSchema::new(self.schema, self.schema.range(i..j)))
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (0, Some(self.rng.end - self.rng.start))
+    }
+}
+
 /// Attribute entry.
 #[derive(Clone, Copy, Debug)]
 #[must_use]
@@ -235,84 +292,6 @@ impl Deref for Group<'_> {
     #[inline]
     fn deref(&self) -> &Self::Target {
         self.attr
-    }
-}
-
-/// Iterator over primary services within a handle range with optional UUID
-/// matching.
-#[derive(Clone, Debug)]
-pub struct PrimaryServices<'a> {
-    schema: &'a Schema,
-    rng: Range<usize>,
-    uuid: [u8; Uuid::BYTES],
-    uuid_len: usize,
-}
-
-impl<'a> PrimaryServices<'a> {
-    /// Creates a primary service iterator.
-    #[inline]
-    fn new(schema: &'a Schema, rng: Range<usize>, uuid: Option<Uuid>) -> Self {
-        let (uuid, uuid_len) = uuid.map_or_else(Default::default, |u| {
-            u.as_uuid16().map_or_else(
-                || (u.to_bytes(), Uuid::BYTES),
-                |u| {
-                    let mut b = [0; Uuid::BYTES];
-                    b[..Uuid16::BYTES].copy_from_slice(&u.to_bytes());
-                    (b, Uuid16::BYTES)
-                },
-            )
-        });
-        Self {
-            schema,
-            rng,
-            uuid,
-            uuid_len,
-        }
-    }
-
-    /// Returns the target UUID.
-    #[inline(always)]
-    fn uuid(&self) -> &[u8] {
-        // SAFETY: self.uuid_len is 0, 2, or 16
-        unsafe { self.uuid.get_unchecked(..self.uuid_len) }
-    }
-
-    /// Returns whether at least one more primary service is available.
-    #[inline]
-    #[must_use]
-    fn more(&mut self) -> bool {
-        // SAFETY: self.rng is always a valid subslice
-        for at in unsafe { self.schema.attr.get_unchecked(self.rng.clone()) } {
-            if at.is_primary_service()
-                && (self.uuid_len == 0 || self.schema.value(at) == self.uuid())
-            {
-                return true;
-            }
-            self.rng.start += 1;
-        }
-        false
-    }
-}
-
-impl<'a> Iterator for PrimaryServices<'a> {
-    type Item = ServiceSchema<'a>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if !self.more() {
-            return None;
-        }
-        let i = self.rng.start;
-        // SAFETY: i < self.schema.attr.len()
-        let j = unsafe { self.schema.attr.get_unchecked(i + 1..).iter() }
-            .position(Attr::is_service)
-            .map_or(self.schema.attr.len(), |j| i + 1 + j);
-        self.rng.start = j.min(self.rng.end);
-        Some(ServiceSchema::new(self.schema, self.schema.range(i..j)))
-    }
-
-    #[inline]
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        (0, Some(self.rng.end - self.rng.start))
     }
 }
 

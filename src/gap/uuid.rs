@@ -3,7 +3,8 @@
 use std::fmt::{Debug, Display, Formatter};
 use std::hash::{Hash, Hasher};
 use std::num::{NonZeroU128, NonZeroU16};
-use std::u16;
+use std::ops::Deref;
+use std::{ptr, u16};
 
 use structbuf::Unpack;
 
@@ -212,6 +213,41 @@ impl From<Uuid16> for u16 {
     #[inline]
     fn from(u: Uuid16) -> Self {
         u.raw()
+    }
+}
+
+/// An owned little-endian vector representation of a UUID.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct UuidVec {
+    n: u8,
+    v: [u8; Uuid::BYTES],
+}
+
+impl UuidVec {
+    /// Creates a vector representation of a UUID.
+    #[inline]
+    pub fn new(u: Uuid) -> Self {
+        // SAFETY: Create an array v with n initialized bytes
+        let (n, v) = u.as_uuid16().map_or_else(
+            || (Uuid::BYTES, u.to_bytes()),
+            |u| {
+                let mut v = [0; Uuid::BYTES];
+                v[..Uuid16::BYTES].copy_from_slice(&u.to_bytes());
+                (Uuid16::BYTES, v)
+            },
+        );
+        #[allow(clippy::cast_possible_truncation)]
+        Self { n: n as _, v }
+    }
+}
+
+impl Deref for UuidVec {
+    type Target = [u8];
+
+    #[inline(always)]
+    fn deref(&self) -> &Self::Target {
+        // SAFETY: `n` is 0, 2, or 16
+        unsafe { &*ptr::slice_from_raw_parts(self.v.as_ptr().cast(), self.n as _) }
     }
 }
 
