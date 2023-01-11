@@ -95,7 +95,7 @@ impl<T: host::Transport + 'static> ChanManager<T> {
 
     /// Returns the Attribute Protocol (ATT) fixed channel for the specified
     /// LE-U logical link.
-    pub(crate) fn att_chan(&mut self, link: LeU) -> Option<att::Bearer<T>> {
+    pub fn att_chan(&mut self, link: LeU) -> Option<att::Bearer<T>> {
         (self.conns.get_mut(&link)).and_then(|cn| cn.att_opt.take().map(att::Bearer::new))
     }
 
