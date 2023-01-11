@@ -8,11 +8,12 @@ use std::time::Duration;
 use structbuf::{Pack, Packer, Unpacker};
 use tracing::{debug, error, warn};
 
-pub(crate) use {consts::*, handle::*, pdu::*, perm::*};
+pub(crate) use {consts::*, pdu::*};
+pub use {handle::*, perm::*};
 
+use crate::{host, l2cap};
 use crate::gap::Uuid;
 use crate::l2cap::{BasicChan, Sdu};
-use crate::{host, l2cap};
 
 mod consts;
 mod handle;

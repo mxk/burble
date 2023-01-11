@@ -91,12 +91,14 @@ impl HandleRange {
 
     /// Returns the starting handle.
     #[inline(always)]
+    #[must_use]
     pub const fn start(self) -> Handle {
         self.start
     }
 
     /// Returns the ending handle.
     #[inline(always)]
+    #[must_use]
     pub const fn end(self) -> Handle {
         self.end
     }

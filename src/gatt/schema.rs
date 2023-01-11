@@ -54,7 +54,7 @@ impl Schema {
     /// or [`None`] if the handle range does not describe a service.
     #[inline]
     #[must_use]
-    pub fn service(&self, hdls: HandleRange) -> Option<GroupSchema<Service>> {
+    pub fn service(&self, hdls: HandleRange) -> Option<GroupSchema<ServiceDef>> {
         let s = GroupSchema::new(self, self.service_group(hdls.start())?);
         (hdls.end() == s.end_group_handle() || hdls.end() == s.attr.last().hdl).then_some(s)
     }
@@ -165,11 +165,11 @@ impl<'a, T: GroupInfo> GroupSchema<'a, T> {
     }
 }
 
-impl<'a> GroupSchema<'a, Service> {
+impl<'a> GroupSchema<'a, ServiceDef> {
     // Returns an iterator over all include declarations.
     pub fn includes(&self) -> impl Iterator<Item = (Handle, &'a [u8])> + '_ {
         // SAFETY: Group contains at least MIN_ATTRS attributes
-        unsafe { self.attr.get_unchecked(Service::MIN_ATTRS..).iter() }
+        unsafe { self.attr.get_unchecked(ServiceDef::MIN_ATTRS..).iter() }
             .map_while(|at| at.is_include().then_some((at.hdl, self.schema.value(at))))
     }
 
@@ -180,7 +180,7 @@ impl<'a> GroupSchema<'a, Service> {
     }
 }
 
-impl GroupSchema<'_, Characteristic> {}
+impl GroupSchema<'_, CharacteristicDef> {}
 
 /// Iterator over primary services within a handle range with optional UUID
 /// matching.
@@ -218,7 +218,7 @@ impl<'a> PrimaryServiceIter<'a> {
 }
 
 impl<'a> Iterator for PrimaryServiceIter<'a> {
-    type Item = GroupSchema<'a, Service>;
+    type Item = GroupSchema<'a, ServiceDef>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if !self.more() {
@@ -226,10 +226,10 @@ impl<'a> Iterator for PrimaryServiceIter<'a> {
         }
         let i = self.rng.start;
         // SAFETY: i < self.schema.attr.len()
-        let j = unsafe { self.schema.attr.get_unchecked(i + Service::MIN_ATTRS..) }
+        let j = unsafe { self.schema.attr.get_unchecked(i + ServiceDef::MIN_ATTRS..) }
             .iter()
             .position(Attr::is_service)
-            .map_or(self.schema.attr.len(), |j| i + Service::MIN_ATTRS + j);
+            .map_or(self.schema.attr.len(), |j| i + ServiceDef::MIN_ATTRS + j);
         self.rng.start = j.min(self.rng.end);
         Some(GroupSchema::new(self.schema, self.schema.group(i..j)))
     }
@@ -258,14 +258,14 @@ impl<'a> CharacteristicIter<'a> {
 }
 
 impl<'a> Iterator for CharacteristicIter<'a> {
-    type Item = GroupSchema<'a, Characteristic>;
+    type Item = GroupSchema<'a, CharacteristicDef>;
 
     fn next(&mut self) -> Option<Self::Item> {
         // `self.attr` is either empty, or starts with a characteristic
         // declaration and value attributes.
-        let n = (self.attr.get(Characteristic::MIN_ATTRS..)?.iter())
+        let n = (self.attr.get(CharacteristicDef::MIN_ATTRS..)?.iter())
             .position(Attr::is_char)
-            .map_or(self.attr.len(), |i| Characteristic::MIN_ATTRS + i);
+            .map_or(self.attr.len(), |i| CharacteristicDef::MIN_ATTRS + i);
         Some(GroupSchema::new(self.schema, self.attr.take(n)))
     }
 
@@ -378,7 +378,7 @@ impl<'a> Deref for Group<'a> {
     }
 }
 
-/// Trait implemented by [`Service`] and [`Characteristic`] markers.
+/// Trait implemented by [`ServiceDef`] and [`CharacteristicDef`] markers.
 pub trait GroupInfo {
     /// Minimum number of attributes in the group.
     const MIN_ATTRS: usize = 1;
@@ -386,9 +386,9 @@ pub trait GroupInfo {
     const UUID_OFF: usize = 0;
 }
 
-impl GroupInfo for Service {}
+impl GroupInfo for ServiceDef {}
 
-impl GroupInfo for Characteristic {
+impl GroupInfo for CharacteristicDef {
     const MIN_ATTRS: usize = 2;
     const UUID_OFF: usize = 3;
 }
@@ -454,9 +454,10 @@ trait CommonOps {
         let Ok((i, at)) = self.get(hdl) else { return None };
         at.is_service().then(|| {
             // SAFETY: i < self.attr.len()
-            let j = unsafe { self.attr().get_unchecked(i + Service::MIN_ATTRS..).iter() }
+            let j = unsafe { self.attr().get_unchecked(i + ServiceDef::MIN_ATTRS..) }
+                .iter()
                 .position(Attr::is_service)
-                .map_or(self.attr().len(), |n| i + Service::MIN_ATTRS + n);
+                .map_or(self.attr().len(), |n| i + ServiceDef::MIN_ATTRS + n);
             self.group(i..j)
         })
     }
@@ -529,7 +530,7 @@ impl SchemaBuilder {
         &mut self,
         uuid: impl Into<Uuid>,
         include: impl AsRef<[Handle]>,
-        chars: impl FnOnce(&mut Builder<Service>) -> T,
+        chars: impl FnOnce(&mut Builder<ServiceDef>) -> T,
     ) -> (Handle, T) {
         let hdl = self.service(Declaration::PrimaryService, uuid.into(), include.as_ref());
         (hdl, chars(self.builder()))
@@ -543,7 +544,7 @@ impl SchemaBuilder {
         &mut self,
         uuid: impl Into<Uuid>,
         include: impl AsRef<[Handle]>,
-        chars: impl FnOnce(&mut Builder<Service>) -> T,
+        chars: impl FnOnce(&mut Builder<ServiceDef>) -> T,
     ) -> (Handle, T) {
         let hdl = self.service(Declaration::SecondaryService, uuid.into(), include.as_ref());
         (hdl, chars(self.builder()))
@@ -697,9 +698,9 @@ impl<T> DerefMut for Builder<T> {
 
 /// [`GroupSchema`] and [`Builder`] marker type.
 #[derive(Debug, Default)]
-pub struct Service;
+pub struct ServiceDef;
 
-impl Builder<Service> {
+impl Builder<ServiceDef> {
     /// Defines a single-value characteristic ([Vol 3] Part G, Section 3.3).
     ///
     /// Mandatory service characteristics must precede optional ones and 16-bit
@@ -710,7 +711,7 @@ impl Builder<Service> {
         uuid: impl Into<Uuid>,
         props: Prop,
         perms: impl Into<Perms>,
-        descs: impl FnOnce(&mut Builder<Characteristic>) -> T,
+        descs: impl FnOnce(&mut Builder<CharacteristicDef>) -> T,
     ) -> (Handle, T) {
         let hdl = self.decl_value(uuid.into(), props, perms.into());
         let b = self.builder(props.contains(Prop::EXT_PROPS));
@@ -731,7 +732,7 @@ impl Builder<Service> {
     }
 
     /// Returns a new descriptor builder.
-    fn builder(&mut self, need_ext_props: bool) -> &mut Builder<Characteristic> {
+    fn builder(&mut self, need_ext_props: bool) -> &mut Builder<CharacteristicDef> {
         self.need_ext_props = need_ext_props;
         self.have_cccd = false;
         self.have_aggregate_fmt = false;
@@ -743,9 +744,9 @@ impl Builder<Service> {
 
 /// [`GroupSchema`] and  [`Builder`] marker type.
 #[derive(Debug, Default)]
-pub struct Characteristic;
+pub struct CharacteristicDef;
 
-impl Builder<Characteristic> {
+impl Builder<CharacteristicDef> {
     /// Declares a non-GATT profile characteristic descriptor
     /// ([Vol 3] Part G, Section 3.3.3).
     #[inline]
