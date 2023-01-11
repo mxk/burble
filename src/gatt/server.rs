@@ -62,9 +62,11 @@ impl<T: host::Transport> Server<T> {
     /// Handles `ATT_READ_BY_TYPE_REQ` PDUs.
     async fn handle_read_by_type_req(&self, pdu: Pdu<T>) -> Result<()> {
         const INCLUDE: Uuid = Declaration::Include.uuid();
+        const CHARACTERISTIC: Uuid = Declaration::Characteristic.uuid();
         let (hdls, typ) = self.br.check(pdu.read_by_type_req(), Ok).await?;
         match typ {
             INCLUDE => self.find_included_services(pdu, hdls).await,
+            CHARACTERISTIC => self.discover_service_characteristics(pdu, hdls).await,
             _ => (self.br.error_rsp(pdu, None, ErrorCode::RequestNotSupported)).await,
         }
     }
@@ -114,5 +116,18 @@ impl<T: host::Transport> Server<T> {
             return self.br.error_rsp(pdu, hdls.start(), ErrorCode::InvalidHandle).await;
         };
         self.br.read_by_type_rsp(hdls.start(), s.includes()).await
+    }
+}
+
+/// Characteristic discovery ([Vol 3] Part G, Section 4.6).
+impl<T: host::Transport> Server<T> {
+    /// Handles "Discover All Characteristics of a Service" and "Discover
+    /// Characteristics by UUID" sub-procedures ([Vol 3] Part G, Section 4.6.1).
+    async fn discover_service_characteristics(&self, pdu: Pdu<T>, hdls: HandleRange) -> Result<()> {
+        let Some(s) = self.db.service(hdls) else {
+            return self.br.error_rsp(pdu, hdls.start(), ErrorCode::InvalidHandle).await;
+        };
+        let it = (s.characteristics()).map(|s| (s.decl_handle(), s.decl_value()));
+        self.br.read_by_type_rsp(hdls.start(), it).await
     }
 }
