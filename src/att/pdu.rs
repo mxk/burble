@@ -149,14 +149,15 @@ impl<T: host::Transport> Bearer<T> {
     /// ([Vol 3] Part F, Section 3.4.3.2).
     pub async fn find_information_rsp(
         &self,
+        start: Handle,
         it: impl Iterator<Item = (Handle, Uuid)> + Send,
     ) -> Result<()> {
+        let mut it = it.peekable();
+        let Some(first) = it.peek() else {
+            return self.error_rsp(Opcode::FindInformationReq, start, ErrorCode::AttributeNotFound).await;
+        };
+        let fmt = 0x01 + u8::from(first.1.as_u16().is_none());
         let rsp = self.pack(Opcode::FindInformationRsp, move |p| {
-            let mut it = it.peekable();
-            let first = it
-                .peek()
-                .expect("ATT_FIND_INFORMATION_RSP must contain at least one entry");
-            let fmt = 0x01 + u8::from(first.1.as_u16().is_none());
             p.u8(fmt);
             if fmt == 0x01 {
                 for (h, u) in it
@@ -237,12 +238,12 @@ impl<T: host::Transport> Pdu<T> {
     fn read_by_type_op(&self, op: Opcode) -> RspResult<(HandleRange, Uuid)> {
         self.unpack(op, |p| {
             let range = self.handle_range(p)?;
-            let uuid = if p.len() == 2 {
+            let typ = if p.len() == 2 {
                 self.uuid16(p, Some(range.start()))?.as_uuid()
             } else {
                 self.uuid(p, Some(range.start()))?
             };
-            Ok((range, uuid))
+            Ok((range, typ))
         })
     }
 
@@ -267,10 +268,12 @@ impl<T: host::Transport> Bearer<T> {
     /// Sends an `ATT_READ_BY_TYPE_RSP` PDU ([Vol 3] Part F, Section 3.4.4.2).
     pub async fn read_by_type_rsp(
         &self,
+        start: Handle,
         it: impl Iterator<Item = (Handle, &[u8])> + Send,
     ) -> Result<()> {
         self.read_by_type_op::<2, (Handle, &[u8])>(
             Opcode::ReadByTypeRsp,
+            start,
             it,
             |&(_, v)| v.len(),
             |p, n, (h, v)| {
@@ -308,10 +311,12 @@ impl<T: host::Transport> Bearer<T> {
     /// ([Vol 3] Part F, Section 3.4.4.10).
     pub async fn read_by_group_type_rsp(
         &self,
+        start: Handle,
         it: impl Iterator<Item = (Handle, Handle, &[u8])> + Send,
     ) -> Result<()> {
         self.read_by_type_op::<4, (Handle, Handle, &[u8])>(
             Opcode::ReadByGroupTypeRsp,
+            start,
             it,
             |&(_, _, v)| v.len(),
             |p, n, (h, g, v)| {
@@ -337,20 +342,23 @@ impl<T: host::Transport> Bearer<T> {
         self.send(rsp).await
     }
 
+    #[allow(clippy::future_not_send)]
     #[inline]
     async fn read_by_type_op<const HDR: usize, V>(
         &self,
         op: Opcode,
+        start: Handle,
         it: impl Iterator<Item = V> + Send,
         len: impl Fn(&V) -> usize + Send,
         put: impl Fn(&mut Packer, usize, V) + Send,
     ) -> Result<()> {
+        let mut it = it.peekable();
+        let Some(first) = it.peek() else {
+            let req = u8::from(op) - 1;
+            return self.raw_error_rsp(req, Some(start), ErrorCode::AttributeNotFound).await;
+        };
+        let same_len = len(first);
         let rsp = self.pack(op, move |p| {
-            let mut it = it.peekable();
-            let first = it
-                .peek()
-                .unwrap_or_else(|| panic!("{op} must contain at least one entry"));
-            let same_len = len(first);
             let n = same_len
                 .min(p.remaining() - (1 + HDR))
                 .min(u8::MAX as usize - HDR);

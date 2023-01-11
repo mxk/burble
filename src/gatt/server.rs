@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use crate::gap::Uuid;
 use crate::gatt::db::Db;
 use crate::host;
 
@@ -43,7 +44,7 @@ impl<T: host::Transport> Server<T> {
         match pdu.opcode() {
             FindInformationReq => unimplemented!(),
             FindByTypeValueReq => self.discover_primary_service_by_uuid(pdu).await,
-            ReadByTypeReq => unimplemented!(),
+            ReadByTypeReq => self.handle_read_by_type_req(pdu).await,
             ReadReq => unimplemented!(),
             ReadBlobReq => unimplemented!(),
             ReadMultipleReq => unimplemented!(),
@@ -57,34 +58,61 @@ impl<T: host::Transport> Server<T> {
             op => (self.br.error_rsp(op, None, ErrorCode::RequestNotSupported)).await,
         }
     }
+
+    /// Handles `ATT_READ_BY_TYPE_REQ` PDUs.
+    async fn handle_read_by_type_req(&self, pdu: Pdu<T>) -> Result<()> {
+        const INCLUDE: Uuid = Declaration::Include.uuid();
+        let (hdls, typ) = self.br.check(pdu.read_by_type_req(), Ok).await?;
+        match typ {
+            INCLUDE => self.find_included_services(pdu, hdls).await,
+            _ => (self.br.error_rsp(pdu, None, ErrorCode::RequestNotSupported)).await,
+        }
+    }
 }
 
 /// Primary service discovery ([Vol 3] Part G, Section 4.4).
 impl<T: host::Transport> Server<T> {
-    /// Handles "Discover All Primary Services" procedure
+    /// Handles "Discover All Primary Services" sub-procedure
     /// ([Vol 3] Part G, Section 4.4.1).
     async fn discover_all_primary_services(&self, pdu: Pdu<T>) -> Result<()> {
         let v = self.br.check(pdu.read_by_group_type_req(), |(hdls, typ)| {
             if typ != Declaration::PrimaryService {
                 return Err(pdu.err(ErrorCode::UnsupportedGroupType));
             }
-            (self.db.primary_services(hdls, &[]))
-                .ok_or_else(|| pdu.hdl_err(hdls.start(), ErrorCode::AttributeNotFound))
+            Ok((
+                hdls.start(),
+                (self.db.primary_services(hdls, None))
+                    .map(|s| (s.decl_handle(), s.end_group_handle(), s.decl_value())),
+            ))
         });
-        self.br.read_by_group_type_rsp(v.await?).await
+        let (start, it) = v.await?;
+        self.br.read_by_group_type_rsp(start, it).await
     }
 
-    /// Handles "Discover Primary Service by Service UUID" procedure
+    /// Handles "Discover Primary Service by Service UUID" sub-procedure
     /// ([Vol 3] Part G, Section 4.4.2).
     async fn discover_primary_service_by_uuid(&self, pdu: Pdu<T>) -> Result<()> {
         let v = (self.br).check(pdu.find_by_type_value_req(), |(hdls, typ, uuid)| {
             if typ != Declaration::PrimaryService {
                 return Err(pdu.err(ErrorCode::UnsupportedGroupType));
             }
-            (self.db.primary_services(hdls, uuid))
-                .ok_or_else(|| pdu.hdl_err(hdls.start(), ErrorCode::AttributeNotFound))
-                .map(move |it| it.map(|(start, end, _)| (start, Some(end))))
+            let uuid = Uuid::try_from(uuid)
+                .map_err(|_| pdu.hdl_err(hdls.start(), ErrorCode::AttributeNotFound))?;
+            Ok((self.db.primary_services(hdls, Some(uuid)))
+                .map(|s| (s.decl_handle(), Some(s.end_group_handle()))))
         });
         self.br.find_by_type_value_rsp(v.await?).await
+    }
+}
+
+/// Relationship discovery ([Vol 3] Part G, Section 4.5).
+impl<T: host::Transport> Server<T> {
+    /// Handles "Find Included Services" sub-procedure
+    /// ([Vol 3] Part G, Section 4.5.1).
+    async fn find_included_services(&self, pdu: Pdu<T>, hdls: HandleRange) -> Result<()> {
+        let Some(s) = self.db.service(hdls) else {
+            return self.br.error_rsp(pdu, hdls.start(), ErrorCode::InvalidHandle).await;
+        };
+        self.br.read_by_type_rsp(hdls.start(), s.includes()).await
     }
 }

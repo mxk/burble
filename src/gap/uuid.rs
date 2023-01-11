@@ -18,6 +18,9 @@ const MASK_32: u128 = !((u32::MAX as u128) << SHIFT);
 pub struct Uuid(NonZeroU128);
 
 impl Uuid {
+    /// UUID size in bytes.
+    pub const BYTES: usize = std::mem::size_of::<Self>();
+
     /// Creates a UUID from a `u128`.
     #[inline]
     #[must_use]
@@ -78,7 +81,7 @@ impl Uuid {
     /// Returns the UUID as a little-endian byte array.
     #[inline]
     #[must_use]
-    pub const fn to_bytes(self) -> [u8; 16] {
+    pub const fn to_bytes(self) -> [u8; Self::BYTES] {
         self.0.get().to_le_bytes()
     }
 }
@@ -96,8 +99,8 @@ impl TryFrom<&[u8]> for Uuid {
     #[inline]
     fn try_from(v: &[u8]) -> Result<Self, Self::Error> {
         match v.len() {
-            2 => Uuid16::new(v.unpack().u16()).map(Uuid16::as_uuid),
-            16 => Uuid::new(v.unpack().u128()),
+            Uuid::BYTES => Uuid::new(v.unpack().u128()),
+            Uuid16::BYTES => Uuid16::new(v.unpack().u16()).map(Uuid16::as_uuid),
             _ => None,
         }
         .ok_or(())
@@ -147,6 +150,9 @@ impl From<Uuid> for u128 {
 pub struct Uuid16(NonZeroU16);
 
 impl Uuid16 {
+    /// UUID size in bytes.
+    pub const BYTES: usize = std::mem::size_of::<Self>();
+
     /// Creates a 16-bit SIG UUID from a `u16`.
     #[inline]
     #[must_use]
@@ -176,7 +182,7 @@ impl Uuid16 {
     /// Returns the UUID as a little-endian byte array.
     #[inline]
     #[must_use]
-    pub const fn to_bytes(self) -> [u8; 2] {
+    pub const fn to_bytes(self) -> [u8; Self::BYTES] {
         self.0.get().to_le_bytes()
     }
 }
