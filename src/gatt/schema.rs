@@ -129,6 +129,12 @@ impl<'a, T: GroupInfo> GroupSchema<'a, T> {
         Uuid::try_from(unsafe { self.decl_value().get_unchecked(T::UUID_OFF..) }).unwrap()
     }
 
+    /// Returns the group handle range.
+    #[inline]
+    pub fn handle_range(&self) -> HandleRange {
+        HandleRange::new(self.decl_handle(), self.end_group_handle())
+    }
+
     /// Returns the declaration handle.
     #[inline]
     #[must_use]

@@ -68,22 +68,6 @@ impl Opcode {
         self as u8 & (1 << 7) != 0
     }
 
-    /// Returns a non-handle error response.
-    #[inline]
-    pub(crate) const fn err(self, err: ErrorCode) -> ErrorRsp {
-        self.hdl_err(None, err)
-    }
-
-    /// Returns a handle-specific error response.
-    #[inline]
-    pub(crate) const fn hdl_err(self, hdl: Option<Handle>, err: ErrorCode) -> ErrorRsp {
-        ErrorRsp {
-            req: self as _,
-            hdl,
-            err,
-        }
-    }
-
     /// Returns the PDU type.
     pub(crate) const fn typ(self) -> PduType {
         use {Opcode::*, PduType::*};

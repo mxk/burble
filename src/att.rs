@@ -8,12 +8,12 @@ use std::time::Duration;
 use structbuf::{Pack, Packer, Unpacker};
 use tracing::{debug, error, warn};
 
-pub(crate) use {consts::*, pdu::*};
+pub(crate) use consts::*;
 pub use {handle::*, perm::*};
 
-use crate::{host, l2cap};
 use crate::gap::Uuid;
 use crate::l2cap::{BasicChan, Sdu};
+use crate::{host, l2cap};
 
 mod consts;
 mod handle;
@@ -34,6 +34,19 @@ pub enum Error {
 
 /// Common ATT result type.
 pub type Result<T> = std::result::Result<T, Error>;
+
+/// PDU response result.
+pub type RspResult<T> = std::result::Result<T, ErrorRsp>;
+
+/// Received ATT protocol data unit ([Vol 3] Part F, Section 3.3).
+#[derive(Debug)]
+#[repr(transparent)]
+pub struct Pdu<T: host::Transport>(Sdu<T>);
+
+/// Response PDU.
+#[derive(Debug)]
+#[repr(transparent)]
+pub struct Rsp<T: host::Transport>(Sdu<T>);
 
 /// `ATT_ERROR_RSP` PDU ([Vol 3] Part F, Section 3.4.1.1).
 #[derive(Clone, Copy, Debug, thiserror::Error)]
@@ -87,47 +100,50 @@ impl<T: host::Transport> Bearer<T> {
         Ok(Pdu(sdu))
     }
 
-    /// Calls `f` to perform additional validation of the received request.
-    #[inline(always)]
-    pub async fn check<P: Send, R>(
-        &self,
-        params: RspResult<P>,
-        f: impl FnOnce(P) -> RspResult<R> + Send,
-    ) -> Result<R> {
-        let e = match params {
-            Ok(p) => match f(p) {
-                Ok(r) => return Ok(r),
-                Err(e) => e,
-            },
-            Err(e) => e,
+    /// Sends a response PDU or an `ATT_ERROR_RSP` if the request could not be
+    /// completed ([Vol 3] Part F, Section 3.4.1.1). Command-related errors are
+    /// ignored.
+    pub async fn send_rsp(&self, r: RspResult<Rsp<T>>) -> Result<()> {
+        let rsp = match r {
+            Ok(r) => r.0,
+            Err(e) => {
+                warn!(
+                    "ATT response: opcode {:#06X} for {:?} failed with {}",
+                    e.req, e.hdl, e.err
+                );
+                if Opcode::is_cmd(e.req) {
+                    return Ok(());
+                }
+                self.pack(Opcode::ErrorRsp, |p| {
+                    p.u8(e.req).u16(e.hdl.map_or(0, u16::from)).u8(e.err);
+                })
+            }
         };
-        self.raw_error_rsp(e.req, e.hdl, e.err).await?;
-        Err(e.into())
+        self.send(rsp).await
     }
 
     /// Handles `ATT_EXCHANGE_MTU_REQ` ([Vol 3] Part F, Section 3.4.2.1).
     pub(crate) async fn handle_exchange_mtu_req(&mut self, pdu: Pdu<T>) -> Result<()> {
-        let v = self.check(pdu.exchange_mtu_req(), |mtu| {
+        let r = pdu.exchange_mtu_req().and_then(|mtu| {
             // This procedure can only be performed once, so the current MTU
             // is the minimum one allowed for the channel.
-            if self.0.mtu() <= mtu {
-                Ok((mtu, self.0.preferred_mtu()))
-            } else {
-                Err(pdu.err(ErrorCode::RequestNotSupported))
+            if mtu < self.0.mtu() {
+                return pdu.err(ErrorCode::RequestNotSupported);
             }
+            // TODO: Increase server MTU if the controller's ACL data packet
+            // limits are too small.
+            let srv_mtu = self.0.preferred_mtu();
+            let rsp = self.exchange_mtu_rsp(srv_mtu);
+            let min = mtu.min(srv_mtu);
+            debug!("{} ATT_MTU={min}", self.0.cid());
+            self.0.set_mtu(min);
+            rsp
         });
-        let (cli_mtu, srv_mtu) = v.await?;
-        // TODO: Increase server MTU if the controller's ACL data packet limits
-        // are too small.
-        self.exchange_mtu_rsp(srv_mtu).await?;
-        let min = cli_mtu.min(srv_mtu);
-        debug!("{} ATT_MTU={min}", self.0.cid());
-        self.0.set_mtu(min);
-        Ok(())
+        self.send_rsp(r).await
     }
 
     /// Receives a response or confirmation PDU ([Vol 3] Part F, Section 3.4.9).
-    async fn recv_rsp(&mut self, rsp: Opcode) -> Result<Sdu<T>> {
+    async fn recv_rsp(&self, rsp: Opcode) -> Result<Sdu<T>> {
         let want = u8::from(rsp);
         let err = if rsp.typ() == PduType::Rsp {
             Opcode::ErrorRsp as u8
@@ -162,18 +178,11 @@ impl<T: host::Transport> Bearer<T> {
         }
     }
 
-    /// Sends an `ATT_ERROR_RSP` PDU in response to a request that cannot be
-    /// performed ([Vol 3] Part F, Section 3.4.1.1). Command-related errors are
-    /// ignored.
-    async fn raw_error_rsp(&self, req: u8, hdl: Option<Handle>, err: ErrorCode) -> Result<()> {
-        warn!("ATT response: opcode {req:#06X} for {hdl:?} failed with {err}");
-        if Opcode::is_cmd(req) {
-            return Ok(());
-        }
-        let pdu = self.pack(Opcode::ErrorRsp, |p| {
-            p.u8(req).u16(hdl.map_or(0, u16::from)).u8(err);
-        });
-        self.send(pdu).await
+    /// Returns a response PDU.
+    #[allow(clippy::unnecessary_wraps)]
+    #[inline(always)]
+    fn rsp(&self, op: Opcode, f: impl FnOnce(&mut Packer)) -> RspResult<Rsp<T>> {
+        Ok(Rsp(self.pack(op, f)))
     }
 
     /// Returns an outbound PDU, calling `f` to encode it after writing the
@@ -186,7 +195,7 @@ impl<T: host::Transport> Bearer<T> {
     }
 
     /// Sends an SDU over the channel.
-    #[inline]
+    #[inline(always)]
     async fn send(&self, sdu: Sdu<T>) -> Result<()> {
         Ok(self.0.send(sdu).await?)
     }

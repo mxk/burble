@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use ErrorCode::*;
+
 use crate::gap::Uuid;
 use crate::gatt::db::Db;
 use crate::host;
@@ -26,48 +28,49 @@ impl<T: host::Transport> Server<T> {
         if pdu.opcode() == Opcode::ExchangeMtuReq {
             self.br.handle_exchange_mtu_req(pdu).await
         } else {
-            self.handle_req(pdu).await
+            self.handle_req(&pdu).await
         }
     }
 
     /// Runs main server loop.
     pub async fn serve(&self) -> Result<()> {
         loop {
-            self.handle_req(self.br.recv().await?).await?;
+            self.handle_req(&self.br.recv().await?).await?;
         }
     }
 
     /// Handles one client request.
-    async fn handle_req(&self, pdu: Pdu<T>) -> Result<()> {
+    async fn handle_req(&self, pdu: &Pdu<T>) -> Result<()> {
         use Opcode::*;
         #[allow(clippy::match_same_arms)]
-        match pdu.opcode() {
-            FindInformationReq => self.discover_characteristic_descriptors(pdu).await,
-            FindByTypeValueReq => self.discover_primary_service_by_uuid(pdu).await,
-            ReadByTypeReq => self.handle_read_by_type_req(pdu).await,
+        let r = match pdu.opcode() {
+            FindInformationReq => self.discover_characteristic_descriptors(pdu),
+            FindByTypeValueReq => self.discover_primary_service_by_uuid(pdu),
+            ReadByTypeReq => self.handle_read_by_type_req(pdu),
             ReadReq => unimplemented!(),
             ReadBlobReq => unimplemented!(),
             ReadMultipleReq => unimplemented!(),
-            ReadByGroupTypeReq => self.discover_primary_services(pdu).await,
+            ReadByGroupTypeReq => self.discover_primary_services(pdu),
             WriteReq => unimplemented!(),
             WriteCmd => unimplemented!(),
             PrepareWriteReq => unimplemented!(),
             ExecuteWriteReq => unimplemented!(),
             ReadMultipleVariableReq => unimplemented!(),
             SignedWriteCmd => unimplemented!(),
-            op => (self.br.error_rsp(op, None, ErrorCode::RequestNotSupported)).await,
-        }
+            _ => pdu.err(RequestNotSupported),
+        };
+        self.br.send_rsp(r).await
     }
 
     /// Handles `ATT_READ_BY_TYPE_REQ` PDUs.
-    async fn handle_read_by_type_req(&self, pdu: Pdu<T>) -> Result<()> {
+    fn handle_read_by_type_req(&self, pdu: &Pdu<T>) -> RspResult<Rsp<T>> {
         const INCLUDE: Uuid = Declaration::Include.uuid();
         const CHARACTERISTIC: Uuid = Declaration::Characteristic.uuid();
-        let (hdls, typ) = self.br.check(pdu.read_by_type_req(), Ok).await?;
+        let (hdls, typ) = pdu.read_by_type_req()?;
         match typ {
-            INCLUDE => self.find_included_services(pdu, hdls).await,
-            CHARACTERISTIC => self.discover_service_characteristics(pdu, hdls).await,
-            _ => (self.br.error_rsp(pdu, None, ErrorCode::RequestNotSupported)).await,
+            INCLUDE => self.find_included_services(pdu, hdls),
+            CHARACTERISTIC => self.discover_service_characteristics(pdu, hdls),
+            _ => pdu.err(RequestNotSupported),
         }
     }
 }
@@ -76,34 +79,32 @@ impl<T: host::Transport> Server<T> {
 impl<T: host::Transport> Server<T> {
     /// Handles "Discover All Primary Services" sub-procedure
     /// ([Vol 3] Part G, Section 4.4.1).
-    async fn discover_primary_services(&self, pdu: Pdu<T>) -> Result<()> {
-        let v = self.br.check(pdu.read_by_group_type_req(), |(hdls, typ)| {
+    fn discover_primary_services(&self, pdu: &Pdu<T>) -> RspResult<Rsp<T>> {
+        pdu.read_by_group_type_req().and_then(|(hdls, typ)| {
             if typ != Declaration::PrimaryService {
-                return Err(pdu.err(ErrorCode::UnsupportedGroupType));
+                return pdu.err(UnsupportedGroupType);
             }
-            Ok((
-                hdls.start(),
-                (self.db.primary_services(hdls, None))
-                    .map(|s| (s.decl_handle(), s.end_group_handle(), s.decl_value())),
-            ))
-        });
-        let (start, it) = v.await?;
-        self.br.read_by_group_type_rsp(start, it).await
+            let it = (self.db)
+                .primary_services(hdls, None)
+                .map(|s| (s.handle_range(), s.decl_value()));
+            self.br.read_by_group_type_rsp(hdls.start(), it)
+        })
     }
 
     /// Handles "Discover Primary Service by Service UUID" sub-procedure
     /// ([Vol 3] Part G, Section 4.4.2).
-    async fn discover_primary_service_by_uuid(&self, pdu: Pdu<T>) -> Result<()> {
-        let v = (self.br).check(pdu.find_by_type_value_req(), |(hdls, typ, uuid)| {
-            if typ != Declaration::PrimaryService {
-                return Err(pdu.err(ErrorCode::UnsupportedGroupType));
-            }
-            let uuid = Uuid::try_from(uuid)
-                .map_err(|_| pdu.hdl_err(hdls.start(), ErrorCode::AttributeNotFound))?;
-            Ok((self.db.primary_services(hdls, Some(uuid)))
-                .map(|s| (s.decl_handle(), Some(s.end_group_handle()))))
-        });
-        self.br.find_by_type_value_rsp(v.await?).await
+    fn discover_primary_service_by_uuid(&self, pdu: &Pdu<T>) -> RspResult<Rsp<T>> {
+        let (hdls, typ, uuid) = pdu.find_by_type_value_req()?;
+        if typ != Declaration::PrimaryService {
+            return pdu.err(UnsupportedGroupType);
+        }
+        let Ok(uuid) = Uuid::try_from(uuid) else {
+            return pdu.hdl_err(AttributeNotFound, hdls.start());
+        };
+        self.br.find_by_type_value_rsp(
+            (self.db.primary_services(hdls, Some(uuid)))
+                .map(|s| (s.decl_handle(), Some(s.end_group_handle()))),
+        )
     }
 }
 
@@ -111,11 +112,11 @@ impl<T: host::Transport> Server<T> {
 impl<T: host::Transport> Server<T> {
     /// Handles "Find Included Services" sub-procedure
     /// ([Vol 3] Part G, Section 4.5.1).
-    async fn find_included_services(&self, pdu: Pdu<T>, hdls: HandleRange) -> Result<()> {
-        let Some(s) = self.db.service(hdls) else {
-            return self.br.error_rsp(pdu, hdls.start(), ErrorCode::InvalidHandle).await;
-        };
-        self.br.read_by_type_rsp(hdls.start(), s.includes()).await
+    fn find_included_services(&self, pdu: &Pdu<T>, hdls: HandleRange) -> RspResult<Rsp<T>> {
+        self.db.service(hdls).map_or_else(
+            || pdu.hdl_err(InvalidHandle, hdls.start()),
+            |s| self.br.read_by_type_rsp(hdls.start(), s.includes()),
+        )
     }
 }
 
@@ -123,12 +124,20 @@ impl<T: host::Transport> Server<T> {
 impl<T: host::Transport> Server<T> {
     /// Handles "Discover All Characteristics of a Service" and "Discover
     /// Characteristics by UUID" sub-procedures ([Vol 3] Part G, Section 4.6.1).
-    async fn discover_service_characteristics(&self, pdu: Pdu<T>, hdls: HandleRange) -> Result<()> {
-        let Some(s) = self.db.service(hdls) else {
-            return self.br.error_rsp(pdu, hdls.start(), ErrorCode::InvalidHandle).await;
-        };
-        let it = (s.characteristics()).map(|s| (s.decl_handle(), s.decl_value()));
-        self.br.read_by_type_rsp(hdls.start(), it).await
+    fn discover_service_characteristics(
+        &self,
+        pdu: &Pdu<T>,
+        hdls: HandleRange,
+    ) -> RspResult<Rsp<T>> {
+        self.db.service(hdls).map_or_else(
+            || pdu.hdl_err(InvalidHandle, hdls.start()),
+            |s| {
+                self.br.read_by_type_rsp(
+                    hdls.start(),
+                    (s.characteristics()).map(|s| (s.decl_handle(), s.decl_value())),
+                )
+            },
+        )
     }
 }
 
@@ -136,13 +145,11 @@ impl<T: host::Transport> Server<T> {
 impl<T: host::Transport> Server<T> {
     /// Handles "Discover All Characteristic Descriptors"
     /// ([Vol 3] Part G, Section 4.7.1).
-    async fn discover_characteristic_descriptors(&self, pdu: Pdu<T>) -> Result<()> {
-        let v = self.br.check(pdu.find_information_req(), |hdls| {
-            (self.db.descriptors(hdls))
-                .ok_or_else(|| pdu.hdl_err(hdls.start(), ErrorCode::InvalidHandle))
-                .map(|it| (hdls.start(), it))
-        });
-        let (start, it) = v.await?;
-        self.br.find_information_rsp(start, it).await
+    fn discover_characteristic_descriptors(&self, pdu: &Pdu<T>) -> RspResult<Rsp<T>> {
+        let hdls = pdu.find_information_req()?;
+        self.db.descriptors(hdls).map_or_else(
+            || pdu.hdl_err(InvalidHandle, hdls.start()),
+            |it| self.br.find_information_rsp(hdls.start(), it),
+        )
     }
 }

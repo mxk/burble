@@ -129,6 +129,7 @@ impl<T: host::Transport + 'static> ChanManager<T> {
             return;
         }
         let _ = self;
+        debug!("Signal on {cid}");
         // TODO: Implement
         // TODO: This will miss signal channel errors
     }

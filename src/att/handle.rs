@@ -132,3 +132,15 @@ impl Default for HandleRange {
         Self::ALL
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn handle_size() {
+        // Required by att::Bearer::read_by_type_op
+        assert_eq!(std::mem::size_of::<Handle>(), 2);
+        assert_eq!(std::mem::size_of::<HandleRange>(), 4);
+    }
+}
