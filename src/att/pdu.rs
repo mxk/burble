@@ -1,6 +1,7 @@
 use std::mem;
 
 use structbuf::Unpack;
+use tracing::trace;
 
 use {ErrorCode::*, Opcode::*};
 
@@ -30,14 +31,17 @@ impl<T: host::Transport> Pdu<T> {
 
     /// Returns the result of calling `f` to unpack the PDU.
     #[inline]
-    fn unpack<'b, V>(
+    fn unpack<'b, V: Debug>(
         &'b self,
         op: Opcode,
         f: impl FnOnce(&mut Unpacker<'b>) -> RspResult<V>,
     ) -> RspResult<V> {
         debug_assert_eq!(self.opcode(), op);
         let p = self.0.unpack().split_at(1).1; // Skip opcode
-        p.map_or(self.err(InvalidPdu), f)
+        p.map_or(self.err(InvalidPdu), f).map(|r| {
+            trace!("{op}: {r:?}");
+            r
+        })
     }
 
     /// Unpacks start/end handle range ([Vol 3] Part F, Section 3.4.3.1).
@@ -133,7 +137,7 @@ impl<T: host::Transport> Bearer<T> {
             if fmt == 0x01 {
                 for (h, u) in it
                     .take(p.remaining() / (2 + 2))
-                    .map_while(|(h, u)| u.as_u16().map(|u| (h, u)))
+                    .map_while(|(h, u)| u.as_uuid16().map(|u| (h, u)))
                 {
                     p.u16(h).u16(u);
                 }

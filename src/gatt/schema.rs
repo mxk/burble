@@ -4,6 +4,7 @@ use std::ops::{Deref, DerefMut, Range};
 
 use smallvec::SmallVec;
 use structbuf::{Pack, Packer, StructBuf, Unpack};
+use tracing::trace;
 
 use crate::att::{Access, Handle, Perms};
 use crate::gap::{Uuid, Uuid16, UuidVec};
@@ -32,6 +33,7 @@ impl Schema {
     #[inline]
     #[must_use]
     pub fn build() -> SchemaBuilder {
+        trace!("GATT server schema:");
         SchemaBuilder::new()
     }
 
@@ -59,18 +61,25 @@ impl Schema {
         (hdls.end() == s.end_group_handle() || hdls.end() == s.attr.last().hdl).then_some(s)
     }
 
-    /// Returns an iterator over all descriptors for one characteristic or
-    /// [`None`] if the handle range is invalid.
-    #[must_use]
-    pub fn descriptors(
-        &self,
-        hdls: HandleRange,
-    ) -> Option<impl Iterator<Item = (Handle, Uuid)> + '_> {
+    // Returns an iterator over include declarations for one service.
+    pub fn includes(&self, hdls: HandleRange) -> impl Iterator<Item = (Handle, &[u8])> + '_ {
+        let attr = self.range(hdls).map_or(Default::default(), |g| {
+            if g.first().is_service() {
+                // SAFETY: g is not empty
+                unsafe { g.attr.get_unchecked(1..) }
+            } else {
+                g.attr
+            }
+        });
+        (attr.iter()).map_while(|at| at.is_include().then_some((at.hdl, self.value(at))))
+    }
+
+    /// Returns an iterator over all descriptors for one characteristic.
+    pub fn descriptors(&self, hdls: HandleRange) -> impl Iterator<Item = (Handle, Uuid)> + '_ {
+        let attr = self.range(hdls).map_or(Default::default(), |g| g.attr);
         // TODO: Verify that the range covers all descriptors for one characteristic
-        self.range(hdls).map(|g| {
-            (g.attr.iter())
-                .map_while(|at| (!at.is_service() && !at.is_char()).then(|| (at.hdl, self.typ(at))))
-        })
+        (attr.iter())
+            .map_while(|at| (!at.is_service() && !at.is_char()).then(|| (at.hdl, self.typ(at))))
     }
 
     /// Returns all attributes within the specified handle range or [`None`] if
@@ -172,13 +181,6 @@ impl<'a, T: GroupInfo> GroupSchema<'a, T> {
 }
 
 impl<'a> GroupSchema<'a, ServiceDef> {
-    // Returns an iterator over all include declarations.
-    pub fn includes(&self) -> impl Iterator<Item = (Handle, &'a [u8])> + '_ {
-        // SAFETY: Group contains at least MIN_ATTRS attributes
-        unsafe { self.attr.get_unchecked(ServiceDef::MIN_ATTRS..).iter() }
-            .map_while(|at| at.is_include().then_some((at.hdl, self.schema.value(at))))
-    }
-
     // Returns an iterator over all service characteristics.
     #[inline]
     pub fn characteristics(&self) -> CharacteristicIter<'a> {
@@ -560,14 +562,16 @@ impl SchemaBuilder {
     /// ([Vol 3] Part G, Section 3.2).
     pub fn service(&mut self, typ: Declaration, uuid: Uuid, include: &[Handle]) -> Handle {
         let hdl = self.decl(typ, |v| v.uuid(uuid));
+        trace!("{hdl} {typ} {uuid}");
         for &inc in include {
             let g = self.service_group(inc).expect("invalid service handle");
             let uuid = (g.first().len() == 2).then(|| self.value(g.first()).unpack().u16());
             let end = g.last().hdl;
-            self.decl(Declaration::Include, |v| {
+            let hdl = self.decl(Declaration::Include, |v| {
                 v.u16(inc).u16(end);
                 uuid.map(|u| v.u16(u));
             });
+            trace!("{hdl} |__ <Include {inc}>");
         }
         hdl
     }
@@ -719,7 +723,8 @@ impl Builder<ServiceDef> {
         perms: impl Into<Perms>,
         descs: impl FnOnce(&mut Builder<CharacteristicDef>) -> T,
     ) -> (Handle, T) {
-        let hdl = self.decl_value(uuid.into(), props, perms.into());
+        let uuid = uuid.into();
+        let hdl = self.decl_value(uuid, props, perms.into());
         let b = self.builder(props.contains(Prop::EXT_PROPS));
         let v = descs(b);
         b.finalize();
@@ -730,11 +735,13 @@ impl Builder<ServiceDef> {
 
     /// Adds characteristic and characteristic value declarations.
     fn decl_value(&mut self, uuid: Uuid, props: Prop, perms: Perms) -> Handle {
-        let hdl = self.next_handle().next().expect("maximum handle reached");
-        self.decl(Declaration::Characteristic, |v| {
-            v.u8(props.bits()).u16(hdl).uuid(uuid);
+        let val_hdl = self.next_handle().next().expect("maximum handle reached");
+        let hdl = self.decl(Declaration::Characteristic, |v| {
+            v.u8(props.bits()).u16(val_hdl).uuid(uuid);
         });
-        self.append_attr(hdl, uuid.as_uuid16(), perms)
+        trace!("{hdl} |__ {uuid}");
+        trace!("{val_hdl}     |__ <Value>");
+        self.append_attr(val_hdl, uuid.as_uuid16(), perms)
     }
 
     /// Returns a new descriptor builder.
@@ -757,7 +764,10 @@ impl Builder<CharacteristicDef> {
     /// ([Vol 3] Part G, Section 3.3.3).
     #[inline]
     pub fn descriptor(&mut self, uuid: impl Into<Uuid>, perms: impl Into<Perms>) -> Handle {
-        self.attr(uuid.into(), perms.into())
+        let uuid = uuid.into();
+        let hdl = self.attr(uuid, perms.into());
+        trace!("{hdl}     |__ {uuid}");
+        hdl
     }
 
     /// Declares a Characteristic Extended Properties descriptor
@@ -771,9 +781,10 @@ impl Builder<CharacteristicDef> {
             "EXT_PROPS not set or descriptor already exists"
         );
         self.need_ext_props = false;
-        self.decl(Descriptor::CharacteristicExtendedProperties, |v| {
+        let hdl = self.decl(Descriptor::CharacteristicExtendedProperties, |v| {
             v.u16(props.bits());
         });
+        trace!("{hdl}     |__ CharacteristicExtendedProperties");
     }
 
     /// Declares a Client Characteristic Configuration descriptor
@@ -782,10 +793,12 @@ impl Builder<CharacteristicDef> {
     pub fn client_cfg(&mut self, perms: impl Into<Perms>) -> Handle {
         assert!(!self.have_cccd, "descriptor already exists");
         self.have_cccd = true;
-        self.attr(
+        let hdl = self.attr(
             Descriptor::ClientCharacteristicConfiguration.uuid(),
             perms.into(),
-        )
+        );
+        trace!("{hdl}     |__ ClientCharacteristicConfiguration");
+        hdl
     }
 
     /// Declares a Characteristic Presentation Format descriptor
@@ -800,6 +813,7 @@ impl Builder<CharacteristicDef> {
         let hdl = self.decl(Descriptor::CharacteristicPresentationFormat, |v| {
             v.u8(fmt).i8(exp).u16(unit).u8(desc.ns()).u16(desc);
         });
+        trace!("{hdl}     |__ CharacteristicPresentationFormat");
         self.fmt.push(hdl);
         hdl
     }
@@ -812,11 +826,12 @@ impl Builder<CharacteristicDef> {
     pub fn aggregate_fmt(&mut self, hdls: impl AsRef<[Handle]>) {
         assert!(!self.have_aggregate_fmt, "descriptor already exists");
         self.have_aggregate_fmt = true;
-        self.decl(Descriptor::CharacteristicAggregateFormat, |v| {
+        let hdl = self.decl(Descriptor::CharacteristicAggregateFormat, |v| {
             for &hdl in hdls.as_ref() {
                 v.u16(hdl);
             }
         });
+        trace!("{hdl}     |__ CharacteristicAggregateFormat");
     }
 
     /// Finalizes characteristic definition by adding required descriptors.

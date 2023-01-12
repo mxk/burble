@@ -75,8 +75,8 @@ async fn serve<T: host::Transport + 'static>(mut s: gatt::Server<T>) {
 fn schema() -> gatt::Schema {
     use burble::att::Access;
     use burble::gatt::{Characteristic, Prop, Schema, Service};
-
     let mut b = Schema::build();
+
     b.primary_service(Service::GenericAccess, [], |b| {
         b.characteristic(
             Characteristic::DeviceName,
