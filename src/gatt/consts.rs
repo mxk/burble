@@ -226,6 +226,7 @@ impl From<Description> for u16 {
     num_enum::TryFromPrimitive,
     strum::Display,
 )]
+#[cfg_attr(test, derive(strum::EnumIter))]
 #[non_exhaustive]
 #[repr(u16)]
 pub enum Service {
@@ -308,6 +309,7 @@ pub enum Service {
     num_enum::TryFromPrimitive,
     strum::Display,
 )]
+#[cfg_attr(test, derive(strum::EnumIter))]
 #[non_exhaustive]
 #[repr(u16)]
 pub enum Unit {
@@ -452,6 +454,7 @@ pub enum Unit {
     num_enum::TryFromPrimitive,
     strum::Display,
 )]
+#[cfg_attr(test, derive(strum::EnumIter))]
 #[non_exhaustive]
 #[repr(u16)]
 pub enum Declaration {
@@ -474,6 +477,7 @@ pub enum Declaration {
     num_enum::TryFromPrimitive,
     strum::Display,
 )]
+#[cfg_attr(test, derive(strum::EnumIter))]
 #[non_exhaustive]
 #[repr(u16)]
 pub enum Descriptor {
@@ -508,6 +512,7 @@ pub enum Descriptor {
     num_enum::TryFromPrimitive,
     strum::Display,
 )]
+#[cfg_attr(test, derive(strum::EnumIter))]
 #[non_exhaustive]
 #[repr(u16)]
 pub enum Characteristic {

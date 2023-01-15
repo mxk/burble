@@ -15,6 +15,7 @@ use crate::gap::uuid16_enum;
     num_enum::TryFromPrimitive,
     strum::Display,
 )]
+#[cfg_attr(test, derive(strum::EnumIter))]
 #[non_exhaustive]
 #[repr(u16)]
 pub enum ServiceClass {

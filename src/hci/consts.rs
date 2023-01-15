@@ -727,8 +727,11 @@ pub enum CoreVersion {
 /// ([Assigned Numbers] Section 3.11).
 #[allow(clippy::match_same_arms, clippy::too_many_lines)]
 #[must_use]
-pub const fn company_name(id: u16) -> &'static str {
-    match id {
+pub const fn company_name(id: u16) -> Option<&'static str> {
+    // TODO: Concatenate all company names and use more compact O(1) indexing
+    Some(match id {
+        0xFCC7 => "PB INC.",
+        0xFCC8 => "Allthenticate, Inc.",
         0xFCC9 => "SkyHawke Technologies",
         0xFCCA => "Cosmed s.r.l.",
         0xFCCB => "TOTO LTD.",
@@ -1296,6 +1299,6 @@ pub const fn company_name(id: u16) -> &'static str {
         0xFEFD => "Gimbal, Inc.",
         0xFEFE => "GN ReSound A/S",
         0xFEFF => "GN Netcom",
-        _ => "<unknown>",
-    }
+        _ => return None,
+    })
 }

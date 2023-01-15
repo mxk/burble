@@ -6,7 +6,10 @@ use std::num::{NonZeroU128, NonZeroU16};
 use std::ops::Deref;
 use std::{ptr, u16};
 
+use num_enum::TryFromPrimitive;
 use structbuf::Unpack;
+
+use crate::{gatt, hci, sdp};
 
 const SHIFT: u32 = u128::BITS - u32::BITS;
 const BASE: u128 = 0x00000000_0000_1000_8000_00805F9B34FB;
@@ -173,6 +176,14 @@ impl Uuid16 {
         unsafe { Uuid::new_unchecked((self.0.get() as u128) << SHIFT | BASE) }
     }
 
+    /// Returns the UUID type.
+    #[inline(always)]
+    pub fn typ(self) -> UuidType {
+        let u = self.0.get();
+        // SAFETY: UUID_MAP has 256 entries
+        (unsafe { &*UUID_MAP.as_ptr().add((u >> 8) as _) })(u)
+    }
+
     /// Returns the raw 16-bit UUID value.
     #[inline(always)]
     #[must_use]
@@ -189,6 +200,7 @@ impl Uuid16 {
 }
 
 impl Debug for Uuid16 {
+    #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:#06X}", self.0.get())
     }
@@ -213,6 +225,84 @@ impl From<Uuid16> for u16 {
     #[inline]
     fn from(u: Uuid16) -> Self {
         u.raw()
+    }
+}
+
+/// 16-bit UUID type.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[non_exhaustive]
+pub enum UuidType {
+    Protocol(u16),
+    ServiceClass(sdp::ServiceClass),
+    Service(gatt::Service),
+    Unit(gatt::Unit),
+    Declaration(gatt::Declaration),
+    Descriptor(gatt::Descriptor),
+    Characteristic(gatt::Characteristic),
+    Company(u16),
+    Unknown(u16),
+}
+
+type UuidMap = [fn(u16) -> UuidType; 256];
+static UUID_MAP: UuidMap = UuidType::map();
+
+impl UuidType {
+    const fn map() -> UuidMap {
+        use UuidType::*;
+        #[inline(always)]
+        fn is<T: TryFromPrimitive<Primitive = u16>>(
+            f: impl FnOnce(T) -> UuidType,
+            u: u16,
+        ) -> UuidType {
+            T::try_from_primitive(u).map_or(Unknown(u), f)
+        }
+        fn company(u: u16) -> UuidType {
+            hci::company_name(u).map_or(Unknown(u), |_| Company(u))
+        }
+        let mut m: UuidMap = [Unknown; 256];
+        m[0x00] = Protocol;
+        m[0x01] = Protocol;
+        m[0x10] = |u| is(ServiceClass, u);
+        m[0x11] = |u| is(ServiceClass, u);
+        m[0x12] = |u| is(ServiceClass, u);
+        m[0x13] = |u| is(ServiceClass, u);
+        m[0x14] = |u| is(ServiceClass, u);
+        m[0x18] = |u| is(Service, u);
+        m[0x27] = |u| is(Unit, u);
+        m[0x28] = |u| is(Declaration, u);
+        m[0x29] = |u| is(Descriptor, u);
+        m[0x2A] = |u| is(Characteristic, u);
+        m[0x2B] = |u| is(Characteristic, u);
+        m[0xFC] = company;
+        m[0xFD] = company;
+        m[0xFE] = company;
+        m
+    }
+}
+
+impl Debug for UuidType {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        use UuidType::*;
+        match *self {
+            Protocol(u) => (f.debug_tuple("Protocol").field(&format_args!("{u:#06X}"))).finish(),
+            ServiceClass(ref u) => f.debug_tuple("ServiceClass").field(u).finish(),
+            Service(ref u) => f.debug_tuple("Service").field(u).finish(),
+            Unit(ref u) => f.debug_tuple("Unit").field(u).finish(),
+            Declaration(ref u) => f.debug_tuple("Declaration").field(u).finish(),
+            Descriptor(ref u) => f.debug_tuple("Descriptor").field(u).finish(),
+            Characteristic(ref u) => f.debug_tuple("Characteristic").field(u).finish(),
+            Company(u) => (f.debug_tuple("Company"))
+                .field(&hci::company_name(u).unwrap_or_default())
+                .finish(),
+            Unknown(u) => (f.debug_tuple("Unknown").field(&format_args!("{u:#06X}"))).finish(),
+        }
+    }
+}
+
+impl Display for UuidType {
+    #[inline]
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        Debug::fmt(self, f)
     }
 }
 
@@ -334,3 +424,47 @@ macro_rules! uuid16_enum {
     )*}
 }
 pub(crate) use uuid16_enum;
+
+#[cfg(test)]
+mod tests {
+    use strum::IntoEnumIterator;
+
+    use crate::hci;
+
+    use super::*;
+
+    #[test]
+    fn uuid_type() {
+        use UuidType::*;
+        assert_eq!(uuid16(0x0001).typ(), Protocol(0x0001));
+        for v in sdp::ServiceClass::iter() {
+            assert_eq!(v.uuid16().typ(), ServiceClass(v));
+        }
+        for v in gatt::Service::iter() {
+            assert_eq!(v.uuid16().typ(), Service(v));
+        }
+        for v in gatt::Unit::iter() {
+            assert_eq!(v.uuid16().typ(), Unit(v));
+        }
+        for v in gatt::Declaration::iter() {
+            assert_eq!(v.uuid16().typ(), Declaration(v));
+        }
+        for v in gatt::Descriptor::iter() {
+            assert_eq!(v.uuid16().typ(), Descriptor(v));
+        }
+        for v in gatt::Characteristic::iter() {
+            assert_eq!(v.uuid16().typ(), Characteristic(v));
+        }
+        for v in gatt::Characteristic::iter() {
+            assert_eq!(v.uuid16().typ(), Characteristic(v));
+        }
+        for i in (0x00..0xFF).rev() {
+            let id = i << 8 | 0xFF;
+            if hci::company_name(id).is_none() {
+                break;
+            }
+            assert_eq!(uuid16(id).typ(), Company(id));
+        }
+        assert_eq!(uuid16(0xFFFF).typ(), Unknown(0xFFFF));
+    }
+}
