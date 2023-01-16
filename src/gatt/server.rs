@@ -98,13 +98,13 @@ impl<T: host::Transport> Server<T> {
         if typ != Declaration::PrimaryService {
             return pdu.err(UnsupportedGroupType);
         }
-        let Ok(uuid) = Uuid::try_from(uuid) else {
+        let (Ok(uuid), true) = (Uuid::try_from(uuid), hdls.end() == Handle::MAX) else {
             return pdu.hdl_err(AttributeNotFound, hdls.start());
         };
-        self.br.find_by_type_value_rsp(
-            (self.db.primary_services(hdls, Some(uuid)))
-                .map(|s| (s.decl_handle(), Some(s.end_group_handle()))),
-        )
+        (self.br).find_by_type_value_rsp((self.db.primary_services(hdls, Some(uuid))).map(|s| {
+            let r = s.handle_range();
+            (r.start(), Some(r.end()))
+        }))
     }
 }
 
@@ -131,7 +131,7 @@ impl<T: host::Transport> Server<T> {
             |s| {
                 self.br.read_by_type_rsp(
                     hdls.start(),
-                    (s.characteristics()).map(|s| (s.decl_handle(), s.decl_value())),
+                    (s.characteristics()).map(|s| (s.handle_range().start(), s.decl_value())),
                 )
             },
         )

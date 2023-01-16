@@ -57,7 +57,7 @@ impl Schema {
     #[must_use]
     pub fn service(&self, hdls: HandleRange) -> Option<GroupSchema<ServiceDef>> {
         let s = GroupSchema::new(self, self.service_group(hdls.start())?);
-        (hdls.end() == s.end_group_handle() || hdls.end() == s.attr.last().hdl).then_some(s)
+        (hdls.end() == s.handle_range().end()).then_some(s)
     }
 
     // Returns an iterator over include declarations for one service.
@@ -201,14 +201,12 @@ impl<'a, T: GroupInfo> GroupSchema<'a, T> {
     /// Returns the group handle range.
     #[inline]
     pub fn handle_range(&self) -> HandleRange {
-        HandleRange::new(self.decl_handle(), self.end_group_handle())
-    }
-
-    /// Returns the declaration handle.
-    #[inline]
-    #[must_use]
-    pub fn decl_handle(&self) -> Handle {
-        self.attr.first().hdl
+        // We could use 0xFFFF for the end handle of the last service in the
+        // schema. This avoids an extra round-trip for primary service
+        // discovery, but adds one to characteristic descriptor discovery. Also,
+        // leaving the handle range open allows new services to be added without
+        // invalidating existing ones.
+        HandleRange::new(self.attr.first().hdl, self.attr.last().hdl)
     }
 
     /// Returns the declaration value.
@@ -216,27 +214,6 @@ impl<'a, T: GroupInfo> GroupSchema<'a, T> {
     #[must_use]
     pub fn decl_value(&self) -> &'a [u8] {
         self.schema.value(self.attr.first())
-    }
-
-    /// Returns whether this is the last group within the entire schema, which
-    /// allows it to claim all remaining handles.
-    #[inline]
-    #[must_use]
-    pub fn is_last(&self) -> bool {
-        self.attr.off + self.attr.len() == self.schema.attr.len()
-    }
-
-    /// Returns the End Group Handle, which will be 0xFFFF for the last group in
-    /// the schema. This avoids an extra round trip for the Attribute Not Found
-    /// response ([Vol 3] Part G, Section 4.4.1).
-    #[inline]
-    #[must_use]
-    pub fn end_group_handle(&self) -> Handle {
-        if self.is_last() {
-            Handle::MAX
-        } else {
-            self.attr.last().hdl
-        }
     }
 }
 
@@ -962,7 +939,7 @@ mod tests {
         let rng = HandleRange::new(Handle::new(0x0002).unwrap(), Handle::new(0x000E).unwrap());
         let mut it = s.primary_services(rng, None);
         group_eq(it.next(), 0x0006, 0x000D, Service::GenericAttribute);
-        group_eq(it.next(), 0x000E, 0xFFFF, Service::Glucose);
+        group_eq(it.next(), 0x000E, 0x0013, Service::Glucose);
         assert!(it.next().is_none());
     }
 
@@ -1004,8 +981,10 @@ mod tests {
         uuid: impl Into<Uuid16>,
     ) {
         let s = s.unwrap();
-        assert_eq!(s.decl_handle(), Handle::new(decl).unwrap());
-        assert_eq!(s.end_group_handle(), Handle::new(end).unwrap());
+        assert_eq!(
+            s.handle_range(),
+            HandleRange::new(Handle::new(decl).unwrap(), Handle::new(end).unwrap())
+        );
         assert_eq!(s.uuid(), uuid.into().as_uuid());
     }
 
