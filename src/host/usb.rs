@@ -40,10 +40,7 @@ impl Usb {
 
     /// Returns information about all available controllers.
     pub fn controllers(&self) -> Result<Vec<UsbControllerInfo>> {
-        Ok(self
-            .ctx
-            .devices()?
-            .iter()
+        Ok((self.ctx.devices()?.iter())
             .filter_map(UsbControllerInfo::for_device)
             .collect())
     }
@@ -52,10 +49,7 @@ impl Usb {
     /// Vendor/Product ID.
     pub fn open_first(&self, vid: u16, pid: u16) -> Result<UsbController> {
         debug!("Opening ID {:04X}:{:04X}", vid, pid);
-        let dev = self
-            .ctx
-            .open_device_with_vid_pid(vid, pid)
-            .ok_or(rusb::Error::NotFound)?;
+        let dev = (self.ctx.open_device_with_vid_pid(vid, pid)).ok_or(rusb::Error::NotFound)?;
         let ep = Endpoints::discover(&dev.device()).ok_or(rusb::Error::NotSupported)?;
         Ok(UsbController::new(dev, ep))
     }
@@ -205,8 +199,7 @@ impl Transfer for UsbTransfer {
     #[inline]
     fn submit(self) -> Result<Self::Future> {
         let dev = Arc::clone(&self.dev);
-        self.t
-            .submit(Arc::clone(&dev))
+        (self.t.submit(Arc::clone(&dev)))
             .map_or_else(|e| Err(Error::from(e)), |fut| Ok(Self::Future { fut, dev }))
     }
 
@@ -274,8 +267,7 @@ impl Endpoints {
     /// Returns `None` if `dev` is not a single-function or composite Bluetooth
     /// device.
     fn discover(dev: &Device) -> Option<Self> {
-        let cfg = dev
-            .active_config_descriptor()
+        let cfg = (dev.active_config_descriptor())
             .map_err(|e| {
                 warn!("Failed to get config descriptor for {dev:?} ({e})");
                 e
@@ -290,22 +282,20 @@ impl Endpoints {
         trace!("|__ Active {cfg:?}");
 
         let mut ep = Self::default();
-        for ifc in cfg.interfaces() {
-            let ifd = ifc
-                .descriptors()
-                .find(|id| id.setting_number() == 0)
-                .unwrap();
+        let mut all = cfg.interfaces().peekable();
+        while let Some(ifc) = all.next() {
+            let ifd = (ifc.descriptors().find(|id| id.setting_number() == 0)).unwrap();
             if !Self::is_bluetooth(&ifc) {
                 trace!("    |__ [Non-BT] {ifd:?}");
                 continue;
             }
             trace!("    |__ [BT] {ifd:?}");
-
+            let cont = if all.peek().is_some() { '|' } else { ' ' };
             if ifd.num_endpoints() == 3 && ifc.descriptors().count() == 1 {
                 ep.main_iface = ifd.interface_number();
                 for epd in ifd.endpoint_descriptors() {
                     use rusb::{Direction::*, TransferType::*};
-                    trace!("        |__ {epd:?}");
+                    trace!("    {cont}   |__ {epd:?}");
                     match (epd.transfer_type(), epd.direction()) {
                         (Interrupt, In) => ep.event = epd.address(),
                         (Bulk, In) => ep.acl_in = epd.address(),
@@ -319,10 +309,10 @@ impl Endpoints {
             } else if ifd.num_endpoints() == 2 {
                 ep.isoch_iface = Some(ifd.interface_number());
                 for epd in ifd.endpoint_descriptors() {
-                    trace!("        |__ {epd:?}");
+                    trace!("    {cont}   |__ {epd:?}");
                 }
                 for alt in ifc.descriptors().filter(|id| id.setting_number() != 0) {
-                    trace!("        |__ [Alt] {alt:?}");
+                    trace!("    {cont}   |__ [Alt] {alt:?}");
                 }
             }
         }

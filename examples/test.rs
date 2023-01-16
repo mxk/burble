@@ -60,6 +60,7 @@ async fn server_loop<T: host::Transport + 'static>(
     db: Arc<gatt::Db>,
     mut cm: l2cap::ChanManager<T>,
 ) -> Result<()> {
+    db.dump();
     loop {
         let link = cm.recv().await?;
         let Some(att) = cm.att_chan(link) else { continue };

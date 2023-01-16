@@ -4,10 +4,10 @@ use std::ops::{Deref, DerefMut, Range};
 
 use smallvec::SmallVec;
 use structbuf::{Pack, Packer, StructBuf, Unpack};
-use tracing::trace;
+use tracing::info;
 
 use crate::att::{Access, Handle, Perms};
-use crate::gap::{Uuid, Uuid16, UuidVec};
+use crate::gap::{Uuid, Uuid16, UuidPacker, UuidType, UuidVec};
 
 use super::*;
 
@@ -33,7 +33,6 @@ impl Schema {
     #[inline]
     #[must_use]
     pub fn build() -> SchemaBuilder {
-        trace!("GATT server schema:");
         SchemaBuilder::new()
     }
 
@@ -80,6 +79,67 @@ impl Schema {
         // TODO: Verify that the range covers all descriptors for one characteristic
         (attr.iter())
             .map_while(|at| (!at.is_service() && !at.is_char()).then(|| (at.hdl, self.typ(at))))
+    }
+
+    /// Logs schema contents.
+    pub fn dump(&self) {
+        use Declaration::*;
+        macro_rules! log {
+            ($at:ident, $fmt:expr$(, $($args:tt)*)?) => {
+                info!("[{:#06X}] {}", u16::from($at.hdl), format_args!($fmt$(, $($args)*)?))
+            };
+        }
+        let mut val_hdl = Handle::MIN;
+        let mut last_char_hdl = Handle::MIN;
+        let mut cont = ' ';
+        info!("GATT schema:");
+        for at in self.attr.iter() {
+            let v = self.value(at);
+            let mut v = v.unpack();
+            if let Some(typ) = at.typ {
+                match typ.typ() {
+                    UuidType::Declaration(d) => match d {
+                        PrimaryService | SecondaryService => {
+                            last_char_hdl = (self.service_group(at.hdl).unwrap().attr.iter())
+                                .rfind(|at| at.is_char())
+                                .map_or(Handle::MIN, |at| at.hdl);
+                            let sec = ((!at.is_primary_service()).then_some("(Secondary) "))
+                                .unwrap_or_default();
+                            let uuid = Uuid::try_from(v.as_ref()).unwrap();
+                            if let Some(UuidType::Service(s)) = uuid.as_uuid16().map(Uuid16::typ) {
+                                log!(at, "{sec}{s} <{uuid}>");
+                            } else {
+                                log!(at, "{sec}Service <{uuid}>");
+                            }
+                        }
+                        Include => log!(at, "|__ [Include {:#06X}..={:#06X}]", v.u16(), v.u16()),
+                        Characteristic => {
+                            cont = if at.hdl < last_char_hdl { '|' } else { ' ' };
+                            let _prop = Prop::from_bits(v.u8()).unwrap();
+                            val_hdl = Handle::new(v.u16()).unwrap();
+                            let uuid = Uuid::try_from(v.as_ref()).unwrap();
+                            if let Some(UuidType::Characteristic(c)) =
+                                uuid.as_uuid16().map(Uuid16::typ)
+                            {
+                                log!(at, "|__ {c} <{uuid}>");
+                            } else {
+                                log!(at, "|__ Characteristic <{uuid}>");
+                            }
+                        }
+                    },
+                    UuidType::Characteristic(_) => log!(at, "{cont}   |__ [Value <{typ}>]"),
+                    UuidType::Descriptor(d) => log!(at, "{cont}   |__ {d} <{typ}>"),
+                    t => log!(at, "Unexpected {t}"),
+                }
+            } else {
+                let typ = self.typ(at);
+                if at.hdl <= val_hdl {
+                    log!(at, "{cont}   |__ [Value <{typ}>]");
+                } else {
+                    log!(at, "{cont}   |__ Descriptor <{typ}>");
+                }
+            }
+        }
     }
 
     /// Returns all attributes within the specified handle range or [`None`] if
@@ -562,16 +622,14 @@ impl SchemaBuilder {
     /// ([Vol 3] Part G, Section 3.2).
     pub fn service(&mut self, typ: Declaration, uuid: Uuid, include: &[Handle]) -> Handle {
         let hdl = self.decl(typ, |v| v.uuid(uuid));
-        trace!("{hdl} {typ} {uuid}");
         for &inc in include {
             let g = self.service_group(inc).expect("invalid service handle");
             let uuid = (g.first().len() == 2).then(|| self.value(g.first()).unpack().u16());
             let end = g.last().hdl;
-            let hdl = self.decl(Declaration::Include, |v| {
+            self.decl(Declaration::Include, |v| {
                 v.u16(inc).u16(end);
                 uuid.map(|u| v.u16(u));
             });
-            trace!("{hdl} |__ <Include {inc}>");
         }
         hdl
     }
@@ -736,11 +794,9 @@ impl Builder<ServiceDef> {
     /// Adds characteristic and characteristic value declarations.
     fn decl_value(&mut self, uuid: Uuid, props: Prop, perms: Perms) -> Handle {
         let val_hdl = self.next_handle().next().expect("maximum handle reached");
-        let hdl = self.decl(Declaration::Characteristic, |v| {
+        self.decl(Declaration::Characteristic, |v| {
             v.u8(props.bits()).u16(val_hdl).uuid(uuid);
         });
-        trace!("{hdl} |__ {uuid}");
-        trace!("{val_hdl}     |__ <Value>");
         self.append_attr(val_hdl, uuid.as_uuid16(), perms)
     }
 
@@ -765,9 +821,7 @@ impl Builder<CharacteristicDef> {
     #[inline]
     pub fn descriptor(&mut self, uuid: impl Into<Uuid>, perms: impl Into<Perms>) -> Handle {
         let uuid = uuid.into();
-        let hdl = self.attr(uuid, perms.into());
-        trace!("{hdl}     |__ {uuid}");
-        hdl
+        self.attr(uuid, perms.into())
     }
 
     /// Declares a Characteristic Extended Properties descriptor
@@ -781,10 +835,9 @@ impl Builder<CharacteristicDef> {
             "EXT_PROPS not set or descriptor already exists"
         );
         self.need_ext_props = false;
-        let hdl = self.decl(Descriptor::CharacteristicExtendedProperties, |v| {
+        self.decl(Descriptor::CharacteristicExtendedProperties, |v| {
             v.u16(props.bits());
         });
-        trace!("{hdl}     |__ CharacteristicExtendedProperties");
     }
 
     /// Declares a Client Characteristic Configuration descriptor
@@ -793,12 +846,10 @@ impl Builder<CharacteristicDef> {
     pub fn client_cfg(&mut self, perms: impl Into<Perms>) -> Handle {
         assert!(!self.have_cccd, "descriptor already exists");
         self.have_cccd = true;
-        let hdl = self.attr(
+        self.attr(
             Descriptor::ClientCharacteristicConfiguration.uuid(),
             perms.into(),
-        );
-        trace!("{hdl}     |__ ClientCharacteristicConfiguration");
-        hdl
+        )
     }
 
     /// Declares a Characteristic Presentation Format descriptor
@@ -813,7 +864,6 @@ impl Builder<CharacteristicDef> {
         let hdl = self.decl(Descriptor::CharacteristicPresentationFormat, |v| {
             v.u8(fmt).i8(exp).u16(unit).u8(desc.ns()).u16(desc);
         });
-        trace!("{hdl}     |__ CharacteristicPresentationFormat");
         self.fmt.push(hdl);
         hdl
     }
@@ -826,12 +876,11 @@ impl Builder<CharacteristicDef> {
     pub fn aggregate_fmt(&mut self, hdls: impl AsRef<[Handle]>) {
         assert!(!self.have_aggregate_fmt, "descriptor already exists");
         self.have_aggregate_fmt = true;
-        let hdl = self.decl(Descriptor::CharacteristicAggregateFormat, |v| {
+        self.decl(Descriptor::CharacteristicAggregateFormat, |v| {
             for &hdl in hdls.as_ref() {
                 v.u16(hdl);
             }
         });
-        trace!("{hdl}     |__ CharacteristicAggregateFormat");
     }
 
     /// Finalizes characteristic definition by adding required descriptors.
@@ -844,23 +893,6 @@ impl Builder<CharacteristicDef> {
             self.aggregate_fmt(&fmt);
             self.fmt = fmt; // Preserve any allocated capacity
         }
-    }
-}
-
-/// Packer extension functions.
-trait UuidPacker {
-    fn uuid(&mut self, u: impl Into<Uuid>);
-}
-
-impl UuidPacker for Packer<'_> {
-    /// Writes either a 16- or a 128-bit UUID at the current index.
-    #[inline]
-    fn uuid(&mut self, u: impl Into<Uuid>) {
-        let u = u.into();
-        match u.as_u16() {
-            Some(u) => self.u16(u),
-            None => self.u128(u),
-        };
     }
 }
 

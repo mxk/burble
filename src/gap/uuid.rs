@@ -7,7 +7,7 @@ use std::ops::Deref;
 use std::{ptr, u16};
 
 use num_enum::TryFromPrimitive;
-use structbuf::Unpack;
+use structbuf::{Packer, Unpack};
 
 use crate::{gatt, hci, sdp};
 
@@ -338,6 +338,23 @@ impl Deref for UuidVec {
     fn deref(&self) -> &Self::Target {
         // SAFETY: `n` is 0, 2, or 16
         unsafe { &*ptr::slice_from_raw_parts(self.v.as_ptr().cast(), self.n as _) }
+    }
+}
+
+/// Packer extension functions.
+pub(crate) trait UuidPacker {
+    fn uuid(&mut self, u: impl Into<Uuid>);
+}
+
+impl UuidPacker for Packer<'_> {
+    /// Writes either a 16- or a 128-bit UUID at the current index.
+    #[inline]
+    fn uuid(&mut self, u: impl Into<Uuid>) {
+        let u = u.into();
+        match u.as_u16() {
+            Some(u) => self.u16(u),
+            None => self.u128(u),
+        };
     }
 }
 
