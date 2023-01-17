@@ -32,10 +32,10 @@ pub struct Schema {
 
 impl Schema {
     /// Creates a new schema builder.
-    #[inline]
+    #[inline(always)]
     #[must_use]
-    pub fn build() -> SchemaBuilder {
-        SchemaBuilder::new()
+    pub fn build() -> Builder<Self> {
+        Builder::new()
     }
 
     /// Returns the database hash ([Vol 3] Part G, Section 7.3).
@@ -88,10 +88,9 @@ impl Schema {
             // SAFETY: `0 <= s.off < self.attr.len()`
             let decl = unsafe { self.attr.get_unchecked(..s.off).iter() }
                 .rfind(|&at| Attr::is_char(at))?;
-            let val_hdl = self.value(decl).unpack().split_at(1).1.u16();
             // Handle range must start after the characteristic value and cannot
             // cross characteristic boundary.
-            (Handle::new(val_hdl).map_or(false, |h| h < s.first().hdl)
+            (value_handle(self.value(decl)) < s.first().hdl
                 && !(s.attr.iter()).any(|at| CharacteristicDef::is_next_group(at.typ)))
             .then_some(s.attr)
         });
@@ -265,22 +264,6 @@ impl CommonOps for Schema {
     }
 }
 
-/// Schema service definition marker type.
-#[derive(Debug)]
-pub struct ServiceDef;
-
-/// Schema characteristic definition marker type.
-#[derive(Debug)]
-pub struct CharacteristicDef;
-
-/// Schema include definition marker type.
-#[derive(Debug)]
-pub struct IncludeDef;
-
-/// Schema descriptor definition marker type.
-#[derive(Debug)]
-pub struct DescriptorDef;
-
 /// Trait implemented by [`ServiceDef`] and [`CharacteristicDef`] markers.
 pub trait Group: private::Group {}
 
@@ -342,6 +325,23 @@ impl<T: Group> SchemaEntry<'_, T> {
     pub fn uuid(&self) -> Uuid {
         // SAFETY: Attribute value contains the UUID at UUID_OFF.
         Uuid::try_from(unsafe { self.val.get_unchecked(T::UUID_OFF..) }).unwrap()
+    }
+}
+
+impl SchemaEntry<'_, CharacteristicDef> {
+    /// Returns the characteristic properties.
+    #[inline]
+    #[must_use]
+    pub fn properties(&self) -> Prop {
+        // SAFETY: All bits are valid
+        unsafe { Prop::from_bits_unchecked(self.val.unpack().u8()) }
+    }
+
+    /// Returns the handle of the value attribute.
+    #[inline]
+    #[must_use]
+    pub fn value_handle(&self) -> Handle {
+        value_handle(self.val)
     }
 }
 
@@ -483,6 +483,13 @@ impl<'a, T: Group, F: Fn(&Attr) -> bool> Iterator for GroupIter<'a, T, F> {
 }
 
 impl<T: Group, F: Fn(&Attr) -> bool> iter::FusedIterator for GroupIter<'_, T, F> {}
+
+/// Returns the characteristic value attribute handle from the value of the
+/// characteristic declaration.
+#[inline]
+fn value_handle(decl: &[u8]) -> Handle {
+    Handle::new(decl.unpack().split_at(1).1.u16()).unwrap_or(Handle::MAX)
+}
 
 mod private {
     use super::*;
