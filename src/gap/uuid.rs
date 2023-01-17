@@ -4,7 +4,7 @@ use std::fmt::{Debug, Display, Formatter};
 use std::hash::{Hash, Hasher};
 use std::num::{NonZeroU128, NonZeroU16};
 use std::ops::Deref;
-use std::{ptr, u16};
+use std::ptr;
 
 use num_enum::TryFromPrimitive;
 use structbuf::{Packer, Unpack};

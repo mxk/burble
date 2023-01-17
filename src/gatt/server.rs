@@ -135,7 +135,7 @@ impl<T: host::Transport> Server<T> {
     /// ([Vol 3] Part G, Section 4.7.1).
     fn discover_characteristic_descriptors(&self, pdu: &Pdu<T>) -> RspResult<Rsp<T>> {
         let hdls = pdu.find_information_req()?;
-        let it = self.db.descriptors(hdls).map(|at| (at.handle(), at.typ()));
+        let it = self.db.descriptors(hdls).map(|at| (at.handle(), at.uuid()));
         self.br.find_information_rsp(hdls.start(), it)
     }
 }
