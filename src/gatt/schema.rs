@@ -1,6 +1,7 @@
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut, Range};
+use std::{iter, slice};
 
 use smallvec::SmallVec;
 use structbuf::{Pack, Packer, StructBuf, Unpack};
@@ -43,42 +44,53 @@ impl Schema {
         self.hash
     }
 
-    /// Returns an iterator over primary services that match the specified
-    /// criteria.
+    /// Returns an iterator over primary services with optional UUID matching.
     #[inline]
-    pub fn primary_services(&self, hdls: HandleRange, uuid: Option<Uuid>) -> PrimaryServiceIter {
-        let rng = (self.range(hdls)).map_or(Range::default(), |r| r.bounds());
-        PrimaryServiceIter::new(self, rng, uuid)
+    pub fn primary_services(
+        &self,
+        start: Handle,
+        uuid: Option<Uuid>,
+    ) -> impl Iterator<Item = SchemaEntry<ServiceDef>> {
+        let i = self.get(start).unwrap_or_else(|i| i);
+        let uuid = uuid.map_or_else(UuidVec::default, UuidVec::new);
+        // SAFETY: `0 <= i <= self.attr.len()`
+        GroupIter::new(self, unsafe { self.attr.get_unchecked(i..) }, move |at| {
+            at.is_primary_service() && (uuid.is_empty() || self.value(at) == uuid.as_ref())
+        })
     }
 
-    /// Returns the schema of the service defined by the specified handle range
-    /// or [`None`] if the handle range does not describe a service.
-    #[inline]
-    #[must_use]
-    pub fn service(&self, hdls: HandleRange) -> Option<GroupSchema<ServiceDef>> {
-        let s = GroupSchema::new(self, self.service_group(hdls.start())?);
-        (hdls.end() == s.handle_range().end()).then_some(s)
+    // Returns an iterator over service includes.
+    pub fn includes(&self, hdls: HandleRange) -> impl Iterator<Item = SchemaEntry<IncludeDef>> {
+        (self.service_attrs(hdls).iter())
+            .map_while(|at| at.is_include().then(|| SchemaEntry::new(self, at, at.hdl)))
     }
 
-    // Returns an iterator over include declarations for one service.
-    pub fn includes(&self, hdls: HandleRange) -> impl Iterator<Item = (Handle, &[u8])> + '_ {
-        let attr = self.range(hdls).map_or(Default::default(), |g| {
-            if g.first().is_service() {
-                // SAFETY: g is not empty
-                unsafe { g.attr.get_unchecked(1..) }
-            } else {
-                g.attr
-            }
+    // Returns an iterator over service characteristics.
+    pub fn characteristics(
+        &self,
+        hdls: HandleRange,
+    ) -> impl Iterator<Item = SchemaEntry<CharacteristicDef>> {
+        GroupIter::new(self, self.service_attrs(hdls), Attr::is_char)
+    }
+
+    /// Returns an iterator over characteristic descriptors.
+    pub fn descriptors(
+        &self,
+        hdls: HandleRange,
+    ) -> impl Iterator<Item = SchemaEntry<DescriptorDef>> {
+        let attr = self.subset(hdls).and_then(|s| {
+            use private::Group;
+            // SAFETY: `0 <= s.off < self.attr.len()`
+            let decl = unsafe { self.attr.get_unchecked(..s.off).iter() }
+                .rfind(|&at| Attr::is_char(at))?;
+            let val_hdl = self.value(decl).unpack().split_at(1).1.u16();
+            // Handle range must start after the characteristic value and cannot
+            // cross characteristic boundary.
+            (Handle::new(val_hdl).map_or(false, |h| h < s.first().hdl)
+                && !(s.attr.iter()).any(|at| CharacteristicDef::is_next_group(at.typ)))
+            .then_some(s.attr)
         });
-        (attr.iter()).map_while(|at| at.is_include().then_some((at.hdl, self.value(at))))
-    }
-
-    /// Returns an iterator over all descriptors for one characteristic.
-    pub fn descriptors(&self, hdls: HandleRange) -> impl Iterator<Item = (Handle, Uuid)> + '_ {
-        let attr = self.range(hdls).map_or(Default::default(), |g| g.attr);
-        // TODO: Verify that the range covers all descriptors for one characteristic
-        (attr.iter())
-            .map_while(|at| (!at.is_service() && !at.is_char()).then(|| (at.hdl, self.typ(at))))
+        (attr.unwrap_or_default().iter()).map(|at| SchemaEntry::new(self, at, at.hdl))
     }
 
     /// Logs schema contents.
@@ -142,16 +154,32 @@ impl Schema {
         }
     }
 
+    /// Returns a subset of attributes for one service. The service declaration
+    /// is skipped.
+    fn service_attrs(&self, hdls: HandleRange) -> &[Attr] {
+        let attr = self.subset(hdls).and_then(|s| {
+            let attr = if s.first().is_service() {
+                // SAFETY: `s` is not empty
+                unsafe { s.attr.get_unchecked(1..) }
+            } else {
+                s.attr
+            };
+            // Handle range cannot cross service boundary
+            (!attr.iter().any(Attr::is_service)).then_some(attr)
+        });
+        attr.unwrap_or_default()
+    }
+
     /// Returns all attributes within the specified handle range or [`None`] if
     /// the handle range is empty.
-    fn range(&self, hdls: HandleRange) -> Option<Group> {
+    fn subset(&self, hdls: HandleRange) -> Option<Subset> {
         let i = self
             .get(hdls.start())
-            .map_or_else(|i| (i < self.attr.len()).then_some(i), |(i, _)| Some(i))?;
+            .map_or_else(|i| (i < self.attr.len()).then_some(i), Some)?;
         let j = self
             .get(hdls.end())
-            .map_or_else(|j| (j > 0).then_some(j), |(j, _)| Some(j + 1))?;
-        Some(self.group(i..j))
+            .map_or_else(|j| (j > 0).then_some(j), |j| Some(j + 1))?;
+        Some(Subset::new(&self.attr, i..j))
     }
 
     /// Returns the attribute type.
@@ -169,154 +197,123 @@ impl Schema {
     }
 }
 
-/// Read-only schema for one service or characteristic.
-#[derive(Clone, Debug)]
-pub struct GroupSchema<'a, T> {
-    schema: &'a Schema,
-    attr: Group<'a>,
+/// Schema service definition marker type.
+#[derive(Debug)]
+pub struct ServiceDef;
+
+/// Schema characteristic definition marker type.
+#[derive(Debug)]
+pub struct CharacteristicDef;
+
+/// Schema include definition marker type.
+#[derive(Debug)]
+pub struct IncludeDef;
+
+/// Schema descriptor definition marker type.
+#[derive(Debug)]
+pub struct DescriptorDef;
+
+/// Trait implemented by [`ServiceDef`] and [`CharacteristicDef`] markers.
+pub trait Group: private::Group {}
+
+impl Group for ServiceDef {}
+impl Group for CharacteristicDef {}
+
+mod private {
+    use super::*;
+
+    pub trait Group {
+        /// Offset of the UUID in the declaration value.
+        const UUID_OFF: usize = 0;
+
+        #[inline(always)]
+        fn is_next_group(typ: Option<Uuid16>) -> bool {
+            matches!(typ, Some(Attr::PRI | Attr::SEC))
+        }
+    }
+
+    impl Group for ServiceDef {}
+
+    impl Group for CharacteristicDef {
+        const UUID_OFF: usize = 3;
+
+        #[inline(always)]
+        fn is_next_group(typ: Option<Uuid16>) -> bool {
+            // INC isn't needed, but including it improves the generated code
+            matches!(typ, Some(Attr::PRI | Attr::SEC | Attr::INC | Attr::CHAR))
+        }
+    }
+}
+
+/// Schema attribute information.
+#[derive(Clone, Copy, Debug)]
+pub struct SchemaEntry<'a, T> {
+    hdls: HandleRange,
+    typ: Uuid,
+    val: &'a [u8],
     _marker: PhantomData<T>,
 }
 
-impl<'a, T: GroupInfo> GroupSchema<'a, T> {
-    /// Creates a new group schema.
+impl<'a, T> SchemaEntry<'a, T> {
+    /// Combines information about a schema entry.
     #[inline(always)]
     #[must_use]
-    const fn new(schema: &'a Schema, attr: Group<'a>) -> Self {
-        assert!(attr.attr.len() >= T::MIN_ATTRS);
+    fn new(s: &'a Schema, at: &Attr, end_hdl: Handle) -> Self {
         Self {
-            schema,
-            attr,
+            hdls: HandleRange::new(at.hdl, end_hdl),
+            typ: s.typ(at),
+            val: s.value(at),
             _marker: PhantomData,
         }
+    }
+
+    /// Returns the attribute handle.
+    #[inline(always)]
+    #[must_use]
+    pub const fn handle(&self) -> Handle {
+        self.hdls.start()
+    }
+
+    /// Returns the attribute type.
+    #[inline(always)]
+    #[must_use]
+    pub const fn typ(&self) -> Uuid {
+        self.typ
+    }
+
+    /// Returns the attribute value.
+    #[inline(always)]
+    #[must_use]
+    pub const fn value(&self) -> &'a [u8] {
+        self.val
+    }
+}
+
+impl<T: Group> SchemaEntry<'_, T> {
+    /// Returns the group handle range.
+    #[inline(always)]
+    pub const fn handle_range(&self) -> HandleRange {
+        // We could use 0xFFFF for the end handle of the last service in the
+        // schema. This avoids an extra round-trip for primary service
+        // discovery, but adds one for characteristic descriptor discovery.
+        // Leaving the handle range open allows new services to be added without
+        // invalidating existing ones.
+        self.hdls
     }
 
     /// Returns the UUID from the declaration value.
     #[inline]
     #[must_use]
     pub fn uuid(&self) -> Uuid {
-        // SAFETY: Declaration value contains the UUID at UUID_OFF.
-        Uuid::try_from(unsafe { self.decl_value().get_unchecked(T::UUID_OFF..) }).unwrap()
-    }
-
-    /// Returns the group handle range.
-    #[inline]
-    pub fn handle_range(&self) -> HandleRange {
-        // We could use 0xFFFF for the end handle of the last service in the
-        // schema. This avoids an extra round-trip for primary service
-        // discovery, but adds one to characteristic descriptor discovery. Also,
-        // leaving the handle range open allows new services to be added without
-        // invalidating existing ones.
-        HandleRange::new(self.attr.first().hdl, self.attr.last().hdl)
-    }
-
-    /// Returns the declaration value.
-    #[inline]
-    #[must_use]
-    pub fn decl_value(&self) -> &'a [u8] {
-        self.schema.value(self.attr.first())
+        // SAFETY: Attribute value contains the UUID at UUID_OFF.
+        Uuid::try_from(unsafe { self.val.get_unchecked(T::UUID_OFF..) }).unwrap()
     }
 }
 
-impl<'a> GroupSchema<'a, ServiceDef> {
-    // Returns an iterator over all service characteristics.
-    #[inline]
-    pub fn characteristics(&self) -> CharacteristicIter<'a> {
-        CharacteristicIter::new(self.schema, self.attr)
-    }
-}
-
-impl GroupSchema<'_, CharacteristicDef> {}
-
-/// Iterator over primary services within a handle range with optional UUID
-/// matching.
-#[derive(Clone, Debug)]
-#[must_use]
-pub struct PrimaryServiceIter<'a> {
-    schema: &'a Schema,
-    rng: Range<usize>,
-    uuid: UuidVec,
-}
-
-impl<'a> PrimaryServiceIter<'a> {
-    /// Creates a primary service iterator.
-    #[inline]
-    fn new(schema: &'a Schema, rng: Range<usize>, uuid: Option<Uuid>) -> Self {
-        let uuid = uuid.map_or(UuidVec::default(), UuidVec::new);
-        Self { schema, rng, uuid }
-    }
-
-    /// Returns whether at least one more primary service is available.
-    #[inline]
-    #[must_use]
-    fn more(&mut self) -> bool {
-        // SAFETY: self.rng is always a valid subslice
-        for at in unsafe { self.schema.attr.get_unchecked(self.rng.clone()) } {
-            if at.is_primary_service()
-                && (self.uuid.is_empty() || self.schema.value(at) == self.uuid.as_ref())
-            {
-                return true;
-            }
-            self.rng.start += 1;
-        }
-        false
-    }
-}
-
-impl<'a> Iterator for PrimaryServiceIter<'a> {
-    type Item = GroupSchema<'a, ServiceDef>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if !self.more() {
-            return None;
-        }
-        let i = self.rng.start;
-        // SAFETY: i < self.schema.attr.len()
-        let j = unsafe { self.schema.attr.get_unchecked(i + ServiceDef::MIN_ATTRS..) }
-            .iter()
-            .position(Attr::is_service)
-            .map_or(self.schema.attr.len(), |j| i + ServiceDef::MIN_ATTRS + j);
-        self.rng.start = j.min(self.rng.end);
-        Some(GroupSchema::new(self.schema, self.schema.group(i..j)))
-    }
-
-    #[inline]
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        (0, Some(self.rng.end - self.rng.start))
-    }
-}
-
-/// Iterator over service characteristics.
-#[derive(Clone, Debug)]
-#[must_use]
-pub struct CharacteristicIter<'a> {
-    schema: &'a Schema,
-    attr: Group<'a>,
-}
-
-impl<'a> CharacteristicIter<'a> {
-    /// Creates a service characteristic iterator.
-    #[inline]
-    fn new(schema: &'a Schema, mut attr: Group<'a>) -> Self {
-        attr.take(attr.iter().position(Attr::is_char).unwrap_or(attr.len()));
-        Self { schema, attr }
-    }
-}
-
-impl<'a> Iterator for CharacteristicIter<'a> {
-    type Item = GroupSchema<'a, CharacteristicDef>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        // `self.attr` is either empty, or starts with a characteristic
-        // declaration and value attributes.
-        let n = (self.attr.get(CharacteristicDef::MIN_ATTRS..)?.iter())
-            .position(Attr::is_char)
-            .map_or(self.attr.len(), |i| CharacteristicDef::MIN_ATTRS + i);
-        Some(GroupSchema::new(self.schema, self.attr.take(n)))
-    }
-
-    #[inline]
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        (0, Some(self.attr.len() / 2))
+impl<'a, T> AsRef<[u8]> for SchemaEntry<'a, T> {
+    #[inline(always)]
+    fn as_ref(&self) -> &'a [u8] {
+        self.val
     }
 }
 
@@ -333,6 +330,8 @@ struct Attr {
 impl Attr {
     const PRI: Uuid16 = Declaration::PrimaryService.uuid16();
     const SEC: Uuid16 = Declaration::SecondaryService.uuid16();
+    const INC: Uuid16 = Declaration::Include.uuid16();
+    const CHAR: Uuid16 = Declaration::Characteristic.uuid16();
 
     /// Returns whether the attribute is a service declaration.
     #[inline(always)]
@@ -349,15 +348,13 @@ impl Attr {
     /// Returns whether the attribute is an include declaration.
     #[inline(always)]
     const fn is_include(&self) -> bool {
-        const INC: Uuid16 = Declaration::Include.uuid16();
-        matches!(self.typ, Some(INC))
+        matches!(self.typ, Some(Self::INC))
     }
 
     /// Returns whether the attribute is a characteristic declaration.
     #[inline(always)]
     const fn is_char(&self) -> bool {
-        const CHAR: Uuid16 = Declaration::Characteristic.uuid16();
-        matches!(self.typ, Some(CHAR))
+        matches!(self.typ, Some(Self::CHAR))
     }
 
     /// Returns the attribute value length.
@@ -367,14 +364,25 @@ impl Attr {
     }
 }
 
-/// A non-empty attribute group.
+/// A non-empty subset of attributes.
 #[derive(Clone, Copy, Debug)]
-struct Group<'a> {
+struct Subset<'a> {
     off: usize,
     attr: &'a [Attr],
 }
 
-impl<'a> Group<'a> {
+impl<'a> Subset<'a> {
+    /// Creates a new subset of attributes.
+    #[inline(always)]
+    fn new(attr: &[Attr], r: Range<usize>) -> Subset {
+        debug_assert!(!r.is_empty() && r.end <= attr.len());
+        Subset {
+            off: r.start,
+            // SAFETY: r is a valid non-empty range
+            attr: unsafe { attr.get_unchecked(r) },
+        }
+    }
+
     /// Returns the first attribute.
     #[inline(always)]
     fn first(&self) -> &'a Attr {
@@ -388,55 +396,49 @@ impl<'a> Group<'a> {
         // SAFETY: self.attr is non-empty
         unsafe { self.attr.get_unchecked(self.attr.len() - 1) }
     }
+}
 
-    /// Returns the bounds of the range within the entire set of attributes.
+struct GroupIter<'a, T, F> {
+    schema: &'a Schema,
+    it: iter::Peekable<slice::Iter<'a, Attr>>,
+    is_start: F,
+    _marker: PhantomData<T>,
+}
+
+impl<'a, T: Group, F: Fn(&Attr) -> bool> GroupIter<'a, T, F> {
+    /// Creates a new attribute group iterator.
     #[inline(always)]
-    const fn bounds(&self) -> Range<usize> {
-        self.off..self.off + self.attr.len()
-    }
-
-    /// Returns a new group of the first `n` attributes, advancing `self` by
-    /// `n`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `n` is out of bounds.
-    #[inline]
-    fn take(&mut self, n: usize) -> Self {
-        let (attr, tail) = self.attr.split_at(n);
-        let head = Self {
-            off: self.off,
-            attr,
-        };
-        self.off += n;
-        self.attr = tail;
-        head
+    #[must_use]
+    fn new(schema: &'a Schema, it: &'a [Attr], is_start: F) -> Self {
+        Self {
+            schema,
+            it: it.iter().peekable(),
+            is_start,
+            _marker: PhantomData,
+        }
     }
 }
 
-impl<'a> Deref for Group<'a> {
-    type Target = [Attr];
+impl<'a, T: Group, F: Fn(&Attr) -> bool> Iterator for GroupIter<'a, T, F> {
+    type Item = SchemaEntry<'a, T>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let decl = self.it.find(|at| (self.is_start)(at))?;
+        let mut end = decl.hdl;
+        while !self.it.peek().map_or(true, |at| T::is_next_group(at.typ)) {
+            // SAFETY: `peek()` returned another attribute
+            end = unsafe { self.it.next().unwrap_unchecked() }.hdl;
+        }
+        Some(SchemaEntry::new(self.schema, decl, end))
+    }
 
     #[inline]
-    fn deref(&self) -> &'a Self::Target {
-        self.attr
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.it.size_hint()
     }
 }
 
-/// Trait implemented by [`ServiceDef`] and [`CharacteristicDef`] markers.
-pub trait GroupInfo {
-    /// Minimum number of attributes in the group.
-    const MIN_ATTRS: usize = 1;
-    /// Offset of the UUID in the declaration value.
-    const UUID_OFF: usize = 0;
-}
-
-impl GroupInfo for ServiceDef {}
-
-impl GroupInfo for CharacteristicDef {
-    const MIN_ATTRS: usize = 2;
-    const UUID_OFF: usize = 3;
-}
+impl<T: Group, F: Fn(&Attr) -> bool> iter::FusedIterator for GroupIter<'_, T, F> {}
 
 /// Operations shared by [`Schema`] and [`SchemaBuilder`].
 trait CommonOps {
@@ -447,37 +449,18 @@ trait CommonOps {
     #[must_use]
     fn data(&self) -> &[u8];
 
-    /// Returns an attribute group.
-    #[inline(always)]
-    fn group(&self, r: Range<usize>) -> Group {
-        debug_assert!(r.start < r.end && r.end <= self.attr().len());
-        Group {
-            off: r.start,
-            // SAFETY: r is a valid non-empty range
-            attr: unsafe { self.attr().get_unchecked(r) },
-        }
-    }
-
-    /// Returns the index and attribute entry of the specified handle or the
-    /// index where that handle could be inserted.
+    /// Returns the index of the specified handle or the index where that handle
+    /// could be inserted.
     #[inline]
-    fn get(&self, hdl: Handle) -> std::result::Result<(usize, &Attr), usize> {
-        fn search(attr: &[Attr], hdl: Handle) -> std::result::Result<(usize, &Attr), usize> {
-            // Handle will often be 0xFFFF, so do an explicit comparison with
-            // the last entry to avoid doing a binary search.
-            match *attr {
-                [] => Err(0),
-                [.., ref last] if last.hdl < hdl => Err(attr.len()),
-                _ => (attr.binary_search_by(|at| at.hdl.cmp(&hdl)))
-                    // SAFETY: Attribute was found at `i`
-                    .map(|i| unsafe { (i, attr.get_unchecked(i)) }),
-            }
+    fn get(&self, hdl: Handle) -> std::result::Result<usize, usize> {
+        fn search(attr: &[Attr], hdl: Handle) -> std::result::Result<usize, usize> {
+            attr.binary_search_by(|at| at.hdl.cmp(&hdl))
         }
         let i = usize::from(hdl) - 1;
         // The attribute can exist at or, if there are gaps, before index `i`.
         // Usually, the 1-based handle value should also be the 0-based index.
         let prior = match self.attr().get(i) {
-            Some(at) if at.hdl == hdl => return Ok((i, at)),
+            Some(at) if at.hdl == hdl => return Ok(i),
             // SAFETY: `i` is in bounds
             Some(_) => unsafe { self.attr().get_unchecked(..i) },
             None => self.attr(),
@@ -495,15 +478,15 @@ trait CommonOps {
 
     /// Returns all attributes of the service group defined by `hdl` or [`None`]
     /// if the handle does not refer to a service.
-    fn service_group(&self, hdl: Handle) -> Option<Group> {
-        let Ok((i, at)) = self.get(hdl) else { return None };
-        at.is_service().then(|| {
-            // SAFETY: i < self.attr.len()
-            let j = unsafe { self.attr().get_unchecked(i + ServiceDef::MIN_ATTRS..) }
-                .iter()
+    fn service_group(&self, hdl: Handle) -> Option<Subset> {
+        let Ok(i) = self.get(hdl) else { return None };
+        // SAFETY: `hdl` was found at `i`.
+        unsafe { self.attr().get_unchecked(i).is_service() }.then(|| {
+            // SAFETY: `i < self.attr.len()`
+            let j = unsafe { self.attr().get_unchecked(i + 1..).iter() }
                 .position(Attr::is_service)
-                .map_or(self.attr().len(), |n| i + ServiceDef::MIN_ATTRS + n);
-            self.group(i..j)
+                .map_or(self.attr().len(), |j| i + 1 + j);
+            Subset::new(self.attr(), i..j)
         })
     }
 }
@@ -600,9 +583,9 @@ impl SchemaBuilder {
     pub fn service(&mut self, typ: Declaration, uuid: Uuid, include: &[Handle]) -> Handle {
         let hdl = self.decl(typ, |v| v.uuid(uuid));
         for &inc in include {
-            let g = self.service_group(inc).expect("invalid service handle");
-            let uuid = (g.first().len() == 2).then(|| self.value(g.first()).unpack().u16());
-            let end = g.last().hdl;
+            let s = self.service_group(inc).expect("invalid service handle");
+            let uuid = (s.first().len() == 2).then(|| self.value(s.first()).unpack().u16());
+            let end = s.last().hdl;
             self.decl(Declaration::Include, |v| {
                 v.u16(inc).u16(end);
                 uuid.map(|u| v.u16(u));
@@ -741,10 +724,6 @@ impl<T> DerefMut for Builder<T> {
     }
 }
 
-/// [`GroupSchema`] and [`Builder`] marker type.
-#[derive(Debug, Default)]
-pub struct ServiceDef;
-
 impl Builder<ServiceDef> {
     /// Defines a single-value characteristic ([Vol 3] Part G, Section 3.3).
     ///
@@ -787,10 +766,6 @@ impl Builder<ServiceDef> {
         self.0.builder()
     }
 }
-
-/// [`GroupSchema`] and  [`Builder`] marker type.
-#[derive(Debug, Default)]
-pub struct CharacteristicDef;
 
 impl Builder<CharacteristicDef> {
     /// Declares a non-GATT profile characteristic descriptor
@@ -892,8 +867,8 @@ mod tests {
     #[test]
     fn service_group() {
         fn eq(b: &SchemaBuilder, h: Handle, r: Range<usize>) {
-            let g = b.service_group(h).unwrap();
-            assert_eq!(g.off..g.off + g.attr.len(), r);
+            let s = b.service_group(h).unwrap();
+            assert_eq!(s.off..s.off + s.attr.len(), r);
         }
 
         let mut b = Schema::build();
@@ -918,74 +893,63 @@ mod tests {
 
     #[test]
     fn primary_services() {
+        use Service::*;
         let mut s = appendix_b();
 
-        let mut it = s.primary_services(HandleRange::ALL, None);
-        group_eq(it.next(), 0x0001, 0x0005, Service::GenericAccess);
-        group_eq(it.next(), 0x0006, 0x000D, Service::GenericAttribute);
-        group_eq(it.next(), 0x000E, 0x0013, Service::Glucose);
+        let mut it = s.primary_services(Handle::MIN, None);
+        group_eq(it.next(), 0x0001, 0x0005, GenericAccess);
+        group_eq(it.next(), 0x0006, 0x000D, GenericAttribute);
+        group_eq(it.next(), 0x000E, 0x0013, Glucose);
         assert!(it.next().is_none());
         assert!(it.next().is_none());
+        drop(it);
 
-        let mut it = s.primary_services(HandleRange::ALL, Some(Service::GenericAttribute.uuid()));
-        group_eq(it.next(), 0x0006, 0x000D, Service::GenericAttribute);
+        let mut it = s.primary_services(Handle::MIN, Some(GenericAttribute.uuid()));
+        group_eq(it.next(), 0x0006, 0x000D, GenericAttribute);
         assert!(it.next().is_none());
+        drop(it);
 
         // Remove the battery service
         let mut v = s.attr.to_vec();
         v.truncate(s.attr.len() - 3);
         s.attr = v.into_boxed_slice();
 
-        let rng = HandleRange::new(Handle::new(0x0002).unwrap(), Handle::new(0x000E).unwrap());
-        let mut it = s.primary_services(rng, None);
-        group_eq(it.next(), 0x0006, 0x000D, Service::GenericAttribute);
-        group_eq(it.next(), 0x000E, 0x0013, Service::Glucose);
+        let mut it = s.primary_services(Handle::new(0x0002).unwrap(), None);
+        group_eq(it.next(), 0x0006, 0x000D, GenericAttribute);
+        group_eq(it.next(), 0x000E, 0x0013, Glucose);
         assert!(it.next().is_none());
     }
 
     #[test]
     fn characteristics() {
+        use Characteristic::*;
+
         let s = appendix_b();
-        let mut pri = s.primary_services(HandleRange::ALL, None);
+        let mut pri = s.primary_services(Handle::MIN, None);
 
-        let mut it = pri.next().unwrap().characteristics();
-        group_eq(it.next(), 0x0002, 0x0003, Characteristic::DeviceName);
-        group_eq(it.next(), 0x0004, 0x0005, Characteristic::Appearance);
+        let mut it = s.characteristics(pri.next().unwrap().handle_range());
+        group_eq(it.next(), 0x0002, 0x0003, DeviceName);
+        group_eq(it.next(), 0x0004, 0x0005, Appearance);
         assert!(it.next().is_none());
 
-        let mut it = pri.next().unwrap().characteristics();
-        group_eq(it.next(), 0x0007, 0x0009, Characteristic::ServiceChanged);
-        group_eq(
-            it.next(),
-            0x000A,
-            0x000B,
-            Characteristic::ClientSupportedFeatures,
-        );
-        group_eq(it.next(), 0x000C, 0x000D, Characteristic::DatabaseHash);
+        let mut it = s.characteristics(pri.next().unwrap().handle_range());
+        group_eq(it.next(), 0x0007, 0x0009, ServiceChanged);
+        group_eq(it.next(), 0x000A, 0x000B, ClientSupportedFeatures);
+        group_eq(it.next(), 0x000C, 0x000D, DatabaseHash);
         assert!(it.next().is_none());
 
-        let mut it = pri.next().unwrap().characteristics();
-        group_eq(
-            it.next(),
-            0x0010,
-            0x0013,
-            Characteristic::GlucoseMeasurement,
-        );
+        let mut it = s.characteristics(pri.next().unwrap().handle_range());
+        group_eq(it.next(), 0x0010, 0x0013, GlucoseMeasurement);
         assert!(it.next().is_none());
     }
 
-    fn group_eq<T: GroupInfo>(
-        s: Option<GroupSchema<T>>,
-        decl: u16,
-        end: u16,
-        uuid: impl Into<Uuid16>,
-    ) {
-        let s = s.unwrap();
+    fn group_eq<T: Group>(v: Option<SchemaEntry<T>>, decl: u16, end: u16, uuid: impl Into<Uuid16>) {
+        let v = v.unwrap();
         assert_eq!(
-            s.handle_range(),
+            v.handle_range(),
             HandleRange::new(Handle::new(decl).unwrap(), Handle::new(end).unwrap())
         );
-        assert_eq!(s.uuid(), uuid.into().as_uuid());
+        assert_eq!(v.uuid(), uuid.into().as_uuid());
     }
 
     fn appendix_b() -> Schema {

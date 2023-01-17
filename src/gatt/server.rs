@@ -69,7 +69,7 @@ impl<T: host::Transport> Server<T> {
         let (hdls, typ) = pdu.read_by_type_req()?;
         match typ {
             INCLUDE => self.find_included_services(hdls),
-            CHARACTERISTIC => self.discover_service_characteristics(pdu, hdls),
+            CHARACTERISTIC => self.discover_service_characteristics(hdls),
             _ => pdu.err(RequestNotSupported),
         }
     }
@@ -84,9 +84,11 @@ impl<T: host::Transport> Server<T> {
             if typ != Declaration::PrimaryService {
                 return pdu.err(UnsupportedGroupType);
             }
-            let it = (self.db)
-                .primary_services(hdls, None)
-                .map(|s| (s.handle_range(), s.decl_value()));
+            if hdls.end() != Handle::MAX {
+                return pdu.hdl_err(AttributeNotFound, hdls.start());
+            }
+            let it = (self.db.primary_services(hdls.start(), None))
+                .map(|v| (v.handle_range(), v.value()));
             self.br.read_by_group_type_rsp(hdls.start(), it)
         })
     }
@@ -101,10 +103,9 @@ impl<T: host::Transport> Server<T> {
         let (Ok(uuid), true) = (Uuid::try_from(uuid), hdls.end() == Handle::MAX) else {
             return pdu.hdl_err(AttributeNotFound, hdls.start());
         };
-        (self.br).find_by_type_value_rsp((self.db.primary_services(hdls, Some(uuid))).map(|s| {
-            let r = s.handle_range();
-            (r.start(), Some(r.end()))
-        }))
+        let it = (self.db.primary_services(hdls.start(), Some(uuid)))
+            .map(|v| (v.handle(), Some(v.handle_range().end())));
+        self.br.find_by_type_value_rsp(it)
     }
 }
 
@@ -113,7 +114,8 @@ impl<T: host::Transport> Server<T> {
     /// Handles "Find Included Services" sub-procedure
     /// ([Vol 3] Part G, Section 4.5.1).
     fn find_included_services(&self, hdls: HandleRange) -> RspResult<Rsp<T>> {
-        (self.br).read_by_type_rsp(hdls.start(), self.db.includes(hdls))
+        let it = self.db.includes(hdls).map(|v| (v.handle(), v.value()));
+        self.br.read_by_type_rsp(hdls.start(), it)
     }
 }
 
@@ -121,20 +123,9 @@ impl<T: host::Transport> Server<T> {
 impl<T: host::Transport> Server<T> {
     /// Handles "Discover All Characteristics of a Service" and "Discover
     /// Characteristics by UUID" sub-procedures ([Vol 3] Part G, Section 4.6.1).
-    fn discover_service_characteristics(
-        &self,
-        pdu: &Pdu<T>,
-        hdls: HandleRange,
-    ) -> RspResult<Rsp<T>> {
-        self.db.service(hdls).map_or_else(
-            || pdu.hdl_err(AttributeNotFound, hdls.start()),
-            |s| {
-                self.br.read_by_type_rsp(
-                    hdls.start(),
-                    (s.characteristics()).map(|s| (s.handle_range().start(), s.decl_value())),
-                )
-            },
-        )
+    fn discover_service_characteristics(&self, hdls: HandleRange) -> RspResult<Rsp<T>> {
+        let it = (self.db.characteristics(hdls)).map(|v| (v.handle(), v.value()));
+        self.br.read_by_type_rsp(hdls.start(), it)
     }
 }
 
@@ -144,6 +135,7 @@ impl<T: host::Transport> Server<T> {
     /// ([Vol 3] Part G, Section 4.7.1).
     fn discover_characteristic_descriptors(&self, pdu: &Pdu<T>) -> RspResult<Rsp<T>> {
         let hdls = pdu.find_information_req()?;
-        (self.br).find_information_rsp(hdls.start(), self.db.descriptors(hdls))
+        let it = self.db.descriptors(hdls).map(|at| (at.handle(), at.typ()));
+        self.br.find_information_rsp(hdls.start(), it)
     }
 }
