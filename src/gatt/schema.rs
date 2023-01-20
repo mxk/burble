@@ -3,7 +3,7 @@ use std::ops::Range;
 use std::{iter, slice};
 
 use structbuf::Unpack;
-use tracing::info;
+use tracing::{info, warn};
 
 pub use builder::*;
 
@@ -97,6 +97,75 @@ impl Schema {
         (attr.unwrap_or_default().iter()).map(|at| SchemaEntry::new(self, at, at.hdl))
     }
 
+    /*
+    pub fn handle_range_access(
+        &self,
+        op: Opcode,
+        req: Access,
+        hdls: HandleRange,
+        uuid: Option<Uuid>,
+    ) -> RspResult<impl Iterator<Item = Handle>> {
+        //self.subset(hdls).map(|s| s.attr).unwrap_or_default()
+        unimplemented!();
+        Ok(self.attr.iter().map(|at| at.hdl))
+    }
+    */
+
+    /// Performs access permission check for the specified read/write request.
+    pub fn access_check(&self, op: Opcode, req: Access, hdl: Handle) -> RspResult<Handle> {
+        use {ErrorCode::*, Opcode::*};
+        debug_assert_eq!(op.access_type(), Some(req.typ()));
+        debug_assert!(matches!(req.typ(), Access::READ | Access::WRITE));
+        let error = |e| Err(super::ErrorRsp::new(op as _, Some(hdl), e));
+        let Some((at, ch)) = self.characteristic_for_handle(hdl) else {
+            warn!("Denied {op} for invalid or non-characteristic {hdl}");
+            return error(InvalidHandle);
+        };
+        // [Vol 3] Part F, Section 4
+        if let Err(e) = at.perms.test(req) {
+            warn!("Denied {op} to {hdl} due to {e}");
+            return error(e);
+        }
+        if hdl > ch.val.hdl {
+            // [Vol 3] Part G, Section 3.3.3.1 and 3.3.3.2
+            return if req.typ() == Access::WRITE
+                && at.typ == Some(Descriptor::CharacteristicUserDescription.uuid16())
+                && !(ch.ext_props).map_or(false, |p| p.contains(ExtProp::WRITABLE_AUX))
+            {
+                warn!("Denied {op} to {hdl} because WRITABLE_AUX bit is not set");
+                error(WriteNotPermitted)
+            } else {
+                Ok(hdl)
+            };
+        }
+        // [Vol 3] Part G, Section 3.3.1.1
+        let bit = match op {
+            ReadReq                                   // [Vol 3] Part G, Section 4.8.1 and 4.8.3
+            | ReadByTypeReq                           // [Vol 3] Part G, Section 4.8.2
+            | ReadBlobReq                             // [Vol 3] Part G, Section 4.8.3
+            | ReadMultipleReq                         // [Vol 3] Part G, Section 4.8.4
+            | ReadMultipleVariableReq => Prop::READ,  // [Vol 3] Part G, Section 4.8.5
+            WriteCmd => Prop::WRITE_CMD,              // [Vol 3] Part G, Section 4.9.1
+            WriteReq                                  // [Vol 3] Part G, Section 4.9.3
+            | PrepareWriteReq => Prop::WRITE,         // [Vol 3] Part G, Section 4.9.4
+            SignedWriteCmd => Prop::SIGNED_WRITE_CMD, // [Vol 3] Part G, Section 4.9.2
+            _ => {
+                warn!("Denied non-read/write {op} for {hdl}");
+                return error(RequestNotSupported);
+            }
+        };
+        if !ch.props.contains(bit) {
+            let e = if req.typ() == Access::READ {
+                ReadNotPermitted
+            } else {
+                WriteNotPermitted
+            };
+            warn!("Denied {op} for {hdl} due to {e} by properties");
+            return error(e);
+        }
+        Ok(hdl)
+    }
+
     /// Logs schema contents.
     pub fn dump(&self) {
         use Declaration::*;
@@ -105,7 +174,7 @@ impl Schema {
                 info!("[{:#06X}] {}", u16::from($at.hdl), format_args!($fmt$(, $($args)*)?))
             };
         }
-        let mut val_hdl = Handle::MIN;
+        let mut vhdl = Handle::MIN;
         let mut last_char_hdl = Handle::MIN;
         let mut cont = ' ';
         info!("GATT schema:");
@@ -132,7 +201,7 @@ impl Schema {
                         Characteristic => {
                             cont = if at.hdl < last_char_hdl { '|' } else { ' ' };
                             let _prop = Prop::from_bits(v.u8()).unwrap();
-                            val_hdl = Handle::new(v.u16()).unwrap();
+                            vhdl = Handle::new(v.u16()).unwrap();
                             let uuid = Uuid::try_from(v.as_ref()).unwrap();
                             if let Some(UuidType::Characteristic(c)) =
                                 uuid.as_uuid16().map(Uuid16::typ)
@@ -149,7 +218,7 @@ impl Schema {
                 }
             } else {
                 let typ = self.typ(at);
-                if at.hdl <= val_hdl {
+                if at.hdl <= vhdl {
                     log!(at, "{cont}   |__ [Value <{typ}>]");
                 } else {
                     log!(at, "{cont}   |__ Descriptor <{typ}>");
@@ -172,6 +241,49 @@ impl Schema {
             (!attr.iter().any(Attr::is_service)).then_some(attr)
         });
         attr.unwrap_or_default()
+    }
+
+    /// Returns the attribute and characteristic information for the specified
+    /// handle.
+    fn characteristic_for_handle(&self, hdl: Handle) -> Option<(&Attr, CharInfo)> {
+        use private::Group;
+        let i = self.get(hdl).ok()?;
+        // SAFETY: 0 <= i < self.attr.len()
+        let decl = unsafe { self.attr.get_unchecked(..=i).iter() }.rposition(Attr::is_char)?;
+        // SAFETY: 0 <= decl <= i < self.attr.len()
+        let end = unsafe { self.attr.get_unchecked(decl + 1..).iter() }
+            .position(|at| CharacteristicDef::is_next_group(at.typ))
+            .map_or(self.attr.len(), |j| decl + 1 + j);
+        if end <= i {
+            return None; // hdl is not part of a characteristic definition
+        }
+        // SAFETY: 0 <= decl < self.attr.len()
+        let v = self.value(unsafe { self.attr.get_unchecked(decl) });
+        let vhdl = value_handle(v);
+        // SAFETY: 0 <= decl < end <= self.attr.len()
+        let val = unsafe { self.attr.get_unchecked(decl + 1..end).iter() }
+            .position(|at| at.hdl == vhdl)
+            .map(|j| decl + 1 + j)?;
+        // SAFETY: 0 < val < end <= self.attr.len()
+        let desc = unsafe { self.attr.get_unchecked(val + 1..end) };
+        // SAFETY: All bits are valid and a valid handle is at indices 1-2
+        let props = unsafe { Prop::from_bits_unchecked(*v.get_unchecked(0)) };
+        let ext_props = props.contains(Prop::EXT_PROPS).then(|| {
+            (desc.iter().find(|&at| Attr::is_ext_props(at))).map_or(ExtProp::empty(), |at| {
+                ExtProp::from_bits_truncate(self.value(at).unpack().u16())
+            })
+        });
+        Some((
+            // SAFETY: 0 <= desc <= i < end <= self.attr.len()
+            unsafe { self.attr.get_unchecked(i) },
+            CharInfo {
+                props,
+                ext_props,
+                // SAFETY: 0 < desc < val < end <= self.attr.len()
+                val: unsafe { self.attr.get_unchecked(val) },
+                desc,
+            },
+        ))
     }
 
     /// Returns all attributes within the specified handle range or [`None`] if
@@ -361,6 +473,15 @@ impl<'a, T> AsRef<[u8]> for SchemaEntry<'a, T> {
     }
 }
 
+/// Information about a single characteristic.
+#[derive(Clone, Copy, Debug)]
+struct CharInfo<'a> {
+    props: Prop,
+    ext_props: Option<ExtProp>,
+    val: &'a Attr,
+    desc: &'a [Attr],
+}
+
 /// Attribute entry.
 #[derive(Clone, Copy, Debug)]
 #[must_use]
@@ -376,6 +497,7 @@ impl Attr {
     const SEC: Uuid16 = Declaration::SecondaryService.uuid16();
     const INC: Uuid16 = Declaration::Include.uuid16();
     const CHAR: Uuid16 = Declaration::Characteristic.uuid16();
+    const EXT_PROPS: Uuid16 = Descriptor::CharacteristicExtendedProperties.uuid16();
 
     /// Returns whether the attribute is a service declaration.
     #[inline(always)]
@@ -399,6 +521,12 @@ impl Attr {
     #[inline(always)]
     const fn is_char(&self) -> bool {
         matches!(self.typ, Some(Self::CHAR))
+    }
+
+    /// Returns whether the attribute is an extended properties descriptor.
+    #[inline(always)]
+    const fn is_ext_props(&self) -> bool {
+        matches!(self.typ, Some(Self::EXT_PROPS))
     }
 
     /// Returns the attribute value length.

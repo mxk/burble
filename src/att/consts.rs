@@ -109,7 +109,7 @@ impl Opcode {
 
     /// Returns read/write access type being performed
     /// ([Vol 3] Part F, Section 3.4.9).
-    pub(crate) const fn access(self) -> Option<Access> {
+    pub(crate) const fn access_type(self) -> Option<Access> {
         use Opcode::*;
         const READ: Option<Access> = Some(Access::READ);
         const WRITE: Option<Access> = Some(Access::WRITE);

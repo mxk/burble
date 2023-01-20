@@ -73,6 +73,13 @@ impl<T: host::Transport> Server<T> {
             _ => pdu.err(RequestNotSupported),
         }
     }
+
+    fn access_check(&self, pdu: &Pdu<T>, hdl: Handle) -> RspResult<Handle> {
+        let Some(req) = pdu.opcode().access_type() else {
+            return pdu.hdl_err(RequestNotSupported, hdl);
+        };
+        self.db.access_check(pdu.opcode(), req, hdl)
+    }
 }
 
 /// Primary service discovery ([Vol 3] Part G, Section 4.4).
@@ -80,17 +87,17 @@ impl<T: host::Transport> Server<T> {
     /// Handles "Discover All Primary Services" sub-procedure
     /// ([Vol 3] Part G, Section 4.4.1).
     fn discover_primary_services(&self, pdu: &Pdu<T>) -> RspResult<Rsp<T>> {
-        pdu.read_by_group_type_req().and_then(|(hdls, typ)| {
-            if typ != Declaration::PrimaryService {
-                return pdu.err(UnsupportedGroupType);
-            }
-            if hdls.end() != Handle::MAX {
-                return pdu.hdl_err(AttributeNotFound, hdls.start());
-            }
-            let it = (self.db.primary_services(hdls.start(), None))
-                .map(|v| (v.handle_range(), v.value()));
-            self.br.read_by_group_type_rsp(hdls.start(), it)
-        })
+        let (hdls, typ) = pdu.read_by_group_type_req()?;
+        if typ != Declaration::PrimaryService {
+            return pdu.err(UnsupportedGroupType);
+        }
+        if hdls.end() != Handle::MAX {
+            return pdu.hdl_err(AttributeNotFound, hdls.start());
+        }
+        let it = (self.db)
+            .primary_services(hdls.start(), None)
+            .map(|v| (v.handle_range(), v.value()));
+        self.br.read_by_group_type_rsp(hdls.start(), it)
     }
 
     /// Handles "Discover Primary Service by Service UUID" sub-procedure
@@ -137,5 +144,14 @@ impl<T: host::Transport> Server<T> {
         let hdls = pdu.find_information_req()?;
         let it = self.db.descriptors(hdls).map(|at| (at.handle(), at.uuid()));
         self.br.find_information_rsp(hdls.start(), it)
+    }
+}
+
+/// Characteristic value read ([Vol 3] Part G, Section 4.8).
+impl<T: host::Transport> Server<T> {
+    /// Handles "Read Characteristic Value" ([Vol 3] Part G, Section 4.8.1).
+    fn read_characteristic_value(&self, pdu: &Pdu<T>) -> RspResult<Rsp<T>> {
+        let hdl = self.access_check(pdu, pdu.read_req()?)?;
+        (self.br).read_rsp(self.db.lock().get(hdl).map_or(&[], |v| v.as_ref()))
     }
 }

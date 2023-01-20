@@ -60,7 +60,7 @@ pub struct ErrorRsp {
 impl ErrorRsp {
     /// Creates a new error response.
     #[inline(always)]
-    const fn new(req: u8, hdl: Option<Handle>, err: ErrorCode) -> Self {
+    pub(crate) const fn new(req: u8, hdl: Option<Handle>, err: ErrorCode) -> Self {
         Self { req, hdl, err }
     }
 }

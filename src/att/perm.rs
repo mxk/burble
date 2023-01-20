@@ -7,7 +7,7 @@ use super::*;
 type Result<T> = std::result::Result<T, ErrorCode>;
 
 /// Access permission/request builder.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[must_use]
 #[repr(transparent)]
 pub struct Access(Perm);
@@ -50,11 +50,17 @@ impl Access {
         Self(unsafe { Perm::from_bits_unchecked(self.0.difference(Perm::KEY_LEN).bits | n) })
     }
 
+    /// Returns the type of access (read and/or write).
+    #[inline]
+    pub const fn typ(self) -> Self {
+        Self(self.0.access_type())
+    }
+
     /// Returns the permission array index.
     #[inline]
     #[must_use]
     const fn index(self) -> usize {
-        self.0.access().bits as usize
+        self.0.access_type().bits as usize
     }
 }
 
@@ -168,7 +174,7 @@ impl Perm {
 
     /// Returns the read/write access type.
     #[inline]
-    const fn access(self) -> Self {
+    const fn access_type(self) -> Self {
         self.intersection(Self::READ_WRITE)
     }
 
@@ -197,8 +203,8 @@ impl Perm {
     const fn test(self, req: Self) -> Result<()> {
         use ErrorCode::*;
         // Read/write access must be a superset of the request
-        let want = req.access();
-        let fail = want.intersection(self.access().symmetric_difference(want));
+        let want = req.access_type();
+        let fail = want.intersection(self.access_type().symmetric_difference(want));
         if !fail.is_empty() || want.is_empty() {
             return Err(match fail {
                 Self::READ => ReadNotPermitted,
@@ -247,6 +253,7 @@ mod tests {
         test(rw, ro, Ok(()));
         test(rw, wo, Ok(()));
         test(rw, rw, Ok(()));
+        test(rw, Access::NONE, Err(RequestNotSupported));
 
         test(ro.authn(), ro.authn().authz(), Ok(()));
         test(wo.authn(), wo.authz(), Err(InsufficientAuthentication));
