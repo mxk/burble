@@ -20,13 +20,13 @@ impl<T: host::Transport> Pdu<T> {
     /// Returns a non-handle error response.
     #[inline(always)]
     pub fn err<R>(&self, err: ErrorCode) -> RspResult<R> {
-        Err(super::ErrorRsp::new(self.opcode() as _, None, err))
+        self.opcode().err(err)
     }
 
     /// Returns a handle-specific error response.
     #[inline(always)]
     pub fn hdl_err<R>(&self, err: ErrorCode, hdl: Handle) -> RspResult<R> {
-        Err(super::ErrorRsp::new(self.opcode() as _, Some(hdl), err))
+        self.opcode().hdl_err(err, hdl)
     }
 
     /// Returns the result of calling `f` to unpack the PDU.
@@ -129,7 +129,7 @@ impl<T: host::Transport> Bearer<T> {
     ) -> RspResult<Rsp<T>> {
         let mut it = it.peekable();
         let Some(&(_, u)) = it.peek() else {
-            return Err(super::ErrorRsp::new(FindInformationReq as _, Some(start), AttributeNotFound));
+            return FindInformationReq.hdl_err(AttributeNotFound, start);
         };
         let fmt = 0x01 + u8::from(u.as_u16().is_none());
         self.rsp(FindInformationRsp, |p| {

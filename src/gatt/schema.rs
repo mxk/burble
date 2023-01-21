@@ -53,9 +53,9 @@ impl Schema {
         start: Handle,
         uuid: Option<Uuid>,
     ) -> impl Iterator<Item = SchemaEntry<ServiceDef>> {
-        let i = self.get(start).unwrap_or_else(|i| i);
+        let i = self.get(start).map_or_else(|i| i, |at| self.index(at));
         let uuid = uuid.map_or_else(UuidVec::default, UuidVec::new);
-        // SAFETY: `0 <= i <= self.attr.len()`
+        // SAFETY: 0 <= i <= self.attr.len()
         GroupIter::new(self, unsafe { self.attr.get_unchecked(i..) }, move |at| {
             at.is_primary_service() && (uuid.is_empty() || self.value(at) == uuid.as_ref())
         })
@@ -85,7 +85,7 @@ impl Schema {
     ) -> impl Iterator<Item = SchemaEntry<DescriptorDef>> {
         let attr = self.subset(hdls).and_then(|s| {
             use private::Group;
-            // SAFETY: `0 <= s.off < self.attr.len()`
+            // SAFETY: 0 <= s.off < self.attr.len()
             let decl = unsafe { self.attr.get_unchecked(..s.off).iter() }
                 .rfind(|&at| Attr::is_char(at))?;
             // Handle range must start after the characteristic value and cannot
@@ -103,7 +103,7 @@ impl Schema {
         self.try_multi_access(op, req, &[hdl]).map(|_| hdl)
     }
 
-    /// Performs read/write access permission check for a set of handles.
+    /// Performs read/write access permission check for multiple handles.
     #[inline]
     pub fn try_multi_access<'a>(
         &self,
@@ -111,13 +111,16 @@ impl Schema {
         req: Access,
         hdls: &'a [Handle],
     ) -> RspResult<&'a [Handle]> {
+        if hdls.is_empty() {
+            return op.err(ErrorCode::InvalidPdu); // Should never happen
+        }
+        // [Vol 3] Part F, Section 3.4.4.7
         for &hdl in hdls {
-            let Ok(i) = self.get(hdl) else {
+            let Ok(at) = self.get(hdl) else {
                 warn!("Denied {op} for invalid {hdl}");
-                return Err(ErrorRsp::new(op as _, Some(hdl), ErrorCode::InvalidHandle));
+                return op.hdl_err(ErrorCode::InvalidHandle, hdl);
             };
-            // SAFETY: Handle was found at `i`
-            self.access_check(op, req, unsafe { self.attr.get_unchecked(i) })?;
+            self.access_check(op, req, at)?;
         }
         Ok(hdls)
     }
@@ -138,13 +141,7 @@ impl Schema {
             .peekable();
         // [Vol 3] Part F, Section 3.4.4.1
         match it.peek() {
-            None => {
-                return Err(ErrorRsp::new(
-                    op as _,
-                    Some(hdls.start()),
-                    ErrorCode::AttributeNotFound,
-                ))
-            }
+            None => return op.hdl_err(ErrorCode::AttributeNotFound, hdls.start()),
             Some(&r) => {
                 r?;
             }
@@ -235,25 +232,24 @@ impl Schema {
         debug_assert_eq!(op.access_type(), Some(req.typ()));
         debug_assert!(matches!(req.typ(), Access::READ | Access::WRITE));
         let hdl = at.hdl;
-        let error = |e| Err(super::ErrorRsp::new(op as _, Some(hdl), e));
         // [Vol 3] Part F, Section 4
         if let Err(e) = at.perms.test(req) {
             warn!("Denied {op} to {hdl} due to {e}");
-            return error(e);
+            return op.hdl_err(e, hdl);
         }
         let Some(ch) = self.characteristic_for_attr(at) else {
             return Ok(hdl); // Permission check passed and no properties to test
         };
-        if hdl > ch.val.hdl {
+        if hdl != ch.val.hdl {
             // [Vol 3] Part G, Section 3.3.3.1 and 3.3.3.2
             return if req.typ() == Access::WRITE
                 && at.typ == Some(Descriptor::CharacteristicUserDescription.uuid16())
                 && !(ch.ext_props).map_or(false, |p| p.contains(ExtProp::WRITABLE_AUX))
             {
                 warn!("Denied {op} to {hdl} because WRITABLE_AUX bit is not set");
-                error(ErrorCode::WriteNotPermitted)
+                op.hdl_err(ErrorCode::WriteNotPermitted, hdl)
             } else {
-                Ok(hdl) // Descriptor access
+                Ok(hdl) // Descriptor or declaration access
             };
         }
         // [Vol 3] Part G, Section 3.3.1.1
@@ -269,7 +265,7 @@ impl Schema {
             SignedWriteCmd => Prop::SIGNED_WRITE_CMD, // [Vol 3] Part G, Section 4.9.2
             _ => {
                 warn!("Denied non-read/write {op} for {hdl}");
-                return error(ErrorCode::RequestNotSupported);
+                return op.hdl_err(ErrorCode::RequestNotSupported, hdl);
             }
         };
         if !ch.props.contains(bit) {
@@ -279,7 +275,7 @@ impl Schema {
                 ErrorCode::WriteNotPermitted
             };
             warn!("Denied {op} for {hdl} due to {e} by properties");
-            return error(e);
+            return op.hdl_err(e, hdl);
         }
         Ok(hdl) // Characteristic value access
     }
@@ -323,26 +319,15 @@ impl Schema {
         })
     }
 
-    /// Returns the index of `at` in `self.attr`.
-    #[inline(always)]
-    const fn index(&self, at: &Attr) -> usize {
-        #[allow(clippy::cast_sign_loss)]
-        // TODO: Use `sub_ptr` when stabilized
-        // SAFETY: Caller only has access to attributes in self.attr
-        unsafe {
-            (at as *const Attr).offset_from(self.attr.as_ptr()) as _
-        }
-    }
-
     /// Returns all attributes within the specified handle range or [`None`] if
     /// the handle range is empty.
     fn subset(&self, hdls: HandleRange) -> Option<Subset> {
-        let i = self
-            .get(hdls.start())
-            .map_or_else(|i| (i < self.attr.len()).then_some(i), Some)?;
-        let j = self
-            .get(hdls.end())
-            .map_or_else(|j| (j > 0).then_some(j), |j| Some(j + 1))?;
+        let i = self.get(hdls.start()).map_or_else(
+            |i| (i < self.attr.len()).then_some(i),
+            |at| Some(self.index(at)),
+        )?;
+        let j = (self.get(hdls.end()))
+            .map_or_else(|j| (j > 0).then_some(j), |j| Some(self.index(j) + 1))?;
         Some(Subset::new(&self.attr, i..j))
     }
 
@@ -370,23 +355,38 @@ trait CommonOps {
     #[must_use]
     fn data(&self) -> &[u8];
 
-    /// Returns the index of the specified handle or the index where that handle
-    /// can be inserted.
+    /// Returns the attribute for the specified handle or the index where that
+    /// handle can be inserted.
     #[inline]
-    fn get(&self, hdl: Handle) -> std::result::Result<usize, usize> {
-        fn search(attr: &[Attr], hdl: Handle) -> std::result::Result<usize, usize> {
+    fn get(&self, hdl: Handle) -> std::result::Result<&Attr, usize> {
+        fn search(attr: &[Attr], hdl: Handle) -> std::result::Result<&Attr, usize> {
             attr.binary_search_by(|at| at.hdl.cmp(&hdl))
+                // SAFETY: 0 <= i < attr.len()
+                .map(|i| unsafe { attr.get_unchecked(i) })
         }
         let i = usize::from(hdl) - 1;
         // The attribute can exist at or, if there are gaps, before index `i`.
         // Usually, the 1-based handle value should also be the 0-based index.
         let prior = match self.attr().get(i) {
-            Some(at) if at.hdl == hdl => return Ok(i),
-            // SAFETY: `i` is in bounds
+            // SAFETY: 0 <= i < attr.len()
+            Some(at) if at.hdl == hdl => return Ok(unsafe { self.attr().get_unchecked(i) }),
+            // SAFETY: 0 <= i < attr.len()
             Some(_) => unsafe { self.attr().get_unchecked(..i) },
             None => self.attr(),
         };
         search(prior, hdl)
+    }
+
+    /// Returns the index of `at` in `self.attr()`.
+    #[inline(always)]
+    fn index(&self, at: &Attr) -> usize {
+        // TODO: Use `sub_ptr` when stabilized
+        // SAFETY: Caller only has access to attributes in self.attr() and
+        // `self.attr().as_ptr() <= at`
+        unsafe {
+            usize::try_from((at as *const Attr).offset_from(self.attr().as_ptr()))
+                .unwrap_unchecked()
+        }
     }
 
     /// Returns the attribute value.
@@ -394,16 +394,16 @@ trait CommonOps {
     #[must_use]
     fn value(&self, at: &Attr) -> &[u8] {
         // SAFETY: self.data()[val] is always valid
-        unsafe { (self.data()).get_unchecked(at.val.0 as usize..at.val.1 as usize) }
+        unsafe { (self.data()).get_unchecked(usize::from(at.val.0)..usize::from(at.val.1)) }
     }
 
     /// Returns all attributes of the service group defined by `hdl` or [`None`]
     /// if the handle does not refer to a service.
     fn service_group(&self, hdl: Handle) -> Option<Subset> {
-        let Ok(i) = self.get(hdl) else { return None };
-        // SAFETY: `hdl` was found at `i`.
-        unsafe { self.attr().get_unchecked(i).is_service() }.then(|| {
-            // SAFETY: `i < self.attr.len()`
+        let Ok(at) = self.get(hdl) else { return None };
+        at.is_service().then(|| {
+            let i = self.index(at);
+            // SAFETY: 0 <= i < self.attr.len()
             let j = unsafe { self.attr().get_unchecked(i + 1..).iter() }
                 .position(Attr::is_service)
                 .map_or(self.attr().len(), |j| i + 1 + j);
