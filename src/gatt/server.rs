@@ -74,11 +74,12 @@ impl<T: host::Transport> Server<T> {
         }
     }
 
-    fn access_check(&self, pdu: &Pdu<T>, hdl: Handle) -> RspResult<Handle> {
+    fn try_access(&self, pdu: &Pdu<T>, hdl: Handle) -> RspResult<Handle> {
         let Some(req) = pdu.opcode().access_type() else {
             return pdu.hdl_err(RequestNotSupported, hdl);
         };
-        self.db.access_check(pdu.opcode(), req, hdl)
+        // TODO: Set authz/authn/key_len for `req`
+        self.db.try_access(pdu.opcode(), req, hdl)
     }
 }
 
@@ -151,7 +152,7 @@ impl<T: host::Transport> Server<T> {
 impl<T: host::Transport> Server<T> {
     /// Handles "Read Characteristic Value" ([Vol 3] Part G, Section 4.8.1).
     fn read_characteristic_value(&self, pdu: &Pdu<T>) -> RspResult<Rsp<T>> {
-        let hdl = self.access_check(pdu, pdu.read_req()?)?;
+        let hdl = self.try_access(pdu, pdu.read_req()?)?;
         (self.br).read_rsp(self.db.lock().get(hdl).map_or(&[], |v| v.as_ref()))
     }
 }

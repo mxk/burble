@@ -43,7 +43,7 @@ impl Access {
     pub const fn key_len(self, n: u8) -> Self {
         assert!(
             Perm::KEY_MIN <= n && n <= Perm::KEY_MAX && n % 8 == 0 || n == 0,
-            "Invalid encryption key length"
+            "invalid encryption key length"
         );
         let n = n.saturating_sub(Perm::KEY_OFF) & Perm::KEY_LEN.bits;
         // SAFETY: All bits are valid

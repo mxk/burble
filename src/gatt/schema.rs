@@ -97,73 +97,59 @@ impl Schema {
         (attr.unwrap_or_default().iter()).map(|at| SchemaEntry::new(self, at, at.hdl))
     }
 
-    /*
-    pub fn handle_range_access(
+    /// Performs read/write access permission check for a single handle.
+    #[inline]
+    pub fn try_access(&self, op: Opcode, req: Access, hdl: Handle) -> RspResult<Handle> {
+        self.try_multi_access(op, req, &[hdl]).map(|_| hdl)
+    }
+
+    /// Performs read/write access permission check for a set of handles.
+    #[inline]
+    pub fn try_multi_access<'a>(
+        &self,
+        op: Opcode,
+        req: Access,
+        hdls: &'a [Handle],
+    ) -> RspResult<&'a [Handle]> {
+        for &hdl in hdls {
+            let Ok(i) = self.get(hdl) else {
+                warn!("Denied {op} for invalid {hdl}");
+                return Err(ErrorRsp::new(op as _, Some(hdl), ErrorCode::InvalidHandle));
+            };
+            // SAFETY: Handle was found at `i`
+            self.access_check(op, req, unsafe { self.attr.get_unchecked(i) })?;
+        }
+        Ok(hdls)
+    }
+
+    /// Performs read/write access permission check for a range of handles with
+    /// UUID matching.
+    #[inline]
+    pub fn try_range_access(
         &self,
         op: Opcode,
         req: Access,
         hdls: HandleRange,
-        uuid: Option<Uuid>,
-    ) -> RspResult<impl Iterator<Item = Handle>> {
-        //self.subset(hdls).map(|s| s.attr).unwrap_or_default()
-        unimplemented!();
-        Ok(self.attr.iter().map(|at| at.hdl))
-    }
-    */
-
-    /// Performs access permission check for the specified read/write request.
-    pub fn access_check(&self, op: Opcode, req: Access, hdl: Handle) -> RspResult<Handle> {
-        use {ErrorCode::*, Opcode::*};
-        debug_assert_eq!(op.access_type(), Some(req.typ()));
-        debug_assert!(matches!(req.typ(), Access::READ | Access::WRITE));
-        let error = |e| Err(super::ErrorRsp::new(op as _, Some(hdl), e));
-        let Some((at, ch)) = self.characteristic_for_handle(hdl) else {
-            warn!("Denied {op} for invalid or non-characteristic {hdl}");
-            return error(InvalidHandle);
-        };
-        // [Vol 3] Part F, Section 4
-        if let Err(e) = at.perms.test(req) {
-            warn!("Denied {op} to {hdl} due to {e}");
-            return error(e);
-        }
-        if hdl > ch.val.hdl {
-            // [Vol 3] Part G, Section 3.3.3.1 and 3.3.3.2
-            return if req.typ() == Access::WRITE
-                && at.typ == Some(Descriptor::CharacteristicUserDescription.uuid16())
-                && !(ch.ext_props).map_or(false, |p| p.contains(ExtProp::WRITABLE_AUX))
-            {
-                warn!("Denied {op} to {hdl} because WRITABLE_AUX bit is not set");
-                error(WriteNotPermitted)
-            } else {
-                Ok(hdl)
-            };
-        }
-        // [Vol 3] Part G, Section 3.3.1.1
-        let bit = match op {
-            ReadReq                                   // [Vol 3] Part G, Section 4.8.1 and 4.8.3
-            | ReadByTypeReq                           // [Vol 3] Part G, Section 4.8.2
-            | ReadBlobReq                             // [Vol 3] Part G, Section 4.8.3
-            | ReadMultipleReq                         // [Vol 3] Part G, Section 4.8.4
-            | ReadMultipleVariableReq => Prop::READ,  // [Vol 3] Part G, Section 4.8.5
-            WriteCmd => Prop::WRITE_CMD,              // [Vol 3] Part G, Section 4.9.1
-            WriteReq                                  // [Vol 3] Part G, Section 4.9.3
-            | PrepareWriteReq => Prop::WRITE,         // [Vol 3] Part G, Section 4.9.4
-            SignedWriteCmd => Prop::SIGNED_WRITE_CMD, // [Vol 3] Part G, Section 4.9.2
-            _ => {
-                warn!("Denied non-read/write {op} for {hdl}");
-                return error(RequestNotSupported);
+        uuid: Uuid,
+    ) -> RspResult<Vec<Handle>> {
+        let attr = self.subset(hdls).map_or(Default::default(), |s| s.attr);
+        let mut it = (attr.iter())
+            .filter_map(|at| (self.typ(at) == uuid).then(|| self.access_check(op, req, at)))
+            .peekable();
+        // [Vol 3] Part F, Section 3.4.4.1
+        match it.peek() {
+            None => {
+                return Err(ErrorRsp::new(
+                    op as _,
+                    Some(hdls.start()),
+                    ErrorCode::AttributeNotFound,
+                ))
             }
-        };
-        if !ch.props.contains(bit) {
-            let e = if req.typ() == Access::READ {
-                ReadNotPermitted
-            } else {
-                WriteNotPermitted
-            };
-            warn!("Denied {op} for {hdl} due to {e} by properties");
-            return error(e);
+            Some(&r) => {
+                r?;
+            }
         }
-        Ok(hdl)
+        Ok(it.map_while(std::result::Result::ok).collect())
     }
 
     /// Logs schema contents.
@@ -243,11 +229,66 @@ impl Schema {
         attr.unwrap_or_default()
     }
 
+    /// Performs read/write access permission check for the specified attribute.
+    fn access_check(&self, op: Opcode, req: Access, at: &Attr) -> RspResult<Handle> {
+        use Opcode::*;
+        debug_assert_eq!(op.access_type(), Some(req.typ()));
+        debug_assert!(matches!(req.typ(), Access::READ | Access::WRITE));
+        let hdl = at.hdl;
+        let error = |e| Err(super::ErrorRsp::new(op as _, Some(hdl), e));
+        // [Vol 3] Part F, Section 4
+        if let Err(e) = at.perms.test(req) {
+            warn!("Denied {op} to {hdl} due to {e}");
+            return error(e);
+        }
+        let Some(ch) = self.characteristic_for_attr(at) else {
+            return Ok(hdl); // Permission check passed and no properties to test
+        };
+        if hdl > ch.val.hdl {
+            // [Vol 3] Part G, Section 3.3.3.1 and 3.3.3.2
+            return if req.typ() == Access::WRITE
+                && at.typ == Some(Descriptor::CharacteristicUserDescription.uuid16())
+                && !(ch.ext_props).map_or(false, |p| p.contains(ExtProp::WRITABLE_AUX))
+            {
+                warn!("Denied {op} to {hdl} because WRITABLE_AUX bit is not set");
+                error(ErrorCode::WriteNotPermitted)
+            } else {
+                Ok(hdl) // Descriptor access
+            };
+        }
+        // [Vol 3] Part G, Section 3.3.1.1
+        let bit = match op {
+            ReadReq                                   // [Vol 3] Part G, Section 4.8.1 and 4.8.3
+            | ReadByTypeReq                           // [Vol 3] Part G, Section 4.8.2
+            | ReadBlobReq                             // [Vol 3] Part G, Section 4.8.3
+            | ReadMultipleReq                         // [Vol 3] Part G, Section 4.8.4
+            | ReadMultipleVariableReq => Prop::READ,  // [Vol 3] Part G, Section 4.8.5
+            WriteCmd => Prop::WRITE_CMD,              // [Vol 3] Part G, Section 4.9.1
+            WriteReq                                  // [Vol 3] Part G, Section 4.9.3
+            | PrepareWriteReq => Prop::WRITE,         // [Vol 3] Part G, Section 4.9.4
+            SignedWriteCmd => Prop::SIGNED_WRITE_CMD, // [Vol 3] Part G, Section 4.9.2
+            _ => {
+                warn!("Denied non-read/write {op} for {hdl}");
+                return error(ErrorCode::RequestNotSupported);
+            }
+        };
+        if !ch.props.contains(bit) {
+            let e = if req.typ() == Access::READ {
+                ErrorCode::ReadNotPermitted
+            } else {
+                ErrorCode::WriteNotPermitted
+            };
+            warn!("Denied {op} for {hdl} due to {e} by properties");
+            return error(e);
+        }
+        Ok(hdl) // Characteristic value access
+    }
+
     /// Returns the attribute and characteristic information for the specified
     /// handle.
-    fn characteristic_for_handle(&self, hdl: Handle) -> Option<(&Attr, CharInfo)> {
+    fn characteristic_for_attr(&self, at: &Attr) -> Option<CharInfo> {
         use private::Group;
-        let i = self.get(hdl).ok()?;
+        let i = self.index(at);
         // SAFETY: 0 <= i < self.attr.len()
         let decl = unsafe { self.attr.get_unchecked(..=i).iter() }.rposition(Attr::is_char)?;
         // SAFETY: 0 <= decl <= i < self.attr.len()
@@ -273,17 +314,24 @@ impl Schema {
                 ExtProp::from_bits_truncate(self.value(at).unpack().u16())
             })
         });
-        Some((
-            // SAFETY: 0 <= desc <= i < end <= self.attr.len()
-            unsafe { self.attr.get_unchecked(i) },
-            CharInfo {
-                props,
-                ext_props,
-                // SAFETY: 0 < desc < val < end <= self.attr.len()
-                val: unsafe { self.attr.get_unchecked(val) },
-                desc,
-            },
-        ))
+        Some(CharInfo {
+            props,
+            ext_props,
+            // SAFETY: 0 < desc < val < end <= self.attr.len()
+            val: unsafe { self.attr.get_unchecked(val) },
+            desc,
+        })
+    }
+
+    /// Returns the index of `at` in `self.attr`.
+    #[inline(always)]
+    const fn index(&self, at: &Attr) -> usize {
+        #[allow(clippy::cast_sign_loss)]
+        // TODO: Use `sub_ptr` when stabilized
+        // SAFETY: Caller only has access to attributes in self.attr
+        unsafe {
+            (at as *const Attr).offset_from(self.attr.as_ptr()) as _
+        }
     }
 
     /// Returns all attributes within the specified handle range or [`None`] if
