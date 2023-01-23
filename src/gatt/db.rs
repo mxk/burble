@@ -52,8 +52,8 @@ pub struct DbGuard<'a> {
 impl DbGuard<'_> {
     #[inline]
     #[must_use]
-    pub fn get(&self, hdl: Handle) -> Option<&Vec<u8>> {
-        self.vals.get(&hdl)
+    pub fn get(&self, hdl: Handle) -> Option<&[u8]> {
+        self.vals.get(&hdl).map(Vec::as_slice)
     }
 
     #[inline]
