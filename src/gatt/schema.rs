@@ -99,49 +99,44 @@ impl Schema {
 
     /// Performs read/write access permission check for a single handle.
     #[inline]
-    pub fn try_access(&self, op: Opcode, req: Access, hdl: Handle) -> RspResult<Handle> {
-        self.try_multi_access(op, req, &[hdl]).map(|_| hdl)
+    pub fn try_access(&self, req: Request, hdl: Handle) -> RspResult<Handle> {
+        self.try_multi_access(req, &[hdl]).map(|_| hdl)
     }
 
     /// Performs read/write access permission check for multiple handles.
     #[inline]
-    pub fn try_multi_access<'a>(
-        &self,
-        op: Opcode,
-        req: Access,
-        hdls: &'a [Handle],
-    ) -> RspResult<&'a [Handle]> {
-        if hdls.is_empty() {
-            return op.err(ErrorCode::InvalidPdu); // Should never happen
+    pub fn try_multi_access<T: AsRef<[Handle]>>(&self, req: Request, hdls: T) -> RspResult<T> {
+        let v = hdls.as_ref();
+        if v.is_empty() {
+            return req.op.err(ErrorCode::InvalidPdu); // Should never happen
         }
         // [Vol 3] Part F, Section 3.4.4.7
-        for &hdl in hdls {
+        for &hdl in v {
             let Ok(at) = self.get(hdl) else {
-                warn!("Denied {op} for invalid {hdl}");
-                return op.hdl_err(ErrorCode::InvalidHandle, hdl);
+                warn!("Denied {} for invalid {hdl}", req.op);
+                return req.op.hdl_err(ErrorCode::InvalidHandle, hdl);
             };
-            self.access_check(op, req, at)?;
+            self.access_check(req, at)?;
         }
         Ok(hdls)
     }
 
     /// Performs read/write access permission check for a range of handles with
-    /// UUID matching.
+    /// UUID type matching.
     #[inline]
     pub fn try_range_access(
         &self,
-        op: Opcode,
-        req: Access,
+        req: Request,
         hdls: HandleRange,
         uuid: Uuid,
     ) -> RspResult<Vec<Handle>> {
         let attr = self.subset(hdls).map_or(Default::default(), |s| s.attr);
         let mut it = (attr.iter())
-            .filter_map(|at| (self.typ(at) == uuid).then(|| self.access_check(op, req, at)))
+            .filter_map(|at| (self.typ(at) == uuid).then(|| self.access_check(req, at)))
             .peekable();
         // [Vol 3] Part F, Section 3.4.4.1
         match it.peek() {
-            None => return op.hdl_err(ErrorCode::AttributeNotFound, hdls.start()),
+            None => return req.op.hdl_err(ErrorCode::AttributeNotFound, hdls.start()),
             Some(&r) => {
                 r?;
             }
@@ -227,13 +222,11 @@ impl Schema {
     }
 
     /// Performs read/write access permission check for the specified attribute.
-    fn access_check(&self, op: Opcode, req: Access, at: &Attr) -> RspResult<Handle> {
+    fn access_check(&self, req: Request, at: &Attr) -> RspResult<Handle> {
         use Opcode::*;
-        debug_assert_eq!(op.access_type(), Some(req.typ()));
-        debug_assert!(matches!(req.typ(), Access::READ | Access::WRITE));
-        let hdl = at.hdl;
+        let (op, hdl) = (req.op, at.hdl);
         // [Vol 3] Part F, Section 4
-        if let Err(e) = at.perms.test(req) {
+        if let Err(e) = at.perms.test(req.ac) {
             warn!("Denied {op} to {hdl} due to {e}");
             return op.hdl_err(e, hdl);
         }
@@ -242,7 +235,7 @@ impl Schema {
         };
         if hdl != ch.val.hdl {
             // [Vol 3] Part G, Section 3.3.3.1 and 3.3.3.2
-            return if req.typ() == Access::WRITE
+            return if req.ac.typ() == Access::WRITE
                 && at.typ == Some(Descriptor::CharacteristicUserDescription.uuid16())
                 && !(ch.ext_props).map_or(false, |p| p.contains(ExtProp::WRITABLE_AUX))
             {
@@ -269,7 +262,7 @@ impl Schema {
             }
         };
         if !ch.props.contains(bit) {
-            let e = if req.typ() == Access::READ {
+            let e = if req.ac.typ() == Access::READ {
                 ErrorCode::ReadNotPermitted
             } else {
                 ErrorCode::WriteNotPermitted

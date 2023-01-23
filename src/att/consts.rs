@@ -68,6 +68,19 @@ impl Opcode {
         self as u8 & (1 << 7) != 0
     }
 
+    /// Creates a new access request.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the opcode is not a read/write request.
+    #[inline]
+    pub fn request(self) -> Request {
+        Request {
+            op: self,
+            ac: self.access_type().expect("not a read/write request"),
+        }
+    }
+
     /// Returns a non-handle error response.
     #[inline]
     pub const fn err<R>(self, err: ErrorCode) -> RspResult<R> {

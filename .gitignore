@@ -1,5 +1,6 @@
 /extern/
 /target/
+/tmp/
 /Cargo.lock
 /rust-toolchain.toml
 **/*.rs.bk

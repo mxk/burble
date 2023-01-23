@@ -100,6 +100,19 @@ impl<T: host::Transport> Bearer<T> {
         Ok(Pdu(sdu))
     }
 
+    /// Returns the access request being made by the specified `pdu`. The
+    /// request contains information about the access type (read/write) and the
+    /// client's current authentication/authorization/encryption status.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the `pdu` is not a read/write request.
+    #[inline]
+    pub fn access_req(&self, pdu: &Pdu<T>) -> Request {
+        // TODO: Set authz/authn/key_len
+        pdu.opcode().request()
+    }
+
     /// Sends a response PDU or an `ATT_ERROR_RSP` if the request could not be
     /// completed ([Vol 3] Part F, Section 3.4.1.1). Command-related errors are
     /// ignored.

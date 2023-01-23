@@ -73,6 +73,14 @@ impl BitOr for Access {
     }
 }
 
+/// Server attribute access request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[must_use]
+pub struct Request {
+    pub(crate) op: Opcode,
+    pub(crate) ac: Access,
+}
+
 /// A set of attribute permissions. Contains separate permissions for read-only,
 /// write-only, and read/write access.
 #[derive(Clone, Copy, Debug, Default)]
