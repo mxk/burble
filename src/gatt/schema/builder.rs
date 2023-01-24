@@ -74,12 +74,18 @@ impl Builder<Schema> {
     /// Returns the final read-only schema.
     #[inline]
     #[must_use]
-    pub fn freeze(self) -> Schema {
+    pub fn freeze(mut self) -> Schema {
+        const DB_HASH: Uuid16 = Characteristic::DatabaseHash.uuid16();
         let hash = self.calc_hash();
+        let hash = self.append_data(hash);
+        for at in &mut self.0.attr {
+            if at.typ == Some(DB_HASH) {
+                at.val = hash;
+            }
+        }
         Schema {
             attr: self.0.attr.into_boxed_slice(),
             data: self.0.data.into_boxed_slice(),
-            hash,
         }
     }
 
@@ -129,7 +135,7 @@ impl Builder<Schema> {
 
     /// Calculates the database hash ([Vol 3] Part G, Section 7.3.1).
     #[must_use]
-    fn calc_hash(&self) -> u128 {
+    fn calc_hash(&self) -> Hash {
         use aes::Aes128;
         use cmac::digest::{FixedOutput, Key};
         use cmac::{Cmac, Mac};
@@ -153,7 +159,7 @@ impl Builder<Schema> {
             m.update(&u16::from(typ).to_le_bytes());
             m.update(val);
         }
-        u128::from_be_bytes(*m.finalize_fixed().as_ref())
+        u128::from_be_bytes(*m.finalize_fixed().as_ref()).to_le_bytes()
     }
 }
 
@@ -399,7 +405,7 @@ mod tests {
     #[test]
     fn hash() {
         assert_eq!(
-            appendix_b().hash,
+            u128::from_le_bytes(*appendix_b().hash()),
             0xF1_CA_2D_48_EC_F5_8B_AC_8A_88_30_BB_B9_FB_A9_90
         );
     }

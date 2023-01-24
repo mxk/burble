@@ -154,15 +154,15 @@ impl<T: host::Transport> Server<T> {
     /// ([Vol 3] Part G, Section 4.8.1).
     fn read(&self, pdu: &Pdu<T>) -> RspResult<Rsp<T>> {
         let hdl = (self.db).try_access(self.br.access_req(pdu), pdu.read_req()?)?;
-        let db = self.db.lock();
-        self.br.read_rsp(db.get(hdl).unwrap_or_default())
+        let r = self.db.read();
+        self.br.read_rsp(r.value(hdl).unwrap_or_default())
     }
 
     /// Handles "Read Using Characteristic UUID" sub-procedure
     /// ([Vol 3] Part G, Section 4.8.2).
     fn read_by_type(&self, start: Handle, hdls: Vec<Handle>) -> RspResult<Rsp<T>> {
-        let db = self.db.lock();
-        let it = (hdls.into_iter()).map(|hdl| (hdl, db.get(hdl).unwrap_or_default()));
+        let r = self.db.read();
+        let it = (hdls.into_iter()).map(|hdl| (hdl, r.value(hdl).unwrap_or_default()));
         self.br.read_by_type_rsp(start, it)
     }
 
@@ -171,7 +171,7 @@ impl<T: host::Transport> Server<T> {
     fn read_blob(&self, pdu: &Pdu<T>) -> RspResult<Rsp<T>> {
         let (hdl, off) = pdu.read_blob_req()?;
         let hdl = self.db.try_access(self.br.access_req(pdu), hdl)?;
-        (self.db.lock().get(hdl).unwrap_or_default())
+        (self.db.read().value(hdl).unwrap_or_default())
             .get(usize::from(off)..)
             .map_or_else(
                 || pdu.hdl_err(InvalidOffset, hdl),
@@ -183,8 +183,8 @@ impl<T: host::Transport> Server<T> {
     /// ([Vol 3] Part G, Section 4.8.4).
     fn read_multiple(&self, pdu: &Pdu<T>) -> RspResult<Rsp<T>> {
         let hdls = (self.db).try_multi_access(self.br.access_req(pdu), pdu.read_multiple_req()?)?;
-        let db = self.db.lock();
-        let it = hdls.into_iter().map(|hdl| db.get(hdl).unwrap_or_default());
+        let r = self.db.read();
+        let it = hdls.into_iter().map(|hdl| r.value(hdl).unwrap_or_default());
         self.br.read_multiple_rsp(it)
     }
 
@@ -193,8 +193,8 @@ impl<T: host::Transport> Server<T> {
     fn read_multiple_variable(&self, pdu: &Pdu<T>) -> RspResult<Rsp<T>> {
         let hdls = (self.db)
             .try_multi_access(self.br.access_req(pdu), pdu.read_multiple_variable_req()?)?;
-        let db = self.db.lock();
-        let it = hdls.into_iter().map(|hdl| db.get(hdl).unwrap_or_default());
+        let r = self.db.read();
+        let it = hdls.into_iter().map(|hdl| r.value(hdl).unwrap_or_default());
         self.br.read_multiple_variable_rsp(it)
     }
 
@@ -203,8 +203,8 @@ impl<T: host::Transport> Server<T> {
     fn write(&self, pdu: &Pdu<T>) -> RspResult<Option<Rsp<T>>> {
         let (hdl, v) = pdu.write_req()?;
         let hdl = self.db.try_access(self.br.access_req(pdu), hdl)?;
-        let mut db = self.db.lock();
-        match db.get_mut(hdl) {
+        let mut w = self.db.write();
+        match w.value(hdl) {
             Some(dst) => {
                 // TODO: Validation
                 dst.clear();
@@ -240,9 +240,9 @@ impl<T: host::Transport> Server<T> {
             write_queue.clear();
             return self.br.execute_write_rsp();
         }
-        let mut db = self.db.lock();
+        let mut w = self.db.write();
         for (hdl, off, v) in write_queue.iter() {
-            match db.get_mut(hdl) {
+            match w.value(hdl) {
                 Some(dst) => {
                     if off > dst.len() {
                         // [Vol 3] Part F, Section 3.4.6.3

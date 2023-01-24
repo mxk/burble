@@ -1,6 +1,6 @@
 use std::marker::PhantomData;
 use std::ops::Range;
-use std::{iter, slice};
+use std::{iter, mem, slice};
 
 use structbuf::Unpack;
 use tracing::{info, warn};
@@ -16,6 +16,9 @@ mod builder;
 /// Schema data index type. `u16` is enough for 3k 128-bit characteristics.
 type Idx = u16;
 
+/// Database hash in little-endian byte order.
+type Hash = [u8; mem::size_of::<u128>()];
+
 /// Read-only database schema.
 ///
 /// Describes the service structure, attribute permissions, and attribute values
@@ -24,10 +27,9 @@ type Idx = u16;
 pub struct Schema {
     /// Attribute metadata sorted by handle.
     attr: Box<[Attr]>,
-    /// Concatenated GATT profile attribute values and 128-bit UUIDs.
+    /// Concatenated GATT profile attribute values and 128-bit UUIDs, ending
+    /// with a 128-bit hash.
     data: Box<[u8]>,
-    /// Database hash.
-    hash: u128,
 }
 
 impl Schema {
@@ -41,8 +43,28 @@ impl Schema {
     /// Returns the database hash ([Vol 3] Part G, Section 7.3).
     #[inline(always)]
     #[must_use]
-    pub const fn hash(&self) -> u128 {
-        self.hash
+    pub const fn hash(&self) -> &Hash {
+        // SAFETY: `self.data` always ends with the hash
+        unsafe {
+            &*(self.data.as_ptr())
+                .add(self.data.len() - mem::size_of::<Hash>())
+                .cast()
+        }
+    }
+
+    /// Returns an iterator over all attributes in handle order.
+    #[inline]
+    pub fn iter(&self) -> impl Iterator<Item = (Handle, Uuid, &[u8])> {
+        (self.attr.iter()).map(|at| (at.hdl, self.typ(at), self.value(at)))
+    }
+
+    /// Returns the type and value of the specified handle or [`None`] if the
+    /// handle is invalid. The value will be empty if it's not part of the
+    /// read-only schema.
+    #[inline]
+    #[must_use]
+    pub fn get(&self, hdl: Handle) -> Option<(Uuid, &[u8])> {
+        (self.try_get(hdl).ok()).map(|at| (self.typ(at), self.value(at)))
     }
 
     /// Returns an iterator over primary services with optional UUID matching
@@ -53,7 +75,7 @@ impl Schema {
         start: Handle,
         uuid: Option<Uuid>,
     ) -> impl Iterator<Item = SchemaEntry<ServiceDef>> {
-        let i = self.get(start).map_or_else(|i| i, |at| self.index(at));
+        let i = self.try_get(start).map_or_else(|i| i, |at| self.index(at));
         let uuid = uuid.map_or_else(UuidVec::default, UuidVec::new);
         // SAFETY: 0 <= i <= self.attr.len()
         GroupIter::new(self, unsafe { self.attr.get_unchecked(i..) }, move |at| {
@@ -112,7 +134,7 @@ impl Schema {
         }
         // [Vol 3] Part F, Section 3.4.4.7
         for &hdl in v {
-            let Ok(at) = self.get(hdl) else {
+            let Ok(at) = self.try_get(hdl) else {
                 warn!("Denied {} for invalid {hdl}", req.op);
                 return req.op.hdl_err(ErrorCode::InvalidHandle, hdl);
             };
@@ -315,11 +337,11 @@ impl Schema {
     /// Returns all attributes within the specified handle range or [`None`] if
     /// the handle range is empty.
     fn subset(&self, hdls: HandleRange) -> Option<Subset> {
-        let i = self.get(hdls.start()).map_or_else(
+        let i = self.try_get(hdls.start()).map_or_else(
             |i| (i < self.attr.len()).then_some(i),
             |at| Some(self.index(at)),
         )?;
-        let j = (self.get(hdls.end()))
+        let j = (self.try_get(hdls.end()))
             .map_or_else(|j| (j > 0).then_some(j), |j| Some(self.index(j) + 1))?;
         Some(Subset::new(&self.attr, i..j))
     }
@@ -351,7 +373,7 @@ trait CommonOps {
     /// Returns the attribute for the specified handle or the index where that
     /// handle can be inserted.
     #[inline]
-    fn get(&self, hdl: Handle) -> std::result::Result<&Attr, usize> {
+    fn try_get(&self, hdl: Handle) -> std::result::Result<&Attr, usize> {
         fn search(attr: &[Attr], hdl: Handle) -> std::result::Result<&Attr, usize> {
             attr.binary_search_by(|at| at.hdl.cmp(&hdl))
                 // SAFETY: 0 <= i < attr.len()
@@ -393,7 +415,7 @@ trait CommonOps {
     /// Returns all attributes of the service group defined by `hdl` or [`None`]
     /// if the handle does not refer to a service.
     fn service_group(&self, hdl: Handle) -> Option<Subset> {
-        let Ok(at) = self.get(hdl) else { return None };
+        let Ok(at) = self.try_get(hdl) else { return None };
         at.is_service().then(|| {
             let i = self.index(at);
             // SAFETY: 0 <= i < self.attr.len()

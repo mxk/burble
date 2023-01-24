@@ -19,8 +19,7 @@ async fn main() -> Result<()> {
     info!("Local version: {:?}", host.read_local_version().await?);
     info!("Device address: {:?}", host.read_bd_addr().await?);
 
-    let db = Arc::new(gatt::Db::new(schema()));
-    let cm = tokio::task::spawn(server_loop(db, l2cap::ChanManager::new(&host).await?));
+    let cm = tokio::task::spawn(server_loop(db(), l2cap::ChanManager::new(&host).await?));
 
     advertise(&host).await?;
     let _ = cm.await?;
@@ -73,19 +72,20 @@ async fn serve<T: host::Transport + 'static>(mut s: gatt::Server<T>) {
     s.serve().await.unwrap();
 }
 
-fn schema() -> gatt::Schema {
+fn db() -> Arc<gatt::Db> {
     use burble::att::Access;
     use burble::gatt::{Characteristic, Prop, Schema, Service};
     let mut b = Schema::build();
 
-    b.primary_service(Service::GenericAccess, [], |b| {
-        b.characteristic(
+    let (_, dev_name) = b.primary_service(Service::GenericAccess, [], |b| {
+        let (dev_name, _) = b.characteristic(
             Characteristic::DeviceName,
             Prop::READ | Prop::WRITE,
             Access::READ_WRITE,
             |_| {},
         );
-        b.characteristic(Characteristic::Appearance, Prop::READ, Access::READ, |_| {})
+        b.characteristic(Characteristic::Appearance, Prop::READ, Access::READ, |_| {});
+        dev_name
     });
     b.primary_service(Service::GenericAttribute, [], |b| {
         b.characteristic(
@@ -123,5 +123,7 @@ fn schema() -> gatt::Schema {
             |b| b.client_cfg(Access::READ_WRITE),
         );
     });
-    b.freeze()
+    let db = Arc::new(gatt::Db::new(b.freeze()));
+    db.write().insert(dev_name, "Burble".as_bytes().to_vec());
+    db
 }
