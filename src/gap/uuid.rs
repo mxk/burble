@@ -366,11 +366,39 @@ pub(crate) const fn uuid16(v: u16) -> Uuid16 {
     Uuid16(unsafe { NonZeroU16::new_unchecked(v) })
 }
 
-/// Provides implementations for converting a `repr(u16)` enum into [`Uuid`] and
-/// [`Uuid16`].
+/// Provides implementations for a 16-bit UUID enum.
 macro_rules! uuid16_enum {
-    ($($t:ty)*) => {$(
-        impl $t {
+    (
+        $(#[$outer:meta])*
+        $vis:vis enum $typ:ident {
+            $($item:ident = $uuid:literal,)+
+        }
+    ) => {
+        $(#[$outer])*
+        #[derive(
+            Clone,
+            Copy,
+            Debug,
+            Eq,
+            Ord,
+            PartialEq,
+            PartialOrd,
+            ::num_enum::IntoPrimitive,
+            ::num_enum::TryFromPrimitive,
+            ::strum::Display,
+        )]
+        #[cfg_attr(test, derive(strum::EnumIter))]
+        #[non_exhaustive]
+        #[repr(u16)]
+        $vis enum $typ {
+            $($item = $uuid,)+
+        }
+
+        impl $typ {
+            ::paste::paste! {$(
+                pub const [<$item:snake:upper>]: $crate::gap::Uuid16 = Self::$item.uuid16();
+            )+}
+
             /// Returns the `Uuid` representation of the variant.
             #[inline]
             #[must_use]
@@ -386,7 +414,7 @@ macro_rules! uuid16_enum {
             }
         }
 
-        impl ::core::convert::TryFrom<$crate::gap::Uuid16> for $t {
+        impl ::core::convert::TryFrom<$crate::gap::Uuid16> for $typ {
             type Error = ::num_enum::TryFromPrimitiveError<Self>;
 
             #[inline]
@@ -396,7 +424,7 @@ macro_rules! uuid16_enum {
             }
         }
 
-        impl ::core::cmp::PartialEq<$crate::gap::Uuid> for $t {
+        impl ::core::cmp::PartialEq<$crate::gap::Uuid> for $typ {
             #[inline(always)]
             fn eq(&self, rhs: &$crate::gap::Uuid) -> bool {
                 // Converting to 128-bit avoids branches
@@ -404,41 +432,41 @@ macro_rules! uuid16_enum {
             }
         }
 
-        impl ::core::cmp::PartialEq<$crate::gap::Uuid16> for $t {
+        impl ::core::cmp::PartialEq<$crate::gap::Uuid16> for $typ {
             #[inline(always)]
             fn eq(&self, rhs: &$crate::gap::Uuid16) -> bool {
                 *self as u16 == rhs.raw()
             }
         }
 
-        impl ::core::cmp::PartialEq<$t> for $crate::gap::Uuid {
+        impl ::core::cmp::PartialEq<$typ> for $crate::gap::Uuid {
             #[inline(always)]
-            fn eq(&self, rhs: &$t) -> bool {
+            fn eq(&self, rhs: &$typ) -> bool {
                 *self == rhs.uuid()
             }
         }
 
-        impl ::core::cmp::PartialEq<$t> for $crate::gap::Uuid16 {
+        impl ::core::cmp::PartialEq<$typ> for $crate::gap::Uuid16 {
             #[inline(always)]
-            fn eq(&self, rhs: &$t) -> bool {
+            fn eq(&self, rhs: &$typ) -> bool {
                 self.raw() == *rhs as u16
             }
         }
 
-        impl ::core::convert::From<$t> for $crate::gap::Uuid {
+        impl ::core::convert::From<$typ> for $crate::gap::Uuid {
             #[inline]
-            fn from(v: $t) -> Self {
+            fn from(v: $typ) -> Self {
                 v.uuid()
             }
         }
 
-        impl ::core::convert::From<$t> for $crate::gap::Uuid16 {
+        impl ::core::convert::From<$typ> for $crate::gap::Uuid16 {
             #[inline]
-            fn from(v: $t) -> Self {
+            fn from(v: $typ) -> Self {
                 v.uuid16()
             }
         }
-    )*}
+    }
 }
 pub(crate) use uuid16_enum;
 

@@ -258,7 +258,7 @@ impl Schema {
         if hdl != ch.val.hdl {
             // [Vol 3] Part G, Section 3.3.3.1 and 3.3.3.2
             return if req.ac.typ() == Access::WRITE
-                && at.typ == Some(Descriptor::CharacteristicUserDescription.uuid16())
+                && matches!(at.typ, Some(Descriptor::CHARACTERISTIC_USER_DESCRIPTION))
                 && !(ch.ext_props).map_or(false, |p| p.contains(ExtProp::WRITABLE_AUX))
             {
                 warn!("Denied {op} to {hdl} because WRITABLE_AUX bit is not set");
@@ -556,40 +556,40 @@ struct Attr {
 }
 
 impl Attr {
-    const PRI: Uuid16 = Declaration::PrimaryService.uuid16();
-    const SEC: Uuid16 = Declaration::SecondaryService.uuid16();
-    const INC: Uuid16 = Declaration::Include.uuid16();
-    const CHAR: Uuid16 = Declaration::Characteristic.uuid16();
-    const EXT_PROPS: Uuid16 = Descriptor::CharacteristicExtendedProperties.uuid16();
-
     /// Returns whether the attribute is a service declaration.
     #[inline(always)]
     const fn is_service(&self) -> bool {
-        matches!(self.typ, Some(Self::PRI | Self::SEC))
+        matches!(
+            self.typ,
+            Some(Declaration::PRIMARY_SERVICE | Declaration::SECONDARY_SERVICE)
+        )
     }
 
     /// Returns whether the attribute is a primary service declaration.
     #[inline(always)]
     const fn is_primary_service(&self) -> bool {
-        matches!(self.typ, Some(Self::PRI))
+        matches!(self.typ, Some(Declaration::PRIMARY_SERVICE))
     }
 
     /// Returns whether the attribute is an include declaration.
     #[inline(always)]
     const fn is_include(&self) -> bool {
-        matches!(self.typ, Some(Self::INC))
+        matches!(self.typ, Some(Declaration::INCLUDE))
     }
 
     /// Returns whether the attribute is a characteristic declaration.
     #[inline(always)]
     const fn is_char(&self) -> bool {
-        matches!(self.typ, Some(Self::CHAR))
+        matches!(self.typ, Some(Declaration::CHARACTERISTIC))
     }
 
     /// Returns whether the attribute is an extended properties descriptor.
     #[inline(always)]
     const fn is_ext_props(&self) -> bool {
-        matches!(self.typ, Some(Self::EXT_PROPS))
+        matches!(
+            self.typ,
+            Some(Descriptor::CHARACTERISTIC_EXTENDED_PROPERTIES)
+        )
     }
 
     /// Returns the attribute value length.
@@ -695,7 +695,10 @@ mod private {
         #[inline(always)]
         #[must_use]
         fn is_next_group(typ: Option<Uuid16>) -> bool {
-            matches!(typ, Some(Attr::PRI | Attr::SEC))
+            matches!(
+                typ,
+                Some(Declaration::PRIMARY_SERVICE | Declaration::SECONDARY_SERVICE)
+            )
         }
     }
 
@@ -707,7 +710,15 @@ mod private {
         #[inline(always)]
         fn is_next_group(typ: Option<Uuid16>) -> bool {
             // INC isn't needed, but including it improves the generated code
-            matches!(typ, Some(Attr::PRI | Attr::SEC | Attr::INC | Attr::CHAR))
+            matches!(
+                typ,
+                Some(
+                    Declaration::PRIMARY_SERVICE
+                        | Declaration::SECONDARY_SERVICE
+                        | Declaration::INCLUDE
+                        | Declaration::CHARACTERISTIC
+                )
+            )
         }
     }
 }

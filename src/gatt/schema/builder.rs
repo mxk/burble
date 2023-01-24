@@ -75,11 +75,10 @@ impl Builder<Schema> {
     #[inline]
     #[must_use]
     pub fn freeze(mut self) -> Schema {
-        const DB_HASH: Uuid16 = Characteristic::DatabaseHash.uuid16();
         let hash = self.calc_hash();
         let hash = self.append_data(hash);
         for at in &mut self.0.attr {
-            if at.typ == Some(DB_HASH) {
+            if matches!(at.typ, Some(Characteristic::DATABASE_HASH)) {
                 at.val = hash;
             }
         }
