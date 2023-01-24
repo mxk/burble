@@ -348,20 +348,11 @@ impl<T: host::Transport> Bearer<T> {
 
 /// Writing attributes parameter decoders ([Vol 3] Part F, Section 3.4.5).
 impl<T: host::Transport> Pdu<T> {
-    /// Returns `ATT_WRITE_REQ` PDU parameters
-    /// ([Vol 3] Part F, Section 3.4.5.1).
+    /// Returns `ATT_WRITE_REQ` or `ATT_WRITE_CMD` PDU parameters
+    /// ([Vol 3] Part F, Section 3.4.5.1 and 3.4.5.3).
     pub fn write_req(&self) -> RspResult<(Handle, &[u8])> {
-        self.write_op(WriteReq)
-    }
-
-    /// Returns `ATT_WRITE_CMD` PDU parameters
-    /// ([Vol 3] Part F, Section 3.4.5.3).
-    pub fn write_cmd(&self) -> RspResult<(Handle, &[u8])> {
-        self.write_op(WriteCmd)
-    }
-
-    #[inline]
-    fn write_op(&self, op: Opcode) -> RspResult<(Handle, &[u8])> {
+        let op = self.opcode();
+        debug_assert!(matches!(op, WriteReq | WriteCmd));
         // TODO: Strip signature for ATT_SIGNED_WRITE_CMD?
         self.unpack(op, |p| Ok((self.handle(p)?, take(p))))
     }
@@ -452,7 +443,7 @@ impl<T: host::Transport> Bearer<T> {
 /// Consumes any remaining bytes in `p`.
 #[inline]
 fn take<'a>(p: &mut Unpacker<'a>) -> &'a [u8] {
-    p.take().into_inner().unwrap_or_default()
+    p.take().into_inner()
 }
 
 /// Writes `v` to `p`, possibly truncating the written value.

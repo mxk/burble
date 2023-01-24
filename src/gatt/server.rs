@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use structbuf::Unpack;
+
 use ErrorCode::*;
 
 use crate::gap::{Uuid, Uuid16, UuidType};
@@ -13,13 +15,19 @@ use super::*;
 pub struct Server<T: host::Transport> {
     br: Bearer<T>,
     db: Arc<Db>,
+    // TODO: These should be shared by all bearers for the same client
+    write_queue: parking_lot::Mutex<WriteQueue>,
 }
 
 impl<T: host::Transport> Server<T> {
     /// Creates a new GATT server.
     #[inline]
     pub fn new(br: Bearer<T>, db: Arc<Db>) -> Self {
-        Self { br, db }
+        Self {
+            br,
+            db,
+            write_queue: parking_lot::Mutex::default(),
+        }
     }
 
     /// Handles server configuration procedures ([Vol 3] Part G, Section 4.3).
@@ -42,8 +50,9 @@ impl<T: host::Transport> Server<T> {
     /// Handles one client request.
     async fn handle_req(&self, pdu: &Pdu<T>) -> Result<()> {
         use Opcode::*;
+        let op = pdu.opcode();
         #[allow(clippy::match_same_arms)]
-        let r = match pdu.opcode() {
+        let r = match op {
             FindInformationReq => self.discover_characteristic_descriptors(pdu),
             FindByTypeValueReq => self.discover_primary_service_by_uuid(pdu),
             ReadByTypeReq => self.handle_read_by_type_req(pdu),
@@ -51,12 +60,15 @@ impl<T: host::Transport> Server<T> {
             ReadBlobReq => self.read_blob(pdu),
             ReadMultipleReq => self.read_multiple(pdu),
             ReadByGroupTypeReq => self.discover_primary_services(pdu),
-            WriteReq => unimplemented!(),
-            WriteCmd => unimplemented!(),
-            PrepareWriteReq => unimplemented!(),
-            ExecuteWriteReq => unimplemented!(),
+            WriteReq | WriteCmd => match self.write(pdu) {
+                Ok(Some(rsp)) => Ok(rsp),
+                Ok(None) => return Ok(()),
+                Err(e) => Err(e),
+            },
+            PrepareWriteReq => self.prepare_write(pdu),
+            ExecuteWriteReq => self.execute_write(pdu),
             ReadMultipleVariableReq => self.read_multiple_variable(pdu),
-            SignedWriteCmd => unimplemented!(),
+            //SignedWriteCmd => unimplemented!(),
             _ => pdu.err(RequestNotSupported),
         };
         self.br.send_rsp(r).await
@@ -184,5 +196,121 @@ impl<T: host::Transport> Server<T> {
         let db = self.db.lock();
         let it = hdls.into_iter().map(|hdl| db.get(hdl).unwrap_or_default());
         self.br.read_multiple_variable_rsp(it)
+    }
+
+    /// Handles "Write Without Response" and "Write Characteristic Value"
+    /// sub-procedures ([Vol 3] Part G, Section 4.9.1 and 4.9.3).
+    fn write(&self, pdu: &Pdu<T>) -> RspResult<Option<Rsp<T>>> {
+        let (hdl, v) = pdu.write_req()?;
+        let hdl = self.db.try_access(self.br.access_req(pdu), hdl)?;
+        let mut db = self.db.lock();
+        match db.get_mut(hdl) {
+            Some(dst) => {
+                // TODO: Validation
+                dst.clear();
+                dst.extend_from_slice(v);
+            }
+            None => return pdu.hdl_err(WriteRequestRejected, hdl),
+        }
+        if Opcode::is_cmd(pdu.opcode() as _) {
+            return Ok(None);
+        }
+        Ok(Some(self.br.write_rsp()?))
+    }
+
+    /// Handles the first phase of "Write Long Characteristic Values" and
+    /// "Reliable Writes" sub-procedures
+    /// ([Vol 3] Part G, Section 4.9.4 and 4.9.5).
+    fn prepare_write(&self, pdu: &Pdu<T>) -> RspResult<Rsp<T>> {
+        let (hdl, off, v) = pdu.prepare_write_req()?;
+        let hdl = self.db.try_access(self.br.access_req(pdu), hdl)?;
+        if !self.write_queue.lock().add(hdl, off, v) {
+            return pdu.hdl_err(PrepareQueueFull, hdl);
+        }
+        self.br.prepare_write_rsp(hdl, off, v)
+    }
+
+    /// Handles the second phase of "Write Long Characteristic Values" and
+    /// "Reliable Writes" sub-procedures
+    /// ([Vol 3] Part G, Section 4.9.4 and 4.9.5).
+    fn execute_write(&self, pdu: &Pdu<T>) -> RspResult<Rsp<T>> {
+        let commit = pdu.execute_write_req()?;
+        let mut write_queue = self.write_queue.lock();
+        if !commit {
+            write_queue.clear();
+            return self.br.execute_write_rsp();
+        }
+        let mut db = self.db.lock();
+        for (hdl, off, v) in write_queue.iter() {
+            match db.get_mut(hdl) {
+                Some(dst) => {
+                    if off > dst.len() {
+                        // [Vol 3] Part F, Section 3.4.6.3
+                        return pdu.hdl_err(InvalidOffset, hdl);
+                    }
+                    // TODO: Validation
+                    let end = off + v.len();
+                    if end < dst.len() {
+                        // SAFETY: off <= end < dst.len()
+                        unsafe { dst.get_unchecked_mut(off..end) }.copy_from_slice(v);
+                    } else {
+                        dst.truncate(off);
+                        dst.extend_from_slice(v);
+                    }
+                }
+                None => return pdu.hdl_err(WriteRequestRejected, hdl),
+            }
+        }
+        self.br.execute_write_rsp()
+    }
+}
+
+/// Prepared write queue ([Vol 3] Part F, Section 3.4.6).
+#[derive(Clone, Debug, Default)]
+struct WriteQueue {
+    seq: Vec<(Handle, u16, u16)>,
+    buf: Vec<u8>,
+    clear: bool,
+}
+
+impl WriteQueue {
+    const OP_LIMIT: usize = 1024;
+    const BUF_LIMIT: usize = 1024 * 1024;
+
+    /// Adds a prepared write to the queue.
+    #[inline]
+    fn add(&mut self, hdl: Handle, off: u16, v: &[u8]) -> bool {
+        if self.clear {
+            self.clear();
+        }
+        if self.seq.len() + 1 > Self::OP_LIMIT || self.buf.len() + v.len() > Self::BUF_LIMIT {
+            return false;
+        }
+        let n = u16::try_from(v.len()).expect("invalid value length");
+        self.buf.extend_from_slice(v);
+        self.seq.push((hdl, off, n));
+        true
+    }
+
+    /// Clears the queue.
+    #[inline]
+    fn clear(&mut self) {
+        self.clear = false;
+        self.seq.clear();
+        self.buf.clear();
+    }
+
+    /// Returns an iterator over all prepared writes. After this is called, the
+    /// next `add()` will automatically clear the queue.
+    #[inline]
+    fn iter(&mut self) -> impl Iterator<Item = (Handle, usize, &[u8])> {
+        self.clear = true;
+        let mut v = self.buf.unpack();
+        self.seq.iter().map(move |&(hdl, off, n)| {
+            // SAFETY: `buf` contains `n` bytes for each `seq` entry
+            (hdl, usize::from(off), unsafe {
+                v.skip(n as _).unwrap_unchecked().into_inner()
+            })
+        })
     }
 }

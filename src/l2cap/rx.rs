@@ -301,6 +301,5 @@ fn parse_hdr(pkt: &[u8]) -> Option<(LeU, Option<(u16, Cid)>, &[u8])> {
     } else {
         None
     };
-    // into_inner() is guaranteed to return Some()
-    p.into_inner().map(|data| (LeU::new(cn), l2cap_hdr, data))
+    Some((LeU::new(cn), l2cap_hdr, p.into_inner()))
 }
