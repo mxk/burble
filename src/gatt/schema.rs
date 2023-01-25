@@ -211,6 +211,7 @@ impl Schema {
                                 log!(at, "|__ Characteristic <{uuid}>");
                             }
                         }
+                        t => log!(at, "Unexpected {t}"),
                     },
                     UuidType::Characteristic(_) => log!(at, "{cont}   |__ [Value <{typ}>]"),
                     UuidType::Descriptor(d) => log!(at, "{cont}   |__ {d} <{typ}>"),

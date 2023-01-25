@@ -72,5 +72,9 @@ pub mod hci;
 pub mod host;
 pub mod l2cap;
 pub mod le;
-pub mod sdp;
 mod util;
+
+/// Service Discovery Protocol constants ([Vol 3] Part B).
+pub mod sdp {
+    pub use burble_const::ServiceClass;
+}

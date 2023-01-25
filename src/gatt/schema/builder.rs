@@ -3,7 +3,7 @@ use std::ops::{Deref, DerefMut};
 use smallvec::SmallVec;
 use structbuf::{Pack, Packer, StructBuf};
 
-use crate::gap::UuidPacker;
+use burble_const::UuidPacker;
 
 use super::*;
 

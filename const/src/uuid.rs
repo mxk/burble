@@ -1,5 +1,3 @@
-#![allow(clippy::use_self)]
-
 use std::fmt::{Debug, Display, Formatter};
 use std::hash::{Hash, Hasher};
 use std::num::{NonZeroU128, NonZeroU16};
@@ -8,8 +6,6 @@ use std::ptr;
 
 use num_enum::TryFromPrimitive;
 use structbuf::{Packer, Unpack};
-
-use crate::{gatt, sdp};
 
 const SHIFT: u32 = u128::BITS - u32::BITS;
 const BASE: u128 = 0x00000000_0000_1000_8000_00805F9B34FB;
@@ -103,7 +99,7 @@ impl TryFrom<&[u8]> for Uuid {
     #[inline]
     fn try_from(v: &[u8]) -> Result<Self, Self::Error> {
         match v.len() {
-            Uuid::BYTES => Uuid::new(v.unpack().u128()),
+            Self::BYTES => Self::new(v.unpack().u128()),
             Uuid16::BYTES => Uuid16::new(v.unpack().u16()).map(Uuid16::as_uuid),
             _ => None,
         }
@@ -233,12 +229,12 @@ impl From<Uuid16> for u16 {
 #[non_exhaustive]
 pub enum UuidType {
     Protocol(u16),
-    ServiceClass(sdp::ServiceClass),
-    Service(gatt::Service),
-    Unit(gatt::Unit),
-    Declaration(gatt::Declaration),
-    Descriptor(gatt::Descriptor),
-    Characteristic(gatt::Characteristic),
+    ServiceClass(ServiceClass),
+    Service(Service),
+    Unit(Unit),
+    Declaration(Declaration),
+    Descriptor(Descriptor),
+    Characteristic(Characteristic),
     // TODO: Are Member Service UUIDs used anywhere?
     // ([Assigned Numbers] Section 3.11)
     Member(u16),
@@ -299,7 +295,7 @@ impl Display for UuidType {
 
 /// An owned little-endian vector representation of a UUID.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct UuidVec {
+pub struct UuidVec {
     n: u8,
     v: [u8; Uuid::BYTES],
 }
@@ -307,6 +303,7 @@ pub(crate) struct UuidVec {
 impl UuidVec {
     /// Creates a vector representation of a UUID.
     #[inline]
+    #[must_use]
     pub fn new(u: Uuid) -> Self {
         // SAFETY: Create an array v with n initialized bytes
         let (n, v) = u.as_uuid16().map_or_else(
@@ -333,7 +330,7 @@ impl Deref for UuidVec {
 }
 
 /// Packer extension functions.
-pub(crate) trait UuidPacker {
+pub trait UuidPacker {
     fn uuid(&mut self, u: impl Into<Uuid>);
 }
 
@@ -352,7 +349,7 @@ impl UuidPacker for Packer<'_> {
 /// Creates an assigned 16-bit SIG UUID from a `u16`.
 #[inline]
 #[must_use]
-pub(crate) const fn uuid16(v: u16) -> Uuid16 {
+const fn uuid16(v: u16) -> Uuid16 {
     // SAFETY: All crate uses guarantee that v != 0
     Uuid16(unsafe { NonZeroU16::new_unchecked(v) })
 }
@@ -387,71 +384,71 @@ macro_rules! uuid16_enum {
 
         impl $typ {
             ::paste::paste! {$(
-                pub const [<$item:snake:upper>]: $crate::gap::Uuid16 = Self::$item.uuid16();
+                pub const [<$item:snake:upper>]: $crate::Uuid16 = Self::$item.uuid16();
             )+}
 
             /// Returns the `Uuid` representation of the variant.
             #[inline]
             #[must_use]
-            pub const fn uuid(self) -> $crate::gap::Uuid {
+            pub const fn uuid(self) -> $crate::Uuid {
                 self.uuid16().as_uuid()
             }
 
             /// Returns the `Uuid16` representation of the variant.
             #[inline(always)]
             #[must_use]
-            pub const fn uuid16(self) -> $crate::gap::Uuid16 {
-                $crate::gap::uuid16(self as _)
+            pub const fn uuid16(self) -> $crate::Uuid16 {
+                uuid16(self as _)
             }
         }
 
-        impl ::core::convert::TryFrom<$crate::gap::Uuid16> for $typ {
+        impl ::core::convert::TryFrom<$crate::Uuid16> for $typ {
             type Error = ::num_enum::TryFromPrimitiveError<Self>;
 
             #[inline]
-            fn try_from(u: $crate::gap::Uuid16) -> Result<Self, Self::Error> {
+            fn try_from(u: $crate::Uuid16) -> Result<Self, Self::Error> {
                 use ::num_enum::TryFromPrimitive;
                 Self::try_from_primitive(u.raw())
             }
         }
 
-        impl ::core::cmp::PartialEq<$crate::gap::Uuid> for $typ {
+        impl ::core::cmp::PartialEq<$crate::Uuid> for $typ {
             #[inline(always)]
-            fn eq(&self, rhs: &$crate::gap::Uuid) -> bool {
+            fn eq(&self, rhs: &$crate::Uuid) -> bool {
                 // Converting to 128-bit avoids branches
                 self.uuid() == *rhs
             }
         }
 
-        impl ::core::cmp::PartialEq<$crate::gap::Uuid16> for $typ {
+        impl ::core::cmp::PartialEq<$crate::Uuid16> for $typ {
             #[inline(always)]
-            fn eq(&self, rhs: &$crate::gap::Uuid16) -> bool {
+            fn eq(&self, rhs: &$crate::Uuid16) -> bool {
                 *self as u16 == rhs.raw()
             }
         }
 
-        impl ::core::cmp::PartialEq<$typ> for $crate::gap::Uuid {
+        impl ::core::cmp::PartialEq<$typ> for $crate::Uuid {
             #[inline(always)]
             fn eq(&self, rhs: &$typ) -> bool {
                 *self == rhs.uuid()
             }
         }
 
-        impl ::core::cmp::PartialEq<$typ> for $crate::gap::Uuid16 {
+        impl ::core::cmp::PartialEq<$typ> for $crate::Uuid16 {
             #[inline(always)]
             fn eq(&self, rhs: &$typ) -> bool {
                 self.raw() == *rhs as u16
             }
         }
 
-        impl ::core::convert::From<$typ> for $crate::gap::Uuid {
+        impl ::core::convert::From<$typ> for $crate::Uuid {
             #[inline]
             fn from(v: $typ) -> Self {
                 v.uuid()
             }
         }
 
-        impl ::core::convert::From<$typ> for $crate::gap::Uuid16 {
+        impl ::core::convert::From<$typ> for $crate::Uuid16 {
             #[inline]
             fn from(v: $typ) -> Self {
                 v.uuid16()
@@ -459,7 +456,8 @@ macro_rules! uuid16_enum {
         }
     }
 }
-pub(crate) use uuid16_enum;
+
+include!("uuid16.rs");
 
 #[cfg(test)]
 mod tests {
@@ -471,25 +469,25 @@ mod tests {
     fn uuid_type() {
         use UuidType::*;
         assert_eq!(uuid16(0x0001).typ(), Protocol(0x0001));
-        for v in sdp::ServiceClass::iter() {
+        for v in super::ServiceClass::iter() {
             assert_eq!(v.uuid16().typ(), ServiceClass(v));
         }
-        for v in gatt::Service::iter() {
+        for v in super::Service::iter() {
             assert_eq!(v.uuid16().typ(), Service(v));
         }
-        for v in gatt::Unit::iter() {
+        for v in super::Unit::iter() {
             assert_eq!(v.uuid16().typ(), Unit(v));
         }
-        for v in gatt::Declaration::iter() {
+        for v in super::Declaration::iter() {
             assert_eq!(v.uuid16().typ(), Declaration(v));
         }
-        for v in gatt::Descriptor::iter() {
+        for v in super::Descriptor::iter() {
             assert_eq!(v.uuid16().typ(), Descriptor(v));
         }
-        for v in gatt::Characteristic::iter() {
+        for v in super::Characteristic::iter() {
             assert_eq!(v.uuid16().typ(), Characteristic(v));
         }
-        for v in gatt::Characteristic::iter() {
+        for v in super::Characteristic::iter() {
             assert_eq!(v.uuid16().typ(), Characteristic(v));
         }
         assert_eq!(uuid16(0xFEFF).typ(), Member(0xFEFF));
