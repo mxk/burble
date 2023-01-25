@@ -6,11 +6,25 @@ use tracing::info;
 
 use burble::*;
 
+use clap::Parser;
+
+#[derive(Debug, clap::Parser)]
+struct Args {
+    /// Vendor ID of the Bluetooth USB device
+    #[arg(short, long, value_parser=hex16)]
+    vid: u16,
+
+    /// Product ID of the Bluetooth USB device
+    #[arg(short, long, value_parser=hex16)]
+    pid: u16,
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
+    let args = Args::parse();
     let usb = host::Usb::new()?;
-    let mut ctlr = usb.open_first(0x7392, 0xC611)?;
+    let mut ctlr = usb.open_first(args.vid, args.pid)?;
     ctlr.init()?;
     let host = hci::Host::new(ctlr);
 
@@ -28,7 +42,6 @@ async fn main() -> Result<()> {
 
 async fn advertise<T: host::Transport>(host: &hci::Host<T>) -> Result<()> {
     let mut adv = hci::Advertiser::new(host.clone()).await?;
-    info!("Max len: {}", adv.max_data_len());
     let params = hci::AdvParams {
         props: hci::AdvProp::CONNECTABLE | hci::AdvProp::INCLUDE_TX_POWER,
         pri_interval: (Duration::from_millis(20), Duration::from_millis(25)),
@@ -126,4 +139,11 @@ fn db() -> Arc<gatt::Db> {
     let db = Arc::new(gatt::Db::new(b.freeze()));
     db.write().insert(dev_name, "Burble".as_bytes().to_vec());
     db
+}
+
+pub fn hex16(mut s: &str) -> Result<u16, String> {
+    if s.starts_with("0x") || s.starts_with("0X") {
+        s = &s[2..];
+    }
+    u16::from_str_radix(s, 16).map_err(|e| format!("{}", e))
 }

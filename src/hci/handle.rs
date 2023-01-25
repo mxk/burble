@@ -1,7 +1,7 @@
 use std::fmt::{Debug, Display, Formatter};
 use std::num::{NonZeroU16, NonZeroU8};
 
-use nameof::name_of_type;
+use crate::util::name_of;
 
 /// Connection handle ([Vol 4] Part E, Section 5.4.2).
 #[derive(Clone, Copy, Eq, Hash, PartialEq)]
@@ -34,12 +34,7 @@ impl From<ConnHandle> for u16 {
 impl Debug for ConnHandle {
     #[allow(clippy::use_self)]
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}({:#05X})",
-            name_of_type!(ConnHandle),
-            u16::from(*self)
-        )
+        write!(f, "{}({:#05X})", name_of!(ConnHandle), u16::from(*self))
     }
 }
 
@@ -78,7 +73,7 @@ impl From<AdvHandle> for u8 {
 impl Debug for AdvHandle {
     #[allow(clippy::use_self)]
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}({:#04X})", name_of_type!(AdvHandle), u8::from(*self))
+        write!(f, "{}({:#04X})", name_of!(AdvHandle), u8::from(*self))
     }
 }
 

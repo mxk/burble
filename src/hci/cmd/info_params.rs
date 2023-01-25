@@ -26,7 +26,7 @@ pub struct LocalVersion {
     pub hci_version: CoreVersion,
     pub hci_subversion: u16,
     pub lmp_version: CoreVersion,
-    pub company_id: u16,
+    pub company_id: CompanyId,
     pub lmp_subversion: u16,
 }
 
@@ -36,7 +36,7 @@ impl From<&mut Event<'_>> for LocalVersion {
             hci_version: CoreVersion::from(e.u8()),
             hci_subversion: e.u16(),
             lmp_version: CoreVersion::from(e.u8()),
-            company_id: e.u16(),
+            company_id: CompanyId(e.u16()),
             lmp_subversion: e.u16(),
         }
     }

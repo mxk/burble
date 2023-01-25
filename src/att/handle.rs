@@ -2,7 +2,7 @@ use std::fmt::{Debug, Display, Formatter};
 use std::num::NonZeroU16;
 use std::ops::{Bound, RangeBounds};
 
-use nameof::name_of_type;
+use crate::util::name_of;
 
 /// Attribute handle ([Vol 3] Part F, Section 3.2.2).
 #[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -41,7 +41,7 @@ impl Handle {
 impl Debug for Handle {
     #[allow(clippy::use_self)]
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}({:#06X})", name_of_type!(Handle), self.0.get())
+        write!(f, "{}({:#06X})", name_of!(Handle), self.0.get())
     }
 }
 

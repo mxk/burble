@@ -1,9 +1,8 @@
 use std::fmt::{Debug, Display, Formatter};
 use std::num::NonZeroU16;
 
-use nameof::name_of_type;
-
 use crate::hci;
+use crate::util::name_of;
 
 /// LE-U logical link ([Vol 1] Part A, Section 3.5.5.2.2).
 #[derive(Clone, Copy, Eq, Hash, PartialEq)]
@@ -44,7 +43,7 @@ impl From<LeU> for hci::ConnHandle {
 impl Debug for LeU {
     #[allow(clippy::use_self)]
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}({:#05X})", name_of_type!(LeU), u16::from(*self))
+        write!(f, "{}({:#05X})", name_of!(LeU), u16::from(*self))
     }
 }
 
@@ -110,7 +109,7 @@ impl From<Cid> for u16 {
 impl Debug for Cid {
     #[allow(clippy::use_self)]
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}({:#06X})", name_of_type!(Cid), self.0.get())
+        write!(f, "{}({:#06X})", name_of!(Cid), self.0.get())
     }
 }
 
@@ -134,7 +133,7 @@ impl Debug for LeCid {
         write!(
             f,
             "{}({:#05X}, {:#04X})",
-            name_of_type!(LeCid),
+            name_of!(LeCid),
             u16::from(self.link),
             u16::from(self.chan)
         )
