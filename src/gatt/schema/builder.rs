@@ -135,11 +135,8 @@ impl Builder<Schema> {
     /// Calculates the database hash ([Vol 3] Part G, Section 7.3.1).
     #[must_use]
     fn calc_hash(&self) -> Hash {
-        use aes::Aes128;
-        use cmac::digest::{FixedOutput, Key};
-        use cmac::{Cmac, Mac};
         use Descriptor::*;
-        let mut m = Cmac::<Aes128>::new(&Key::<Aes128>::default());
+        let mut m = crate::smp::Key::default().cmac();
         for at in &self.attr {
             let Some(typ) = at.typ else { continue };
             let val = match typ.typ() {
@@ -154,11 +151,11 @@ impl Builder<Schema> {
                 ) => &[],
                 _ => continue,
             };
-            m.update(&u16::from(at.hdl).to_le_bytes());
-            m.update(&u16::from(typ).to_le_bytes());
-            m.update(val);
+            m.update(&u16::from(at.hdl).to_le_bytes())
+                .update(&u16::from(typ).to_le_bytes())
+                .update(val);
         }
-        u128::from_be_bytes(*m.finalize_fixed().as_ref()).to_le_bytes()
+        m.finalize().to_le_bytes()
     }
 }
 

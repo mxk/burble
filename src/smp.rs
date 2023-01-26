@@ -2,7 +2,7 @@
 
 #![allow(dead_code)] // TODO: Remove
 
-pub(crate) use cmd::*;
+pub(crate) use {cmd::*, crypto::*};
 pub use {consts::*, peripheral::*};
 
 use crate::l2cap;

@@ -9,11 +9,11 @@ use super::*;
 /// SMP command ([Vol 3] Part H, Section 3.3).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Command {
-    PairingRequest(PairingRequest),
-    //PairingResponse(),
-    //PairingConfirm(),
-    //PairingRandom(),
-    //PairingFailed(),
+    PairingRequest(PairingParams),
+    PairingResponse(PairingParams),
+    PairingConfirm(Mac),
+    PairingRandom(Nonce),
+    PairingFailed(Reason),
     //EncryptionInformation(),
     //CentralIdentification(),
     //IdentityInformation(),
@@ -26,11 +26,16 @@ pub(super) enum Command {
 }
 
 impl Command {
-    fn pack<T: host::Transport>(self, pdu: &mut Sdu<T>) {
+    fn pack<T: host::Transport>(&self, pdu: &mut Sdu<T>) {
         use Command::*;
         let mut p = pdu.append();
-        match self {
+        #[allow(clippy::drop_ref)]
+        match *self {
             PairingRequest(ref v) => v.pack(p.u8(Code::PairingRequest)),
+            PairingResponse(ref v) => v.pack(p.u8(Code::PairingResponse)),
+            PairingConfirm(v) => drop(p.u8(Code::PairingConfirm).u128(v)),
+            PairingRandom(v) => drop(p.u8(Code::PairingRandom).u128(v)),
+            PairingFailed(v) => drop(p.u8(Code::PairingRandom).u8(v)),
         }
     }
 }
@@ -51,21 +56,20 @@ impl<T: host::Transport> TryFrom<Sdu<T>> for Command {
             return Err(Reason::CommandNotSupported);
         };
         p.map(|p| match code {
-            Code::PairingRequest => PairingRequest::unpack(p),
-            //Code::PairingResponse => {}
-            //Code::PairingConfirm => {}
-            //Code::PairingRandom => {}
-            //Code::PairingFailed => {}
-            //Code::EncryptionInformation => {}
-            //Code::CentralIdentification => {}
-            //Code::IdentityInformation => {}
-            //Code::IdentityAddressInformation => {}
-            //Code::SigningInformation => {}
-            //Code::SecurityRequest => {}
-            //Code::PairingPublicKey => {}
-            //Code::PairingDhKeyCheck => {}
-            //Code::PairingKeypressNotification => {}
-            _ => None,
+            Code::PairingRequest => PairingParams::unpack(p).map(Self::PairingRequest),
+            Code::PairingResponse => PairingParams::unpack(p).map(Self::PairingResponse),
+            Code::PairingConfirm => Some(Self::PairingConfirm(p.u128().into())),
+            Code::PairingRandom => Some(Self::PairingRandom(p.u128().into())),
+            Code::PairingFailed => Reason::try_from(p.u8()).ok().map(Self::PairingFailed),
+            Code::EncryptionInformation => None,
+            Code::CentralIdentification => None,
+            Code::IdentityInformation => None,
+            Code::IdentityAddressInformation => None,
+            Code::SigningInformation => None,
+            Code::SecurityRequest => None,
+            Code::PairingPublicKey => None,
+            Code::PairingDhKeyCheck => None,
+            Code::PairingKeypressNotification => None,
         })
         .flatten()
         .ok_or_else(|| {
@@ -75,17 +79,19 @@ impl<T: host::Transport> TryFrom<Sdu<T>> for Command {
     }
 }
 
-trait Codec {
+pub(super) trait Codec {
     /// Packs command parameters into a PDU.
     fn pack(&self, p: &mut Packer);
 
     /// Unpacks command parameters from a PDU.
-    fn unpack(p: &mut Unpacker) -> Option<Command>;
+    fn unpack(p: &mut Unpacker) -> Option<Self>
+    where
+        Self: Sized;
 }
 
-/// Pairing request command ([Vol 3] Part H, Section 3.5.1).
+/// Pairing request/response command ([Vol 3] Part H, Section 3.5.1).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct PairingRequest {
+pub(crate) struct PairingParams {
     /// IO capabilities.
     pub io_cap: IoCap,
     /// OOB authentication data is available flag.
@@ -102,7 +108,7 @@ pub(crate) struct PairingRequest {
     pub responder_keys: KeyDist,
 }
 
-impl Codec for PairingRequest {
+impl Codec for PairingParams {
     #[inline]
     fn pack(&self, p: &mut Packer) {
         p.u8(self.io_cap)
@@ -114,8 +120,8 @@ impl Codec for PairingRequest {
     }
 
     #[inline]
-    fn unpack(p: &mut Unpacker) -> Option<Command> {
-        Some(Command::PairingRequest(Self {
+    fn unpack(p: &mut Unpacker) -> Option<Self> {
+        Some(Self {
             io_cap: IoCap::try_from(p.u8()).ok()?,
             oob_authn: p.bool(),
             auth_req: AuthReq::from_bits_truncate(p.u8()),
@@ -126,6 +132,6 @@ impl Codec for PairingRequest {
             },
             initiator_keys: KeyDist::from_bits_truncate(p.u8()),
             responder_keys: KeyDist::from_bits_truncate(p.u8()),
-        }))
+        })
     }
 }
