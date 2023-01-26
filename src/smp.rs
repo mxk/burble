@@ -2,14 +2,13 @@
 
 #![allow(dead_code)] // TODO: Remove
 
-pub(crate) use {cmd::*, crypto::*};
+pub(crate) use cmd::*;
 pub use {consts::*, peripheral::*};
 
 use crate::l2cap;
 
 mod cmd;
 mod consts;
-mod crypto;
 mod peripheral;
 
 /// Error type returned by the SMP layer.

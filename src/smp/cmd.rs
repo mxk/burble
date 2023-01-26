@@ -1,6 +1,8 @@
 use structbuf::{Pack, Packer, Unpack, Unpacker};
 use tracing::warn;
 
+use burble_crypto::{Mac, Nonce};
+
 use crate::host;
 use crate::l2cap::Sdu;
 

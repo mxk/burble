@@ -1,0 +1,16 @@
+[package]
+name = "burble-crypto"
+description = "Bluetooth LE cryptographic toolbox"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+aes = "0.8.2"
+cmac = "0.7.1"
+getrandom = "0.2.8"
+subtle = "2.4.1"
+zeroize = { version = "1.5.7", features = ["zeroize_derive"] }

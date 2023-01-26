@@ -1,16 +1,71 @@
+//! Bluetooth LE cryptographic toolbox ([Vol 3] Part H, Section 2.2).
+
+#![warn(missing_debug_implementations)]
+#![warn(non_ascii_idents)]
+#![warn(single_use_lifetimes)]
+#![warn(unused_crate_dependencies)]
+#![warn(unused_extern_crates)]
+#![warn(unused_import_braces)]
+#![warn(unused_lifetimes)]
+#![warn(unused_qualifications)]
+#![warn(variant_size_differences)]
+#![warn(clippy::cargo)]
+#![warn(clippy::nursery)]
+#![warn(clippy::pedantic)]
+#![allow(clippy::enum_glob_use)]
+#![allow(clippy::inline_always)]
+#![allow(clippy::module_name_repetitions)]
+// #![warn(clippy::restriction)]
+#![warn(clippy::assertions_on_result_states)]
+#![warn(clippy::clone_on_ref_ptr)]
+#![warn(clippy::dbg_macro)]
+#![warn(clippy::decimal_literal_representation)]
+#![warn(clippy::default_union_representation)]
+#![warn(clippy::deref_by_slicing)]
+#![warn(clippy::empty_drop)]
+#![warn(clippy::empty_structs_with_brackets)]
+#![warn(clippy::exhaustive_enums)]
+#![warn(clippy::exit)]
+#![warn(clippy::fn_to_numeric_cast_any)]
+#![warn(clippy::format_push_string)]
+#![warn(clippy::get_unwrap)]
+#![warn(clippy::if_then_some_else_none)]
+#![warn(clippy::lossy_float_literal)]
+#![warn(clippy::missing_enforced_import_renames)]
+#![warn(clippy::mixed_read_write_in_expression)]
+#![warn(clippy::mod_module_files)]
+#![warn(clippy::mutex_atomic)]
+#![warn(clippy::pattern_type_mismatch)]
+#![warn(clippy::print_stdout)]
+#![warn(clippy::rc_buffer)]
+#![warn(clippy::rc_mutex)]
+#![warn(clippy::rest_pat_in_fully_bound_structs)]
+//#![warn(clippy::semicolon_outside_block)]
+#![warn(clippy::str_to_string)]
+#![warn(clippy::string_add)]
+#![warn(clippy::string_to_string)]
+#![warn(clippy::suspicious_xor_used_as_pow)]
+#![warn(clippy::todo)]
+#![warn(clippy::try_err)]
+#![warn(clippy::undocumented_unsafe_blocks)]
+#![warn(clippy::unnecessary_safety_comment)]
+#![warn(clippy::unnecessary_safety_doc)]
+#![warn(clippy::unnecessary_self_imports)]
+#![warn(clippy::unneeded_field_pattern)]
+#![warn(clippy::unseparated_literal_suffix)]
+
+use std::fmt::{Debug, Formatter};
 use std::mem;
 
 use aes::{cipher, Aes128};
 use cmac::{digest, Cmac};
 use subtle::{Choice, ConstantTimeEq};
 
-type _P256 = p256::NistP256; // TODO: Remove
-
 /// 128-bit secret key.
 #[derive(Clone, Default, zeroize::Zeroize, zeroize::ZeroizeOnDrop)]
 #[must_use]
 #[repr(transparent)]
-pub(crate) struct Key(cipher::Key<Aes128>);
+pub struct Key(cipher::Key<Aes128>);
 
 impl Key {
     /// Creates a key from the specified value.
@@ -30,10 +85,17 @@ impl Key {
     /// Generates LE Secure Connections confirm value
     /// ([Vol 3] Part H, Section 2.2.6).
     #[inline]
-    pub(super) fn f4(&self, u: &[u8; 32], v: &[u8; 32], z: u8) -> Mac {
+    pub fn f4(&self, u: &[u8; 32], v: &[u8; 32], z: u8) -> Mac {
         let mut m = self.aes_cmac();
         m.update(u.as_slice()).update(v.as_slice()).update(&[z]);
         m.finalize()
+    }
+}
+
+impl Debug for Key {
+    #[inline]
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Key").field(&"<secret key>").finish()
     }
 }
 
@@ -41,11 +103,12 @@ impl Key {
 #[derive(Clone, Copy, Debug, Eq)]
 #[must_use]
 #[repr(transparent)]
-pub(crate) struct Mac(u128);
+pub struct Mac(u128);
 
 impl Mac {
     /// Returns the MAC as a little-endian array.
     #[inline(always)]
+    #[must_use]
     pub const fn to_le_bytes(self) -> [u8; 16] {
         self.0.to_le_bytes()
     }
@@ -81,13 +144,14 @@ impl From<Mac> for u128 {
 
 /// 128-bit random nonce value.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[must_use]
 #[repr(transparent)]
-pub(crate) struct Nonce(u128);
+pub struct Nonce(u128);
 
 impl Nonce {
     /// Obtains a new random nonce value from the OS CSPRNG.
     #[inline]
-    fn new() -> Self {
+    pub fn new() -> Self {
         let mut b = [0; mem::size_of::<u128>()];
         getrandom::getrandom(b.as_mut_slice()).expect("OS CSPRNG error");
         Self(u128::from_ne_bytes(b))
@@ -111,7 +175,7 @@ impl From<Nonce> for u128 {
 /// RFC-4493 AES-CMAC ([Vol 3] Part H, Section 2.2.5).
 #[derive(Clone, Debug)]
 #[repr(transparent)]
-pub(crate) struct AesCmac(Cmac<Aes128>);
+pub struct AesCmac(Cmac<Aes128>);
 
 impl AesCmac {
     /// Updates CMAC state.
@@ -138,6 +202,7 @@ impl AesCmac {
     }
 }
 
+#[allow(clippy::unusual_byte_groupings)]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -149,7 +214,6 @@ mod tests {
     }
 
     /// [Vol 3] Part H, Section D.1.
-    #[allow(clippy::unusual_byte_groupings)]
     #[test]
     fn aes_cmac_d1() {
         const fn b(v: u128) -> [u8; 16] {
@@ -176,10 +240,10 @@ mod tests {
     /// [Vol 3] Part H, Section D.2.
     #[test]
     fn f4_d2() {
-        fn u256(msb: u128, lsb: u128) -> [u8; 32] {
+        fn u256(hi: u128, lo: u128) -> [u8; 32] {
             let mut v = [0; 32];
-            v[..16].copy_from_slice(msb.to_be_bytes().as_slice());
-            v[16..].copy_from_slice(lsb.to_be_bytes().as_slice());
+            v[..16].copy_from_slice(hi.to_be_bytes().as_slice());
+            v[16..].copy_from_slice(lo.to_be_bytes().as_slice());
             v
         }
         let u = u256(
