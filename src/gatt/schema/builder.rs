@@ -136,7 +136,7 @@ impl Builder<Schema> {
     #[must_use]
     fn calc_hash(&self) -> Hash {
         use Descriptor::*;
-        let mut m = crate::smp::Key::default().cmac();
+        let mut m = crate::smp::Key::default().aes_cmac();
         for at in &self.attr {
             let Some(typ) = at.typ else { continue };
             let val = match typ.typ() {

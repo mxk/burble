@@ -2,11 +2,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
+use clap::Parser;
 use tracing::info;
 
 use burble::*;
-
-use clap::Parser;
 
 #[derive(Debug, clap::Parser)]
 struct Args {
@@ -145,5 +144,5 @@ pub fn hex16(mut s: &str) -> Result<u16, String> {
     if s.starts_with("0x") || s.starts_with("0X") {
         s = &s[2..];
     }
-    u16::from_str_radix(s, 16).map_err(|e| format!("{}", e))
+    u16::from_str_radix(s, 16).map_err(|e| format!("{e}"))
 }

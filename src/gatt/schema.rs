@@ -152,7 +152,7 @@ impl Schema {
         hdls: HandleRange,
         uuid: Uuid,
     ) -> RspResult<Vec<Handle>> {
-        let attr = self.subset(hdls).map_or(Default::default(), |s| s.attr);
+        let attr = self.subset(hdls).map_or_else(Default::default, |s| s.attr);
         let mut it = (attr.iter())
             .filter_map(|at| (self.typ(at) == uuid).then(|| self.access_check(req, at)))
             .peekable();
