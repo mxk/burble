@@ -203,6 +203,9 @@ impl<T: host::Transport> Server<T> {
     fn write(&self, pdu: &Pdu<T>) -> RspResult<Option<Rsp<T>>> {
         let (hdl, v) = pdu.write_req()?;
         let hdl = self.db.try_access(self.br.access_req(pdu), hdl)?;
+        if v.len() > MAX_VAL_LEN {
+            return pdu.hdl_err(InvalidAttributeValueLength, hdl);
+        }
         let mut w = self.db.write();
         match w.value(hdl) {
             Some(dst) => {
@@ -224,6 +227,9 @@ impl<T: host::Transport> Server<T> {
     fn prepare_write(&self, pdu: &Pdu<T>) -> RspResult<Rsp<T>> {
         let (hdl, off, v) = pdu.prepare_write_req()?;
         let hdl = self.db.try_access(self.br.access_req(pdu), hdl)?;
+        if off as usize + v.len() > MAX_VAL_LEN {
+            return pdu.hdl_err(InvalidAttributeValueLength, hdl);
+        }
         if !self.write_queue.lock().add(hdl, off, v) {
             return pdu.hdl_err(PrepareQueueFull, hdl);
         }

@@ -1,7 +1,5 @@
 //! Attribute Protocol ([Vol 3] Part F).
 
-#![allow(dead_code)] // TODO: Remove
-
 use std::fmt::Debug;
 use std::time::Duration;
 
@@ -89,11 +87,11 @@ impl<T: host::Transport> Bearer<T> {
             return Err(ErrorRsp::new(0, None, ErrorCode::InvalidPdu).into());
         };
         let Some(op) = Opcode::try_from(op).ok() else {
-            warn!("Unknown ATT opcode: {op}");
+            warn!("Unknown opcode: {op}");
             return Err(ErrorRsp::new(op, None, ErrorCode::RequestNotSupported).into());
         };
         if matches!(op.typ(), PduType::Rsp | PduType::Cfm) {
-            warn!("Unexpected ATT PDU: {op}");
+            warn!("Unexpected PDU: {op}");
             return Err(ErrorRsp::new(op as _, None, ErrorCode::UnlikelyError).into());
         }
         // TODO: Validate signature?
