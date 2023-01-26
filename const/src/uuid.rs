@@ -305,7 +305,6 @@ impl UuidVec {
     #[inline]
     #[must_use]
     pub fn new(u: Uuid) -> Self {
-        // SAFETY: Create an array v with n initialized bytes
         let (n, v) = u.as_uuid16().map_or_else(
             || (Uuid::BYTES, u.to_bytes()),
             |u| {
