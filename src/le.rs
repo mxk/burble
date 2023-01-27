@@ -44,6 +44,17 @@ impl Default for Addr {
     }
 }
 
+impl From<Addr> for burble_crypto::Addr {
+    #[inline]
+    fn from(a: Addr) -> Self {
+        let (is_random, raw) = match a {
+            Addr::Public(addr) => (false, addr.0),
+            Addr::Random(addr) => (true, addr.0),
+        };
+        Self::from_le_bytes(is_random, raw)
+    }
+}
+
 // 48-bit untyped device address stored in little-endian byte order.
 #[derive(Clone, Copy, Default, Eq, Ord, PartialEq, PartialOrd)]
 #[repr(transparent)]

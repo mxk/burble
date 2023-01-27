@@ -1,9 +1,11 @@
-use std::fmt::{Debug, Formatter};
+use std::fmt::Debug;
 use std::mem;
 
 use p256::ecdh;
 use structbuf::{Packer, Unpacker};
 use zeroize::{Zeroize, ZeroizeOnDrop};
+
+use crate::{debug_secret, Addr, AesCmac, Key, MacKey, Nonce};
 
 /// P-256 elliptic curve secret key.
 #[derive(Zeroize, ZeroizeOnDrop)]
@@ -44,12 +46,7 @@ impl SecretKey {
     }
 }
 
-impl Debug for SecretKey {
-    #[inline]
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("SecretKey").field(&"<secret>").finish()
-    }
-}
+debug_secret!(SecretKey);
 
 /// 256-bit elliptic curve coordinate in big-endian byte order.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -66,13 +63,13 @@ impl PublicKeyX {
     /// Creates the coordinate from a big-endian encoded byte array.
     #[cfg(test)]
     #[inline]
-    pub(super) const fn from_be_bytes(x: [u8; mem::size_of::<Self>()]) -> Self {
+    pub(crate) const fn from_be_bytes(x: [u8; mem::size_of::<Self>()]) -> Self {
         Self(Coord(x))
     }
 
     /// Returns the coordinate in big-endian byte order.
     #[inline(always)]
-    pub(super) const fn as_be_bytes(&self) -> &[u8; 256 / u8::BITS as usize] {
+    pub(crate) const fn as_be_bytes(&self) -> &[u8; 256 / u8::BITS as usize] {
         &self.0 .0
     }
 }
@@ -121,12 +118,41 @@ impl PublicKey {
 #[repr(transparent)]
 pub struct DHKey(ecdh::SharedSecret);
 
-impl Debug for DHKey {
-    #[inline]
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("DHKey").field(&"<secret>").finish()
+impl DHKey {
+    /// Generates LE Secure Connections `MacKey` and `LTK`
+    /// ([Vol 3] Part H, Section 2.2.8).
+    pub fn f5(&self, n1: Nonce, n2: Nonce, a1: Addr, a2: Addr) -> (MacKey, LTK) {
+        let n1 = n1.to_be_bytes();
+        let n2 = n2.to_be_bytes();
+        let half = move |m: &mut AesCmac, counter: u8| {
+            m.update(&[counter])
+                .update(b"btle")
+                .update(&n1)
+                .update(&n2)
+                .update(&a1.0)
+                .update(&a2.0)
+                .update(&256_u16.to_be_bytes());
+            m.finalize_reset()
+        };
+        let mut m = Key::salt().aes_cmac();
+        m.update(self.0.raw_secret_bytes());
+        let mut m = Key::from(m.finalize()).aes_cmac();
+        (
+            MacKey(Key::from(half(&mut m, 0))),
+            LTK(u128::from(half(&mut m, 1))),
+        )
     }
 }
+
+debug_secret!(DHKey);
+
+/// LE Secure Connections long-term key.
+#[derive(Zeroize, ZeroizeOnDrop)]
+#[must_use]
+#[repr(transparent)]
+pub struct LTK(u128);
+
+debug_secret!(LTK);
 
 #[allow(clippy::similar_names)]
 #[allow(clippy::unusual_byte_groupings)]

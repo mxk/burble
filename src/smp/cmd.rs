@@ -1,7 +1,7 @@
 use structbuf::{Pack, Packer, Unpack, Unpacker};
 use tracing::warn;
 
-use burble_crypto::{Mac, Nonce};
+use burble_crypto::{Confirm, Nonce, PublicKey};
 
 use crate::host;
 use crate::l2cap::Sdu;
@@ -13,7 +13,7 @@ use super::*;
 pub(super) enum Command {
     PairingRequest(PairingParams),
     PairingResponse(PairingParams),
-    PairingConfirm(Mac),
+    PairingConfirm(Confirm),
     PairingRandom(Nonce),
     PairingFailed(Reason),
     //EncryptionInformation(),
@@ -22,7 +22,7 @@ pub(super) enum Command {
     //IdentityAddressInformation(),
     //SigningInformation(),
     //SecurityRequest(),
-    //PairingPublicKey(),
+    PairingPublicKey(PublicKey),
     //PairingDhKeyCheck(),
     //PairingKeypressNotification(),
 }
@@ -31,13 +31,13 @@ impl Command {
     fn pack<T: host::Transport>(&self, pdu: &mut Sdu<T>) {
         use Command::*;
         let mut p = pdu.append();
-        #[allow(clippy::drop_ref)]
         match *self {
             PairingRequest(ref v) => v.pack(p.u8(Code::PairingRequest)),
             PairingResponse(ref v) => v.pack(p.u8(Code::PairingResponse)),
-            PairingConfirm(v) => drop(p.u8(Code::PairingConfirm).u128(v)),
-            PairingRandom(v) => drop(p.u8(Code::PairingRandom).u128(v)),
-            PairingFailed(v) => drop(p.u8(Code::PairingRandom).u8(v)),
+            PairingConfirm(v) => p.u8(Code::PairingConfirm).u128(v).into(),
+            PairingRandom(v) => p.u8(Code::PairingRandom).u128(v).into(),
+            PairingFailed(v) => p.u8(Code::PairingRandom).u8(v).into(),
+            PairingPublicKey(ref v) => v.pack(&mut p),
         }
     }
 }
@@ -69,7 +69,7 @@ impl<T: host::Transport> TryFrom<Sdu<T>> for Command {
             Code::IdentityAddressInformation => None,
             Code::SigningInformation => None,
             Code::SecurityRequest => None,
-            Code::PairingPublicKey => None,
+            Code::PairingPublicKey => PublicKey::unpack(p).map(Self::PairingPublicKey),
             Code::PairingDhKeyCheck => None,
             Code::PairingKeypressNotification => None,
         })
@@ -81,14 +81,12 @@ impl<T: host::Transport> TryFrom<Sdu<T>> for Command {
     }
 }
 
-pub(super) trait Codec {
+pub(super) trait Codec: Sized {
     /// Packs command parameters into a PDU.
     fn pack(&self, p: &mut Packer);
 
     /// Unpacks command parameters from a PDU.
-    fn unpack(p: &mut Unpacker) -> Option<Self>
-    where
-        Self: Sized;
+    fn unpack(p: &mut Unpacker) -> Option<Self>;
 }
 
 /// Pairing request/response command ([Vol 3] Part H, Section 3.5.1).
