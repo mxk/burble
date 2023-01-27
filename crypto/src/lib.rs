@@ -1,5 +1,6 @@
 //! Bluetooth LE cryptographic toolbox ([Vol 3] Part H, Section 2.2).
 
+#![forbid(unsafe_code)]
 #![warn(missing_debug_implementations)]
 #![warn(non_ascii_idents)]
 #![warn(single_use_lifetimes)]
@@ -61,6 +62,10 @@ use aes::{cipher, Aes128};
 use cmac::{digest, Cmac};
 use subtle::{Choice, ConstantTimeEq};
 
+pub use crate::p256::*;
+
+mod p256;
+
 /// 128-bit secret key.
 #[derive(Clone, Default, zeroize::Zeroize, zeroize::ZeroizeOnDrop)]
 #[must_use]
@@ -90,12 +95,25 @@ impl Key {
         m.update(u.as_slice()).update(v.as_slice()).update(&[z]);
         m.finalize()
     }
+
+    /// Generates LE Secure Connections check value
+    /// ([Vol 3] Part H, Section 2.2.8).
+    pub fn f6(&self, n1: Nonce, n2: Nonce, r: u128, io_cap: IoCap, a1: Addr, a2: Addr) -> Mac {
+        let mut m = self.aes_cmac();
+        m.update(&n1.0.to_be_bytes())
+            .update(&n2.0.to_be_bytes())
+            .update(&r.to_be_bytes())
+            .update(&io_cap.0)
+            .update(&a1.0)
+            .update(&a2.0);
+        m.finalize()
+    }
 }
 
 impl Debug for Key {
     #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("Key").field(&"<secret key>").finish()
+        f.debug_tuple("Key").field(&"<secret>").finish()
     }
 }
 
@@ -152,8 +170,9 @@ impl Nonce {
     /// Obtains a new random nonce value from the OS CSPRNG.
     #[inline]
     pub fn new() -> Self {
+        use rand_core::{OsRng, RngCore};
         let mut b = [0; mem::size_of::<u128>()];
-        getrandom::getrandom(b.as_mut_slice()).expect("OS CSPRNG error");
+        OsRng.fill_bytes(b.as_mut_slice());
         Self(u128::from_ne_bytes(b))
     }
 }
@@ -199,6 +218,39 @@ impl AesCmac {
         Mac(u128::from_be_bytes(
             *digest::FixedOutputReset::finalize_fixed_reset(&mut self.0).as_ref(),
         ))
+    }
+}
+
+/// Concatenated `AuthReq`, OOB data flag and, and IO capability parameters used
+/// by [`Key::f6`] function ([Vol 3] Part H, Section 2.2.8).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[must_use]
+pub struct IoCap([u8; 3]);
+
+impl IoCap {
+    /// Creates new `IoCap` parameter.
+    #[inline(always)]
+    pub fn new(auth_req: u8, oob: bool, io_cap: u8) -> Self {
+        Self([auth_req, u8::from(oob), io_cap])
+    }
+}
+
+/// 56-bit device address in big-endian byte order used by [`Key::f5`] and
+/// [`Key::f6`] functions ([Vol 3] Part H, Section 2.2.7 and 2.2.8).
+#[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
+#[repr(transparent)]
+pub struct Addr([u8; 7]);
+
+impl Addr {
+    /// Creates a device address from a little-endian encoded byte array.
+    #[inline]
+    #[must_use]
+    pub fn from_le_bytes(is_random: bool, mut v: [u8; 6]) -> Self {
+        v.reverse();
+        let mut a = Self::default();
+        a.0[0] = u8::from(is_random);
+        a.0[1..].copy_from_slice(&v);
+        a
     }
 }
 
@@ -257,5 +309,19 @@ mod tests {
         let z = 0x00;
         let m = Key::new(0xd5cb8454_d177733e_ffffb2ec_712baeab).f4(&u, &v, z);
         assert_eq!(m.0, 0xf2c916f1_07a9bd1c_f1eda1be_a974872d);
+    }
+
+    /// [Vol 3] Part H, Section D.4.
+    #[test]
+    fn f6_d4() {
+        let k = Key::new(0x2965f176_a1084a02_fd3f6a20_ce636e20);
+        let n1 = Nonce(0xd5cb8454_d177733e_ffffb2ec_712baeab);
+        let n2 = Nonce(0xa6e8e7cc_25a75f6e_216583f7_ff3dc4cf);
+        let r = 0x12a3343b_b453bb54_08da42d2_0c2d0fc8;
+        let io_cap = IoCap([0x01, 0x01, 0x02]);
+        let a1 = Addr([0x00, 0x56, 0x12, 0x37, 0x37, 0xbf, 0xce]);
+        let a2 = Addr([0x00, 0xa7, 0x13, 0x70, 0x2d, 0xcf, 0xc1]);
+        let m = k.f6(n1, n2, r, io_cap, a1, a2);
+        assert_eq!(m.0, 0xe3c47398_9cd0e8c5_d26c0b09_da958f61);
     }
 }
