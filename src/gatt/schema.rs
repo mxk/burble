@@ -16,9 +16,6 @@ mod builder;
 /// Schema data index type. `u16` is enough for 3k 128-bit characteristics.
 type Idx = u16;
 
-/// Database hash in little-endian byte order.
-type Hash = [u8; mem::size_of::<u128>()];
-
 /// Read-only database schema.
 ///
 /// Describes the service structure, attribute permissions, and attribute values
@@ -28,7 +25,7 @@ pub struct Schema {
     /// Attribute metadata sorted by handle.
     attr: Box<[Attr]>,
     /// Concatenated GATT profile attribute values and 128-bit UUIDs, ending
-    /// with a 128-bit hash.
+    /// with a 128-bit hash in little-endian byte order.
     data: Box<[u8]>,
 }
 
@@ -43,13 +40,11 @@ impl Schema {
     /// Returns the database hash ([Vol 3] Part G, Section 7.3).
     #[inline(always)]
     #[must_use]
-    pub const fn hash(&self) -> &Hash {
-        // SAFETY: `self.data` always ends with the hash
-        unsafe {
-            &*(self.data.as_ptr())
-                .add(self.data.len() - mem::size_of::<Hash>())
-                .cast()
-        }
+    pub const fn hash(&self) -> u128 {
+        let (p, i) = (self.data.as_ptr(), self.data.len() - mem::size_of::<u128>());
+        // SAFETY: `self.data` always ends with the hash and the dereferenced
+        // value has an alignment of 1.
+        u128::from_le_bytes(unsafe { *p.add(i).cast() })
     }
 
     /// Returns an iterator over all attributes in handle order.

@@ -5,13 +5,15 @@ use p256::ecdh;
 use structbuf::{Packer, Unpacker};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-use crate::{debug_secret, Addr, AesCmac, Key, MacKey, Nonce};
+use crate::{debug_secret, Addr, AesCmac, Codec, Key, MacKey, Nonce};
 
 /// P-256 elliptic curve secret key.
 #[derive(Zeroize, ZeroizeOnDrop)]
 #[must_use]
 #[repr(transparent)]
 pub struct SecretKey(p256::NonZeroScalar);
+
+debug_secret!(SecretKey);
 
 impl SecretKey {
     /// Generates a new random secret key.
@@ -35,18 +37,69 @@ impl SecretKey {
     }
 
     /// Computes a shared secret from the local secret key and remote public
-    /// key. Returns [`None`] if the public key is invalid.
+    /// key. Returns [`None`] if the public key is either invalid or derived
+    /// from the same secret key ([Vol 3] Part H, Section 2.3.5.6.1).
+    #[allow(clippy::similar_names)]
     #[must_use]
     pub fn dh_key(&self, pk: PublicKey) -> Option<DHKey> {
         use p256::elliptic_curve::sec1::FromEncodedPoint;
+        if pk.is_debug() {
+            return None; // TODO: Compile-time option for debug-only mode
+        }
         let (x, y) = (&pk.x.0 .0.into(), &pk.y.0.into());
-        let p = p256::EncodedPoint::from_affine_coordinates(x, y, false);
-        Option::<p256::PublicKey>::from(p256::PublicKey::from_encoded_point(&p))
-            .map(|pk| DHKey(ecdh::diffie_hellman(&self.0, pk.as_affine())))
+        let rep = p256::EncodedPoint::from_affine_coordinates(x, y, false);
+        let lpk = p256::PublicKey::from_secret_scalar(&self.0);
+        // Constant-time ops not required:
+        // https://github.com/RustCrypto/traits/issues/1227
+        let rpk = Option::from(p256::PublicKey::from_encoded_point(&rep)).unwrap_or(lpk);
+        (rpk != lpk).then(|| DHKey(ecdh::diffie_hellman(&self.0, rpk.as_affine())))
     }
 }
 
-debug_secret!(SecretKey);
+/// P-256 elliptic curve public key ([Vol 3] Part H, Section 3.5.6).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[must_use]
+pub struct PublicKey {
+    x: PublicKeyX,
+    y: Coord,
+}
+
+impl PublicKey {
+    /// Returns the public key X coordinate.
+    #[inline(always)]
+    pub const fn x(&self) -> &PublicKeyX {
+        &self.x
+    }
+
+    /// Returns whether `self` is the debug public key
+    /// ([Vol 3] Part H, Section 2.3.5.6.1).
+    #[allow(clippy::unusual_byte_groupings)]
+    fn is_debug(&self) -> bool {
+        let (x, y) = (&self.x.0 .0, &self.y.0);
+        x[..16] == u128::to_be_bytes(0x20b003d2_f297be2c_5e2c83a7_e9f9a5b9)
+            && x[16..] == u128::to_be_bytes(0xeff49111_acf4fddb_cc030148_0e359de6)
+            && y[..16] == u128::to_be_bytes(0xdc809c49_652aeb6d_63329abf_5a52155c)
+            && y[16..] == u128::to_be_bytes(0x766345c2_8fed3024_741c8ed0_1589d28b)
+    }
+}
+
+impl Codec for PublicKey {
+    #[inline]
+    fn pack(&self, p: &mut Packer) {
+        let (mut x, mut y) = (self.x.0 .0, self.y.0);
+        x.reverse();
+        y.reverse();
+        p.put(x).put(y);
+    }
+
+    #[inline]
+    fn unpack(p: &mut Unpacker) -> Option<Self> {
+        let (mut x, mut y) = (PublicKeyX(Coord(p.bytes())), Coord(p.bytes()));
+        x.0 .0.reverse();
+        y.0.reverse();
+        Some(Self { x, y })
+    }
+}
 
 /// 256-bit elliptic curve coordinate in big-endian byte order.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -63,96 +116,66 @@ impl PublicKeyX {
     /// Creates the coordinate from a big-endian encoded byte array.
     #[cfg(test)]
     #[inline]
-    pub(crate) const fn from_be_bytes(x: [u8; mem::size_of::<Self>()]) -> Self {
+    pub(super) const fn from_be_bytes(x: [u8; mem::size_of::<Self>()]) -> Self {
         Self(Coord(x))
     }
 
     /// Returns the coordinate in big-endian byte order.
     #[inline(always)]
-    pub(crate) const fn as_be_bytes(&self) -> &[u8; 256 / u8::BITS as usize] {
+    pub(super) const fn as_be_bytes(&self) -> &[u8; mem::size_of::<Self>()] {
         &self.0 .0
     }
 }
 
-/// P-256 elliptic curve public key.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[must_use]
-pub struct PublicKey {
-    x: PublicKeyX,
-    y: Coord,
-}
-
-impl PublicKey {
-    /// Writes the public key in little-endian format to `p`.
-    /// ([Vol 3] Part H, Section 3.5.6).
-    #[inline]
-    pub fn pack(&self, p: &mut Packer) {
-        let (mut x, mut y) = (self.x.0 .0, self.y.0);
-        x.reverse();
-        y.reverse();
-        p.put(x).put(y);
-    }
-
-    /// Reads the little-endian encoded public key from `p`.
-    /// ([Vol 3] Part H, Section 3.5.6).
-    #[inline]
-    pub fn unpack(p: &mut Unpacker) -> Option<Self> {
-        p.skip(2 * mem::size_of::<Coord>()).map(|mut p| {
-            let (mut x, mut y) = (PublicKeyX(Coord(p.bytes())), Coord(p.bytes()));
-            x.0 .0.reverse();
-            y.0.reverse();
-            Self { x, y }
-        })
-    }
-
-    /// Returns the public key X coordinate.
-    #[inline(always)]
-    pub const fn x(&self) -> &PublicKeyX {
-        &self.x
-    }
-}
-
-/// P-256 elliptic curve shared secret.
+/// P-256 elliptic curve shared secret ([Vol 3] Part H, Section 2.3.5.6.1).
 #[derive(ZeroizeOnDrop)]
 #[must_use]
 #[repr(transparent)]
 pub struct DHKey(ecdh::SharedSecret);
 
+debug_secret!(DHKey);
+
 impl DHKey {
     /// Generates LE Secure Connections `MacKey` and `LTK`
-    /// ([Vol 3] Part H, Section 2.2.8).
+    /// ([Vol 3] Part H, Section 2.2.7).
+    #[inline]
     pub fn f5(&self, n1: Nonce, n2: Nonce, a1: Addr, a2: Addr) -> (MacKey, LTK) {
-        let n1 = n1.to_be_bytes();
-        let n2 = n2.to_be_bytes();
-        let half = move |m: &mut AesCmac, counter: u8| {
-            m.update(&[counter])
+        let n1 = n1.0.to_be_bytes();
+        let n2 = n2.0.to_be_bytes();
+        let half = |m: &mut AesCmac, counter: u8| {
+            m.update([counter])
                 .update(b"btle")
-                .update(&n1)
-                .update(&n2)
-                .update(&a1.0)
-                .update(&a2.0)
-                .update(&256_u16.to_be_bytes());
-            m.finalize_reset()
+                .update(n1)
+                .update(n2)
+                .update(a1.0)
+                .update(a2.0)
+                .update(256_u16.to_be_bytes())
+                .finalize_key()
         };
-        let mut m = Key::salt().aes_cmac();
+        let mut m = AesCmac::new(&Key::new(0x6C88_8391_AAF5_A538_6037_0BDB_5A60_83BE));
         m.update(self.0.raw_secret_bytes());
-        let mut m = Key::from(m.finalize()).aes_cmac();
-        (
-            MacKey(Key::from(half(&mut m, 0))),
-            LTK(u128::from(half(&mut m, 1))),
-        )
+        let mut m = AesCmac::new(&m.finalize_key());
+        (MacKey(half(&mut m, 0)), LTK(half(&mut m, 1)))
     }
 }
-
-debug_secret!(DHKey);
 
 /// LE Secure Connections long-term key.
 #[derive(Zeroize, ZeroizeOnDrop)]
 #[must_use]
 #[repr(transparent)]
-pub struct LTK(u128);
+pub struct LTK(Key);
 
 debug_secret!(LTK);
+
+/// Combines `hi` and `lo` values into a big-endian byte array.
+#[allow(clippy::redundant_pub_crate)]
+#[cfg(test)]
+pub(super) fn u256<T: From<[u8; 32]>>(hi: u128, lo: u128) -> T {
+    let mut b = [0; 32];
+    b[..16].copy_from_slice(&hi.to_be_bytes());
+    b[16..].copy_from_slice(&lo.to_be_bytes());
+    T::from(b)
+}
 
 #[allow(clippy::similar_names)]
 #[allow(clippy::unusual_byte_groupings)]
@@ -170,8 +193,13 @@ mod tests {
         assert_eq!(mem::size_of::<DHKey>(), 32);
     }
 
+    /// Debug mode key ([Vol 3] Part H, Section 2.3.5.6.1).
     #[test]
-    fn public_key() {
+    fn debug_key() {
+        let sk = secret_key(
+            0x3f49f6d4_a3c55f38_74c9b3e3_d2103f50,
+            0x4aff607b_eb40b799_5899b8a6_cd3c1abd,
+        );
         let pk = PublicKey {
             x: PublicKeyX(Coord(u256(
                 0x20b003d2_f297be2c_5e2c83a7_e9f9a5b9,
@@ -182,29 +210,26 @@ mod tests {
                 0x766345c2_8fed3024_741c8ed0_1589d28b,
             )),
         };
-        let mut b = StructBuf::new(64);
+        assert_eq!(sk.public_key(), pk);
+        assert!(pk.is_debug());
+
+        let mut b = StructBuf::with_capacity(mem::size_of_val(&pk));
         pk.pack(&mut b.append());
         assert_eq!(b.unpack().u8(), 0xe6);
-        assert_eq!(PublicKey::unpack(&mut b.unpack()), Some(pk));
+        assert_eq!(PublicKey::unpack(&mut b.unpack()).unwrap(), pk);
     }
 
-    /// [Vol 2] Part G, Section 7.1.2.1
+    /// P-256 data set 1 ([Vol 2] Part G, Section 7.1.2.1).
     #[test]
     fn p256_1() {
         let (ska, skb) = (
-            SecretKey(
-                p256::NonZeroScalar::from_repr(u256(
-                    0x3f49f6d4_a3c55f38_74c9b3e3_d2103f50,
-                    0x4aff607b_eb40b799_5899b8a6_cd3c1abd,
-                ))
-                .unwrap(),
+            secret_key(
+                0x3f49f6d4_a3c55f38_74c9b3e3_d2103f50,
+                0x4aff607b_eb40b799_5899b8a6_cd3c1abd,
             ),
-            SecretKey(
-                p256::NonZeroScalar::from_repr(u256(
-                    0x55188b3d_32f6bb9a_900afcfb_eed4e72a,
-                    0x59cb9ac2_f19d7cfb_6b4fdd49_f47fc5fd,
-                ))
-                .unwrap(),
+            secret_key(
+                0x55188b3d_32f6bb9a_900afcfb_eed4e72a,
+                0x59cb9ac2_f19d7cfb_6b4fdd49_f47fc5fd,
             ),
         );
         let (pka, pkb) = (
@@ -229,35 +254,32 @@ mod tests {
                 )),
             },
         );
-        let dh_key = DHKey(ecdh::SharedSecret::from(u256::<p256::FieldBytes>(
+        let dh_key = shared_secret(
             0xec0234a3_57c8ad05_341010a6_0a397d9b,
             0x99796b13_b4f866f1_868d34f3_73bfa698,
-        )));
+        );
         assert_eq!(ska.public_key(), pka);
         assert_eq!(skb.public_key(), pkb);
         assert_eq!(
             ska.dh_key(pkb).unwrap().0.raw_secret_bytes(),
             dh_key.0.raw_secret_bytes()
         );
+
+        assert!(!pkb.is_debug());
+        assert!(skb.dh_key(pkb).is_none());
     }
 
-    /// [Vol 2] Part G, Section 7.1.2.2
+    /// P-256 data set 2 ([Vol 2] Part G, Section 7.1.2.2).
     #[test]
     fn p256_2() {
         let (ska, skb) = (
-            SecretKey(
-                p256::NonZeroScalar::from_repr(u256(
-                    0x06a51669_3c9aa31a_6084545d_0c5db641,
-                    0xb48572b9_7203ddff_b7ac73f7_d0457663,
-                ))
-                .unwrap(),
+            secret_key(
+                0x06a51669_3c9aa31a_6084545d_0c5db641,
+                0xb48572b9_7203ddff_b7ac73f7_d0457663,
             ),
-            SecretKey(
-                p256::NonZeroScalar::from_repr(u256(
-                    0x529aa067_0d72cd64_97502ed4_73502b03,
-                    0x7e8803b5_c60829a5_a3caa219_505530ba,
-                ))
-                .unwrap(),
+            secret_key(
+                0x529aa067_0d72cd64_97502ed4_73502b03,
+                0x7e8803b5_c60829a5_a3caa219_505530ba,
             ),
         );
         let (pka, pkb) = (
@@ -282,10 +304,10 @@ mod tests {
                 )),
             },
         );
-        let dh_key = DHKey(ecdh::SharedSecret::from(u256::<p256::FieldBytes>(
+        let dh_key = shared_secret(
             0xab85843a_2f6d883f_62e5684b_38e30733,
             0x5fe6e194_5ecd1960_4105c6f2_3221eb69,
-        )));
+        );
         assert_eq!(ska.public_key(), pka);
         assert_eq!(skb.public_key(), pkb);
         assert_eq!(
@@ -294,10 +316,29 @@ mod tests {
         );
     }
 
-    fn u256<T: From<[u8; 32]>>(hi: u128, lo: u128) -> T {
-        let mut b = [0; 32];
-        b[..16].copy_from_slice(&hi.to_be_bytes());
-        b[16..].copy_from_slice(&lo.to_be_bytes());
-        T::from(b)
+    /// Key generation function ([Vol 3] Part H, Section D.3).
+    #[test]
+    fn dh_key_f5_d3() {
+        let w = shared_secret(
+            0xec0234a3_57c8ad05_341010a6_0a397d9b,
+            0x99796b13_b4f866f1_868d34f3_73bfa698,
+        );
+        let n1 = Nonce(0xd5cb8454_d177733e_ffffb2ec_712baeab);
+        let n2 = Nonce(0xa6e8e7cc_25a75f6e_216583f7_ff3dc4cf);
+        let a1 = Addr([0x00, 0x56, 0x12, 0x37, 0x37, 0xbf, 0xce]);
+        let a2 = Addr([0x00, 0xa7, 0x13, 0x70, 0x2d, 0xcf, 0xc1]);
+        let (mk, ltk) = w.f5(n1, n2, a1, a2);
+        assert_eq!(ltk.0.to_u128(), 0x69867911_69d7cd23_980522b5_94750a38);
+        assert_eq!(mk.0.to_u128(), 0x2965f176_a1084a02_fd3f6a20_ce636e20);
+    }
+
+    #[inline]
+    fn secret_key(hi: u128, lo: u128) -> SecretKey {
+        SecretKey(p256::NonZeroScalar::from_repr(u256(hi, lo)).unwrap())
+    }
+
+    #[inline]
+    fn shared_secret(hi: u128, lo: u128) -> DHKey {
+        DHKey(ecdh::SharedSecret::from(u256::<p256::FieldBytes>(hi, lo)))
     }
 }

@@ -1,7 +1,7 @@
 use structbuf::{Pack, Packer, Unpack, Unpacker};
 use tracing::warn;
 
-use burble_crypto::{Confirm, Nonce, PublicKey};
+use burble_crypto::{Codec, Confirm, Nonce, PublicKey};
 
 use crate::host;
 use crate::l2cap::Sdu;
@@ -34,8 +34,8 @@ impl Command {
         match *self {
             PairingRequest(ref v) => v.pack(p.u8(Code::PairingRequest)),
             PairingResponse(ref v) => v.pack(p.u8(Code::PairingResponse)),
-            PairingConfirm(v) => p.u8(Code::PairingConfirm).u128(v).into(),
-            PairingRandom(v) => p.u8(Code::PairingRandom).u128(v).into(),
+            PairingConfirm(v) => v.pack(p.u8(Code::PairingConfirm)),
+            PairingRandom(v) => v.pack(p.u8(Code::PairingRandom)),
             PairingFailed(v) => p.u8(Code::PairingRandom).u8(v).into(),
             PairingPublicKey(ref v) => v.pack(&mut p),
         }
@@ -60,8 +60,8 @@ impl<T: host::Transport> TryFrom<Sdu<T>> for Command {
         p.map(|p| match code {
             Code::PairingRequest => PairingParams::unpack(p).map(Self::PairingRequest),
             Code::PairingResponse => PairingParams::unpack(p).map(Self::PairingResponse),
-            Code::PairingConfirm => Some(Self::PairingConfirm(p.u128().into())),
-            Code::PairingRandom => Some(Self::PairingRandom(p.u128().into())),
+            Code::PairingConfirm => Confirm::unpack(p).map(Self::PairingConfirm),
+            Code::PairingRandom => Nonce::unpack(p).map(Self::PairingRandom),
             Code::PairingFailed => Reason::try_from(p.u8()).ok().map(Self::PairingFailed),
             Code::EncryptionInformation => None,
             Code::CentralIdentification => None,
@@ -79,14 +79,6 @@ impl<T: host::Transport> TryFrom<Sdu<T>> for Command {
             Reason::InvalidParameters
         })
     }
-}
-
-pub(super) trait Codec: Sized {
-    /// Packs command parameters into a PDU.
-    fn pack(&self, p: &mut Packer);
-
-    /// Unpacks command parameters from a PDU.
-    fn unpack(p: &mut Unpacker) -> Option<Self>;
 }
 
 /// Pairing request/response command ([Vol 3] Part H, Section 3.5.1).

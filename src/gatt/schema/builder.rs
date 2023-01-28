@@ -75,11 +75,12 @@ impl Builder<Schema> {
     #[inline]
     #[must_use]
     pub fn freeze(mut self) -> Schema {
-        let hash = self.calc_hash();
+        let hash = self.calc_hash().to_le_bytes();
         let hash = self.append_data(hash);
         for at in &mut self.0.attr {
             if matches!(at.typ, Some(Characteristic::DATABASE_HASH)) {
                 at.val = hash;
+                break; // Only one instance is allowed
             }
         }
         Schema {
@@ -134,7 +135,7 @@ impl Builder<Schema> {
 
     /// Calculates the database hash ([Vol 3] Part G, Section 7.3.1).
     #[must_use]
-    fn calc_hash(&self) -> Hash {
+    fn calc_hash(&self) -> u128 {
         use Descriptor::*;
         let mut m = burble_crypto::AesCmac::db_hash();
         for at in &self.attr {
@@ -151,11 +152,11 @@ impl Builder<Schema> {
                 ) => &[],
                 _ => continue,
             };
-            m.update(&u16::from(at.hdl).to_le_bytes())
-                .update(&u16::from(typ).to_le_bytes())
+            m.update(u16::from(at.hdl).to_le_bytes())
+                .update(u16::from(typ).to_le_bytes())
                 .update(val);
         }
-        m.finalize().to_le_bytes()
+        m.finalize()
     }
 }
 
@@ -401,7 +402,7 @@ mod tests {
     #[test]
     fn hash() {
         assert_eq!(
-            u128::from_le_bytes(*appendix_b().hash()),
+            appendix_b().hash(),
             0xF1_CA_2D_48_EC_F5_8B_AC_8A_88_30_BB_B9_FB_A9_90
         );
     }
