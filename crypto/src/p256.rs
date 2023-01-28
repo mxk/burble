@@ -318,7 +318,7 @@ mod tests {
 
     /// Key generation function ([Vol 3] Part H, Section D.3).
     #[test]
-    fn dh_key_f5_d3() {
+    fn dh_key_f5() {
         let w = shared_secret(
             0xec0234a3_57c8ad05_341010a6_0a397d9b,
             0x99796b13_b4f866f1_868d34f3_73bfa698,

@@ -94,7 +94,7 @@ mod tests {
 
     /// AES-CMAC RFC-4493 test vectors ([Vol 3] Part H, Section D.1).
     #[test]
-    fn aes_cmac_d1() {
+    fn aes_cmac() {
         const fn b(v: u128) -> [u8; 16] {
             v.to_be_bytes()
         }
