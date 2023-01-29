@@ -5,11 +5,11 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// Provides a [`Debug`] implementation for a type containing sensitive data.
 macro_rules! debug_secret {
-    ($t:ty) => {
-        impl ::std::fmt::Debug for $t {
+    ($T:ty) => {
+        impl ::std::fmt::Debug for $T {
             #[inline]
             fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-                f.debug_tuple(stringify!($t)).field(&"<secret>").finish()
+                f.debug_tuple(stringify!($T)).field(&"<secret>").finish()
             }
         }
     };

@@ -1,10 +1,10 @@
 use structbuf::{Pack, Packer, Unpack, Unpacker};
 use tracing::warn;
 
-use burble_crypto::{Codec, Confirm, Nonce, PublicKey};
+use burble_crypto::{Check, Codec, Confirm, Nonce, PublicKey};
 
-use crate::host;
 use crate::l2cap::Sdu;
+use crate::{host, le};
 
 use super::*;
 
@@ -16,15 +16,15 @@ pub(super) enum Command {
     PairingConfirm(Confirm),
     PairingRandom(Nonce),
     PairingFailed(Reason),
-    //EncryptionInformation(),
-    //CentralIdentification(),
-    //IdentityInformation(),
-    //IdentityAddressInformation(),
-    //SigningInformation(),
-    //SecurityRequest(),
+    EncryptionInformation(), // LE legacy pairing only
+    CentralIdentification(), // LE legacy pairing only
+    IdentityInformation(),   // TODO
+    IdentityAddressInformation(le::Addr),
+    SigningInformation(), // TODO
+    SecurityRequest(AuthReq),
     PairingPublicKey(PublicKey),
-    //PairingDhKeyCheck(),
-    //PairingKeypressNotification(),
+    PairingDhKeyCheck(Check),
+    PairingKeypressNotification(PasskeyEntry),
 }
 
 impl Command {
@@ -34,10 +34,19 @@ impl Command {
         match *self {
             PairingRequest(ref v) => v.pack(p.u8(Code::PairingRequest)),
             PairingResponse(ref v) => v.pack(p.u8(Code::PairingResponse)),
-            PairingConfirm(v) => v.pack(p.u8(Code::PairingConfirm)),
-            PairingRandom(v) => v.pack(p.u8(Code::PairingRandom)),
-            PairingFailed(v) => p.u8(Code::PairingRandom).u8(v).into(),
-            PairingPublicKey(ref v) => v.pack(&mut p),
+            PairingConfirm(ref v) => v.pack(p.u8(Code::PairingConfirm)),
+            PairingRandom(ref v) => v.pack(p.u8(Code::PairingRandom)),
+            PairingFailed(v) => p.u8(Code::PairingFailed).u8(v).into(),
+            EncryptionInformation() | CentralIdentification() => {
+                unimplemented!("legacy pairing command")
+            }
+            IdentityInformation() => unimplemented!(),
+            IdentityAddressInformation(ref v) => v.pack(p.u8(Code::IdentityAddressInformation)),
+            SigningInformation() => unimplemented!(),
+            SecurityRequest(v) => p.u8(Code::SecurityRequest).u8(v.bits()).into(),
+            PairingPublicKey(ref v) => v.pack(p.u8(Code::PairingPublicKey)),
+            PairingDhKeyCheck(ref v) => v.pack(p.u8(Code::PairingDhKeyCheck)),
+            PairingKeypressNotification(v) => p.u8(Code::PairingKeypressNotification).u8(v).into(),
         }
     }
 }
@@ -63,15 +72,21 @@ impl<T: host::Transport> TryFrom<Sdu<T>> for Command {
             Code::PairingConfirm => Confirm::unpack(p).map(Self::PairingConfirm),
             Code::PairingRandom => Nonce::unpack(p).map(Self::PairingRandom),
             Code::PairingFailed => Reason::try_from(p.u8()).ok().map(Self::PairingFailed),
-            Code::EncryptionInformation => None,
-            Code::CentralIdentification => None,
-            Code::IdentityInformation => None,
-            Code::IdentityAddressInformation => None,
-            Code::SigningInformation => None,
-            Code::SecurityRequest => None,
+            Code::EncryptionInformation => Some(Self::EncryptionInformation()),
+            Code::CentralIdentification => Some(Self::CentralIdentification()),
+            Code::IdentityInformation => Some(Self::IdentityInformation()),
+            Code::IdentityAddressInformation => {
+                le::Addr::unpack(p).map(Self::IdentityAddressInformation)
+            }
+            Code::SigningInformation => Some(Self::SigningInformation()),
+            Code::SecurityRequest => {
+                Some(Self::SecurityRequest(AuthReq::from_bits_truncate(p.u8())))
+            }
             Code::PairingPublicKey => PublicKey::unpack(p).map(Self::PairingPublicKey),
-            Code::PairingDhKeyCheck => None,
-            Code::PairingKeypressNotification => None,
+            Code::PairingDhKeyCheck => Check::unpack(p).map(Self::PairingDhKeyCheck),
+            Code::PairingKeypressNotification => PasskeyEntry::try_from(p.u8())
+                .ok()
+                .map(Self::PairingKeypressNotification),
         })
         .flatten()
         .ok_or_else(|| {
@@ -87,7 +102,7 @@ pub(crate) struct PairingParams {
     /// IO capabilities.
     pub io_cap: IoCap,
     /// OOB authentication data is available flag.
-    pub oob_authn: bool,
+    pub oob_data: bool,
     /// Requested security properties.
     pub auth_req: AuthReq,
     /// Maximum encryption key size that the device can support (7-16 octets).
@@ -104,7 +119,7 @@ impl Codec for PairingParams {
     #[inline]
     fn pack(&self, p: &mut Packer) {
         p.u8(self.io_cap)
-            .bool(self.oob_authn)
+            .bool(self.oob_data)
             .u8(self.auth_req.bits())
             .u8(self.max_key_len)
             .u8(self.initiator_keys.bits())
@@ -115,7 +130,7 @@ impl Codec for PairingParams {
     fn unpack(p: &mut Unpacker) -> Option<Self> {
         Some(Self {
             io_cap: IoCap::try_from(p.u8()).ok()?,
-            oob_authn: p.bool(),
+            oob_data: p.bool(),
             auth_req: AuthReq::from_bits_truncate(p.u8()),
             max_key_len: {
                 let v = p.u8();
@@ -125,5 +140,12 @@ impl Codec for PairingParams {
             initiator_keys: KeyDist::from_bits_truncate(p.u8()),
             responder_keys: KeyDist::from_bits_truncate(p.u8()),
         })
+    }
+}
+
+impl From<&PairingParams> for burble_crypto::IoCap {
+    #[inline]
+    fn from(p: &PairingParams) -> Self {
+        Self::new(p.auth_req.bits(), p.oob_data, u8::from(p.io_cap))
     }
 }

@@ -96,7 +96,7 @@ impl IoCap {
 }
 
 bitflags! {
-    /// Requested security properties ([Vol 3] Part H, Section 3.5.1)
+    /// Requested security properties ([Vol 3] Part H, Section 3.5.1).
     #[derive(Default)]
     #[repr(transparent)]
     pub struct AuthReq: u8 {
@@ -114,7 +114,7 @@ bitflags! {
 }
 
 bitflags! {
-    /// LE Key Distribution parameter ([Vol 3] Part H, Section 3.6.1)
+    /// LE Key Distribution parameter ([Vol 3] Part H, Section 3.6.1).
     #[derive(Default)]
     #[repr(transparent)]
     pub struct KeyDist: u8 {
@@ -182,6 +182,27 @@ pub enum Reason {
     CrossTransportKeyDerivationNotAllowed = 0x0E,
     /// Device chose not to accept a distributed key.
     KeyRejected = 0x0F,
+}
+
+/// Keypress notification type ([Vol 3] Part H, Section 3.5.8).
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    PartialEq,
+    num_enum::IntoPrimitive,
+    num_enum::TryFromPrimitive,
+    strum::Display,
+)]
+#[non_exhaustive]
+#[repr(u8)]
+pub enum PasskeyEntry {
+    Started = 0,
+    DigitEntered = 1,
+    DigitErased = 2,
+    Cleared = 3,
+    Completed = 4,
 }
 
 bitflags! {

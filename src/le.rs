@@ -2,6 +2,8 @@
 
 use std::fmt::{Debug, Display, Formatter};
 
+use structbuf::{Packer, Unpacker};
+
 use crate::hci::Event;
 
 /// Bluetooth device address ([Vol 6] Part B, Section 1.3).
@@ -44,6 +46,27 @@ impl Default for Addr {
     }
 }
 
+/// SMP command codec ([Vol 3] Part H, Section 3.6.5).
+impl burble_crypto::Codec for Addr {
+    #[inline]
+    fn pack(&self, p: &mut Packer) {
+        // TODO: Confirm little-endian encoding
+        match *self {
+            Self::Public(ref addr) => p.u8(0).put(addr.0),
+            Self::Random(ref addr) => p.u8(1).put(addr.0),
+        };
+    }
+
+    #[inline]
+    fn unpack(p: &mut Unpacker) -> Option<Self> {
+        Some(match (p.u8(), RawAddr::from_le_bytes(p.bytes())) {
+            (0, addr) => Self::Public(addr),
+            (1, addr) => Self::Random(addr),
+            _ => return None,
+        })
+    }
+}
+
 impl From<Addr> for burble_crypto::Addr {
     #[inline]
     fn from(a: Addr) -> Self {
@@ -60,15 +83,17 @@ impl From<Addr> for burble_crypto::Addr {
 #[repr(transparent)]
 pub struct RawAddr([u8; 6]);
 
-impl From<[u8; 6]> for RawAddr {
-    #[inline]
-    fn from(v: [u8; 6]) -> Self {
+impl RawAddr {
+    /// Creates a device address from a little-endian byte array.
+    #[inline(always)]
+    #[must_use]
+    pub const fn from_le_bytes(v: [u8; 6]) -> Self {
         Self(v)
     }
 }
 
 impl AsRef<[u8]> for RawAddr {
-    #[inline]
+    #[inline(always)]
     fn as_ref(&self) -> &[u8] {
         self.0.as_ref()
     }
@@ -105,7 +130,7 @@ impl TxPower {
     pub(crate) const NONE: i8 = 0x7F;
 
     /// Creates a power level of `v` dBm.
-    #[inline]
+    #[inline(always)]
     #[must_use]
     pub const fn new(v: i8) -> Self {
         Self(v)
@@ -113,21 +138,21 @@ impl TxPower {
 }
 
 impl Default for TxPower {
-    #[inline]
+    #[inline(always)]
     fn default() -> Self {
         Self(Self::MAX)
     }
 }
 
 impl From<&mut Event<'_>> for TxPower {
-    #[inline]
+    #[inline(always)]
     fn from(e: &mut Event<'_>) -> Self {
         Self(e.i8())
     }
 }
 
 impl From<TxPower> for i8 {
-    #[inline]
+    #[inline(always)]
     fn from(p: TxPower) -> Self {
         p.0
     }

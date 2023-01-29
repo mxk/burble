@@ -82,6 +82,6 @@ fn error() {
 #[test]
 fn addr() {
     let mut e = Event::try_from([EventCode::Vendor as u8, 6, 0, 1, 2, 3, 4, 5].as_ref()).unwrap();
-    assert_eq!(e.addr(), RawAddr::from([0, 1, 2, 3, 4, 5]));
+    assert_eq!(e.addr(), RawAddr::from_le_bytes([0, 1, 2, 3, 4, 5]));
     assert!(e.params.is_empty());
 }
