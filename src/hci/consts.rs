@@ -637,7 +637,7 @@ pub enum AdvAddrType {
     /// Controller generates the Resolvable Private Address based on the local
     /// IRK from the resolving list. If the resolving list contains no matching
     /// entry, use the random address from
-    /// `le_set_advertising_set_random_address()`.
+    /// `le_set_advertising_set_random_address`.
     PrivateOrRandom = 0x03,
 }
 

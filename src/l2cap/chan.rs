@@ -23,10 +23,10 @@ pub(crate) struct BasicChan<T: host::Transport> {
 impl<T: host::Transport> BasicChan<T> {
     /// Creates a new channel.
     #[inline]
-    pub(super) fn new(cid: LeCid, tx: &Arc<tx::State<T>>, mtu: u16) -> Self {
+    pub(super) fn new(cid: LeCid, cn: &Arc<ConnInfo>, tx: &Arc<tx::State<T>>, mtu: u16) -> Self {
         assert!(mtu >= L2CAP_LE_MIN_MTU);
         Self {
-            raw: RawChan::new(cid, L2CAP_HDR + mtu as usize),
+            raw: RawChan::new(cid, cn, L2CAP_HDR + mtu as usize),
             tx: Arc::clone(tx),
             mtu,
         }
@@ -38,8 +38,14 @@ impl<T: host::Transport> BasicChan<T> {
         self.raw.cid
     }
 
+    /// Returns connection information.
+    #[inline(always)]
+    pub(crate) fn conn_info(&self) -> &ConnInfo {
+        &self.raw.cn
+    }
+
     /// Returns the current MTU.
-    #[inline]
+    #[inline(always)]
     pub const fn mtu(&self) -> u16 {
         self.mtu
     }
@@ -113,15 +119,17 @@ impl<T: host::Transport> BasicChan<T> {
 #[derive(Debug)]
 pub(super) struct RawChan<T: host::Transport> {
     pub cid: LeCid,
+    pub cn: Arc<ConnInfo>,
     pub state: Condvar<State<T>>,
 }
 
 impl<T: host::Transport> RawChan<T> {
     /// Creates new channel state.
     #[inline]
-    fn new(cid: LeCid, max_frame_len: usize) -> Arc<Self> {
+    fn new(cid: LeCid, cn: &Arc<ConnInfo>, max_frame_len: usize) -> Arc<Self> {
         Arc::new(Self {
             cid,
+            cn: Arc::clone(cn),
             state: Condvar::new(State::new(max_frame_len)),
         })
     }

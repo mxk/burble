@@ -16,8 +16,9 @@ use tracing::debug;
 pub(crate) use chan::*;
 pub use {consts::*, handle::*};
 
-use crate::hci::ACL_HDR;
+use crate::hci::{Role, ACL_HDR};
 use crate::host::Transfer;
+use crate::le::Addr;
 use crate::{att, hci, host};
 
 mod chan;
@@ -64,17 +65,22 @@ pub struct ChanManager<T: host::Transport> {
     ctl: hci::EventWaiterGuard<T>,
     conns: HashMap<LeU, Conn<T>>,
     rm: ResManager<T>,
+    local_addr: Addr,
 }
 
 impl<T: host::Transport + 'static> ChanManager<T> {
-    /// Creates a new Channel Manager.
-    pub async fn new(host: &hci::Host<T>) -> Result<Self> {
+    /// Creates a new Channel Manager. `local_addr` is the address used to
+    /// establish new connections, which is then used by the Security Manager.
+    pub async fn new(host: &hci::Host<T>, local_addr: Addr) -> Result<Self> {
         let ctl = host.register(hci::EventFilter::ChanManager)?;
         let rm = ResManager::new(host).await?;
+        // TODO: Figure out how to get the local address on a per-connection
+        // basis.
         Ok(Self {
             ctl,
-            rm,
             conns: HashMap::new(),
+            rm,
+            local_addr,
         })
     }
 
@@ -140,14 +146,19 @@ impl<T: host::Transport + 'static> ChanManager<T> {
             return None;
         }
         let link = LeU::new(evt.handle);
+        let ci = Arc::new(ConnInfo {
+            role: evt.role,
+            local_addr: self.local_addr,
+            peer_addr: evt.peer_addr, // TODO: Handle peer_rpa
+        });
 
         // [Vol 3] Part A, Section 4
-        let sig = BasicChan::new(link.chan(Cid::LE_SIGNAL), &self.rm.tx, 23);
+        let sig = BasicChan::new(link.chan(Cid::LE_SIGNAL), &ci, &self.rm.tx, 23);
         // [Vol 3] Part G, Section 5.2
-        let att = BasicChan::new(link.chan(Cid::ATT), &self.rm.tx, 23);
+        let att = BasicChan::new(link.chan(Cid::ATT), &ci, &self.rm.tx, 23);
         // [Vol 3] Part H, Section 3.2
         // TODO: MTU is 23 when LE Secure Connections is not supported
-        let sm = BasicChan::new(link.chan(Cid::SM), &self.rm.tx, 65);
+        let sm = BasicChan::new(link.chan(Cid::SM), &ci, &self.rm.tx, 65);
 
         // [Vol 3] Part A, Section 2.2
         self.rm.tx.register_link(LeU::new(evt.handle));
@@ -215,6 +226,17 @@ impl<T: host::Transport + 'static> ResManager<T> {
             tx: tx::State::new(host.transport().clone(), acl_num_pkts, cbuf.acl_data_len),
         })
     }
+}
+
+/// Information about an established LE-U connection.
+#[derive(Debug)]
+pub(crate) struct ConnInfo {
+    /// Local role.
+    pub role: Role,
+    /// Local public or random address.
+    pub local_addr: Addr,
+    /// Remote public or random address.
+    pub peer_addr: Addr,
 }
 
 /// Established connection over an LE-U logical link.

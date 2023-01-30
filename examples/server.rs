@@ -30,9 +30,13 @@ async fn main() -> Result<()> {
     let hci_mon = host.enable_events();
     host.init().await?;
     info!("Local version: {:?}", host.read_local_version().await?);
-    info!("Device address: {:?}", host.read_bd_addr().await?);
+    let local_addr = host.read_bd_addr().await?;
+    info!("Device address: {:?}", local_addr);
 
-    let cm = tokio::task::spawn(server_loop(db(), l2cap::ChanManager::new(&host).await?));
+    let cm = tokio::task::spawn(server_loop(
+        db(),
+        l2cap::ChanManager::new(&host, local_addr).await?,
+    ));
 
     advertise(&host).await?;
     let _ = cm.await?;

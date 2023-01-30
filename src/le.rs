@@ -50,7 +50,6 @@ impl Default for Addr {
 impl burble_crypto::Codec for Addr {
     #[inline]
     fn pack(&self, p: &mut Packer) {
-        // TODO: Confirm little-endian encoding
         match *self {
             Self::Public(ref addr) => p.u8(0).put(addr.0),
             Self::Random(ref addr) => p.u8(1).put(addr.0),
