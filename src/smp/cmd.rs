@@ -1,5 +1,5 @@
 use structbuf::{Pack, Packer, Unpack, Unpacker};
-use tracing::warn;
+use tracing::{error, trace};
 
 use burble_crypto::{Check, Codec, Confirm, Nonce, PublicKey};
 
@@ -28,7 +28,7 @@ pub(super) enum Command {
 }
 
 impl Command {
-    fn pack<T: host::Transport>(&self, pdu: &mut Sdu<T>) {
+    pub fn pack<T: host::Transport>(&self, pdu: &mut Sdu<T>) {
         use Command::*;
         let mut p = pdu.append();
         match *self {
@@ -58,12 +58,12 @@ impl<T: host::Transport> TryFrom<Sdu<T>> for Command {
         // [Vol 3] Part H, Section 3.3
         let mut p = pdu.unpack();
         if p.is_empty() {
-            warn!("Empty PDU");
+            error!("Empty PDU");
             return Err(Reason::InvalidParameters);
         };
         let code = p.u8();
         let Ok(code) = Code::try_from(code) else {
-            warn!("Unknown command code: {code:#04X}");
+            error!("Unknown command code: {code:#04X}");
             return Err(Reason::CommandNotSupported);
         };
         p.map(|p| match code {
@@ -89,16 +89,22 @@ impl<T: host::Transport> TryFrom<Sdu<T>> for Command {
                 .map(Self::PairingKeypressNotification),
         })
         .flatten()
-        .ok_or_else(|| {
-            warn!("Invalid {code} PDU");
-            Reason::InvalidParameters
-        })
+        .map_or_else(
+            || {
+                error!("Invalid {code} PDU");
+                Err(Reason::InvalidParameters)
+            },
+            |cmd| {
+                trace!("{cmd:?}");
+                Ok(cmd)
+            },
+        )
     }
 }
 
 /// Pairing request/response command ([Vol 3] Part H, Section 3.5.1).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct PairingParams {
+pub(super) struct PairingParams {
     /// IO capabilities.
     pub io_cap: IoCap,
     /// OOB authentication data is available flag.
@@ -113,6 +119,25 @@ pub(crate) struct PairingParams {
     /// Keys that the initiator is requesting the responder to distribute /
     /// generate or use during the Transport Specific Key Distribution phase.
     pub responder_keys: KeyDist,
+}
+
+impl PairingParams {
+    /// Minimum allowed key length (128-bit).
+    pub const MIN_KEY_LEN: u8 = 16;
+}
+
+impl Default for PairingParams {
+    #[inline]
+    fn default() -> Self {
+        Self {
+            io_cap: IoCap::NoInputNoOutput,
+            oob_data: false,
+            auth_req: AuthReq::SC,
+            max_key_len: Self::MIN_KEY_LEN,
+            initiator_keys: KeyDist::empty(),
+            responder_keys: KeyDist::empty(),
+        }
+    }
 }
 
 impl Codec for PairingParams {
@@ -143,9 +168,9 @@ impl Codec for PairingParams {
     }
 }
 
-impl From<&PairingParams> for burble_crypto::IoCap {
+impl From<PairingParams> for burble_crypto::IoCap {
     #[inline]
-    fn from(p: &PairingParams) -> Self {
+    fn from(p: PairingParams) -> Self {
         Self::new(p.auth_req.bits(), p.oob_data, u8::from(p.io_cap))
     }
 }

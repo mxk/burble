@@ -5,7 +5,7 @@ use p256::ecdh;
 use structbuf::{Packer, Unpacker};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-use crate::{debug_secret, Addr, AesCmac, Codec, Key, MacKey, Nonce};
+use crate::{debug_secret, Addr, AesCmac, Codec, Key, MacKey, Nonce, LTK};
 
 /// P-256 elliptic curve secret key.
 #[derive(Zeroize, ZeroizeOnDrop)]
@@ -158,14 +158,6 @@ impl DHKey {
         (MacKey(half(&mut m, 0)), LTK(half(&mut m, 1)))
     }
 }
-
-/// LE Secure Connections long-term key.
-#[derive(Zeroize, ZeroizeOnDrop)]
-#[must_use]
-#[repr(transparent)]
-pub struct LTK(Key);
-
-debug_secret!(LTK);
 
 /// Combines `hi` and `lo` values into a big-endian byte array.
 #[allow(clippy::redundant_pub_crate)]

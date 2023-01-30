@@ -1,9 +1,11 @@
 use bitflags::bitflags;
 
+// TODO: Remove Eq and PartialEq from types that don't need them
+
 /// User input capabilities ([Vol 3] Part H, Section 2.3.2, Table 2.3).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
-pub enum InputCap {
+pub(super) enum InputCap {
     /// Device does not have the ability to indicate 'yes' or 'no'.
     None,
     /// Device has a mechanism for the user to indicate either 'yes' or 'no'.
@@ -17,13 +19,46 @@ pub enum InputCap {
 /// User output capabilities ([Vol 3] Part H, Section 2.3.2, Table 2.4).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
-pub enum OutputCap {
+pub(super) enum OutputCap {
     /// Device does not have the ability to display or communicate a 6 digit
     /// decimal number.
     None,
     /// Device has the ability to display or communicate a 6 digit decimal
     /// number.
     Numeric,
+}
+
+/// Key generation method ([Vol 3] Part H, Section 2.3.5.1, Table 2.8).
+#[derive(Clone, Copy, Debug)]
+pub(super) enum KeyGenMethod {
+    // TODO: Oob
+    JustWorks,
+    PasskeyEntry,
+    NumCompare,
+}
+
+impl KeyGenMethod {
+    /// Map of IO capabilities to key generation method
+    /// ([Vol 3] Part H, Section 2.3.5.1, Table 2.8).
+    #[rustfmt::skip]
+    const MAP: [[Self; 5]; 5] = {
+        use KeyGenMethod::*;
+        [// DisplayOnly    DisplayYesNo  KeyboardOnly  NoInputNoOutput KeyboardDisplay
+            [JustWorks,    JustWorks,    PasskeyEntry, JustWorks,      PasskeyEntry  ], // DisplayOnly
+            [JustWorks,    NumCompare,   PasskeyEntry, JustWorks,      NumCompare    ], // DisplayYesNo
+            [PasskeyEntry, PasskeyEntry, PasskeyEntry, JustWorks,      PasskeyEntry  ], // KeyboardOnly
+            [JustWorks,    JustWorks,    JustWorks,    JustWorks,      JustWorks     ], // NoInputNoOutput
+            [PasskeyEntry, NumCompare,   PasskeyEntry, JustWorks,      NumCompare    ], // KeyboardDisplay
+        ]
+    };
+
+    /// Returns key generation method for the given combination of IO
+    /// capabilities. The mapping is symmetric, so it doesn't matter which
+    /// parameter is the initiator and which one is the responder.
+    #[inline(always)]
+    pub const fn resolve(a: IoCap, b: IoCap) -> Self {
+        Self::MAP[a as usize][b as usize]
+    }
 }
 
 /// Command code ([Vol 3] Part H, Section 3.3).
@@ -61,6 +96,7 @@ pub enum Code {
     Clone,
     Copy,
     Debug,
+    Default,
     Eq,
     PartialEq,
     num_enum::IntoPrimitive,
@@ -69,10 +105,11 @@ pub enum Code {
 )]
 #[non_exhaustive]
 #[repr(u8)]
-pub enum IoCap {
+pub(super) enum IoCap {
     DisplayOnly = 0x00,
     DisplayYesNo = 0x01,
     KeyboardOnly = 0x02,
+    #[default]
     NoInputNoOutput = 0x03,
     KeyboardDisplay = 0x04,
 }
@@ -203,14 +240,4 @@ pub enum PasskeyEntry {
     DigitErased = 2,
     Cleared = 3,
     Completed = 4,
-}
-
-bitflags! {
-    /// Security properties.
-    #[derive(Default)]
-    #[repr(transparent)]
-    pub struct Prop: u8 {
-        const AUTH = 0x01;
-        const MITM = 0x02;
-    }
 }
