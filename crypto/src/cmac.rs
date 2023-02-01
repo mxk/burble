@@ -77,13 +77,12 @@ impl Key {
     pub fn new(k: u128) -> Self {
         Self(k.to_be_bytes().into())
     }
+}
 
-    /// Converts the key to `u128`.
-    #[cfg(test)]
+impl From<&Key> for u128 {
     #[inline(always)]
-    #[must_use]
-    pub fn to_u128(&self) -> u128 {
-        u128::from_be_bytes(*self.0.as_ref())
+    fn from(k: &Key) -> Self {
+        Self::from_be_bytes(k.0.into())
     }
 }
 
@@ -99,7 +98,7 @@ mod tests {
             v.to_be_bytes()
         }
         fn eq(m: &mut AesCmac, v: u128) {
-            assert_eq!(m.finalize_key().to_u128(), v);
+            assert_eq!(u128::from(&m.finalize_key()), v);
         }
         let mut m = AesCmac::new(&Key::new(0x2b7e1516_28aed2a6_abf71588_09cf4f3c));
         eq(&mut m, 0xbb1d6929_e9593728_7fa37d12_9b756746);
