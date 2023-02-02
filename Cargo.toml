@@ -21,7 +21,7 @@ publish.workspace = true
 
 [workspace.dependencies]
 num_enum = "0.5.7"
-structbuf = { version = "0", path = "../structbuf-rs" }
+structbuf = "0"
 strum = { version = "0.24.1", features = ["derive"] }
 tracing = "0.1.36"
 
