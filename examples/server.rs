@@ -140,7 +140,7 @@ fn db() -> Arc<gatt::Db> {
         );
     });
     let db = Arc::new(gatt::Db::new(b.freeze()));
-    db.write().insert(dev_name, "Burble".as_bytes().to_vec());
+    db.write().insert(dev_name, b"Burble".to_vec());
     db
 }
 

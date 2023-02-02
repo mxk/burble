@@ -95,6 +95,7 @@ impl<T: host::Transport> Peripheral<T> {
 
     /// Performs LE Secure Connections Long Term Key (LTK) Generation phase
     /// ([Vol 3] Part H, Section 2.3.5.6).
+    #[allow(clippy::similar_names)]
     async fn phase2(
         &mut self,
         method: KeyGenMethod,
@@ -143,6 +144,7 @@ impl<T: host::Transport> Peripheral<T> {
 
     /// Implements Authentication stage 1 – Just Works or Numeric Comparison
     /// ([Vol 3] Part H, Section 2.3.5.6.2 and C.2.2.2.1).
+    #[allow(clippy::similar_names)]
     async fn authn1_num_compare(
         &mut self,
         method: KeyGenMethod,
