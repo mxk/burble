@@ -11,11 +11,11 @@ use burble::*;
 struct Args {
     /// Vendor ID of the Bluetooth USB device
     #[arg(short, long, value_parser=hex16)]
-    vid: u16,
+    vid: Option<u16>,
 
     /// Product ID of the Bluetooth USB device
     #[arg(short, long, value_parser=hex16)]
-    pid: u16,
+    pid: Option<u16>,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -23,7 +23,18 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
     let args = Args::parse();
     let usb = host::Usb::new()?;
-    let mut ctlr = usb.open_first(args.vid, args.pid)?;
+    let mut ctlr = match (args.vid, args.pid) {
+        (Some(vid), Some(pid)) => usb.open_first(vid, pid)?,
+        _ => {
+            println!(
+                "Available controllers (pass 'ID <VID>:<PID>' to '--vid' and '--pid' options):"
+            );
+            for ctlr in usb.controllers()? {
+                println!("{ctlr}");
+            }
+            return Ok(());
+        }
+    };
     ctlr.init()?;
     let host = hci::Host::new(ctlr);
 
