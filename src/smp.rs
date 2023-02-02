@@ -8,13 +8,14 @@ use futures_core::future::BoxFuture;
 
 use burble_crypto::NumCompare;
 pub(self) use cmd::*;
-pub use {consts::*, peripheral::*};
+pub use {consts::*, peripheral::*, secdb::*};
 
 use crate::l2cap;
 
 mod cmd;
 mod consts;
 mod peripheral;
+mod secdb;
 
 /// Error type returned by the SMP layer.
 #[derive(Clone, Debug, thiserror::Error)]

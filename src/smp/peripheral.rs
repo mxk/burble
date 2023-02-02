@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use tracing::error;
 
+use crate::hci::Role;
 use burble_crypto::{Nonce, PublicKeyX, SecretKey, LTK};
 
 use crate::host;
@@ -22,7 +23,8 @@ pub struct Peripheral<T: host::Transport> {
 impl<T: host::Transport> Peripheral<T> {
     /// Creates a new peripheral security manager.
     #[inline(always)]
-    pub(crate) const fn new(dev: Device, ch: BasicChan<T>) -> Self {
+    pub(crate) fn new(dev: Device, ch: BasicChan<T>) -> Self {
+        assert_eq!(ch.conn_info().role, Role::Peripheral);
         Self { dev, ch, ltk: None }
     }
 
