@@ -97,3 +97,14 @@ A `WDF_VIOLATION` [BSOD] may be caused by having multiple [multiple power policy
 
 [BSOD]: https://github.com/daynix/UsbDk/issues/115
 [multiple power policy owners]: https://sourceforge.net/p/libusb-win32/mailman/message/25823294/
+
+Tested Controllers
+------------------
+
+Below is a list of Bluetooth controllers that have been tested with this library.
+
+| Device         | VID:PID   | BLE Version | Chip       | ACL Buffers |
+| -------------- | --------- |:-----------:|:----------:|:-----------:|
+| Edimax BT-8500 | 7392:C611 | 5.1         | RTL8761BUV | 8 * 251B    |
+| Intel AX210    | 8087:0032 | 5.3         | -          | 3 * 251B    |
+| Intel AX211    | 8087:0033 | 5.3         | -          | 3 * 251B    |
