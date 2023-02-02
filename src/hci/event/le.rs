@@ -3,7 +3,7 @@ use crate::le::{Addr, RawAddr};
 use super::*;
 
 /// `HCI_LE_Connection_Complete` and `HCI_LE_Enhanced_Connection_Complete` event
-/// parameters.
+/// parameters ([Vol 4] Part E, Section 7.7.65.1 and 7.7.65.10).
 #[derive(Clone, Debug)]
 pub struct LeConnectionComplete {
     pub status: Status,
@@ -53,7 +53,28 @@ impl From<&mut Event<'_>> for LeConnectionComplete {
     }
 }
 
-/// `HCI_LE_Advertising_Set_Terminated` event parameters.
+/// `HCI_LE_Long_Term_Key_Request` event parameters
+/// ([Vol 4] Part E, Section 7.7.65.5).
+#[derive(Clone, Debug)]
+pub struct LeLongTermKeyRequest {
+    pub conn_handle: ConnHandle,
+    pub rand: u64,
+    pub ediv: u16,
+}
+
+#[allow(clippy::fallible_impl_from)]
+impl From<&mut Event<'_>> for LeLongTermKeyRequest {
+    fn from(e: &mut Event<'_>) -> Self {
+        Self {
+            conn_handle: ConnHandle::new(e.u16()).unwrap(),
+            rand: e.u64(),
+            ediv: e.u16(),
+        }
+    }
+}
+
+/// `HCI_LE_Advertising_Set_Terminated` event parameters
+/// ([Vol 4] Part E, Section 7.7.65.18).
 #[derive(Clone, Debug)]
 pub struct LeAdvertisingSetTerminated {
     pub status: Status,
