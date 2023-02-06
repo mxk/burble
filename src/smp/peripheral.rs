@@ -1,12 +1,13 @@
+use std::sync::Arc;
 use std::time::Duration;
 
-use tracing::error;
+use tracing::{debug, error};
 
-use crate::hci::Role;
 use burble_crypto::{Nonce, PublicKeyX, SecretKey, LTK};
 
-use crate::host;
+use crate::hci::Role;
 use crate::l2cap::BasicChan;
+use crate::{host, le};
 
 use super::*;
 
@@ -17,15 +18,15 @@ use super::*;
 pub struct Peripheral<T: host::Transport> {
     dev: Device,
     ch: BasicChan<T>,
-    ltk: Option<LTK>,
+    store: Arc<dyn Store>,
 }
 
 impl<T: host::Transport> Peripheral<T> {
     /// Creates a new peripheral security manager.
     #[inline(always)]
-    pub(crate) fn new(dev: Device, ch: BasicChan<T>) -> Self {
+    pub(crate) fn new(dev: Device, ch: BasicChan<T>, store: Arc<dyn Store>) -> Self {
         assert_eq!(ch.conn_info().role, Role::Peripheral);
-        Self { dev, ch, ltk: None }
+        Self { dev, ch, store }
     }
 
     /// Handles responder pairing role. This method is not cancel safe.
@@ -44,9 +45,16 @@ impl<T: host::Transport> Peripheral<T> {
             Err(reason) => return self.fail(reason).await,
         };
         let Phase1 { a, b, method } = self.phase1(init).await?;
-        self.ltk = Some(self.phase2(method, a.into(), b.into()).await?);
-        // TODO: Handle HCI encryption events
-        self.phase3(b.initiator_keys, b.responder_keys).await
+        let (peer, ltk) = self.phase2(method, a.into(), b.into()).await?;
+        let mut keys = Keys { ltk };
+        (self.phase3(b.initiator_keys, b.responder_keys, &mut keys)).await?;
+        if let Err(e) = self.store.save(peer, &keys) {
+            error!("Failed to save keys for {peer}: {e}");
+            Err(e.into())
+        } else {
+            debug!("Saved keys for {peer}");
+            Ok(())
+        }
     }
 
     /// Performs Pairing Feature Exchange phase
@@ -101,7 +109,7 @@ impl<T: host::Transport> Peripheral<T> {
         method: KeyGenMethod,
         ioa: burble_crypto::IoCap,
         iob: burble_crypto::IoCap,
-    ) -> Result<LTK> {
+    ) -> Result<(le::Addr, LTK)> {
         // Public key exchange ([Vol 3] Part H, Section 2.3.5.6.1 and C.2.2.1)
         let skb = SecretKey::new();
         let pkb = skb.public_key();
@@ -126,9 +134,9 @@ impl<T: host::Transport> Peripheral<T> {
 
         // Authentication stage 2 and long term key calculation
         // ([Vol 3] Part H, Section 2.3.5.6.5 and C.2.2.4).
-        let (a, b) = {
+        let (peer, a, b) = {
             let cn = self.ch.conn_info();
-            (cn.peer_addr.into(), cn.local_addr.into())
+            (cn.peer_addr, cn.peer_addr.into(), cn.local_addr.into())
         };
         let (mac_key, ltk) = dh_key.f5(na, nb, a, b);
         let eb = mac_key.f6(nb, na, ra, iob, b, a);
@@ -139,7 +147,7 @@ impl<T: host::Transport> Peripheral<T> {
             return self.fail(Reason::DhKeyCheckFailed).await;
         }
         self.send(Command::PairingDhKeyCheck(eb)).await?;
-        Ok(ltk) // TODO: Set authentication status
+        Ok((peer, ltk)) // TODO: Set authentication status
     }
 
     /// Implements Authentication stage 1 – Just Works or Numeric Comparison
@@ -177,7 +185,7 @@ impl<T: host::Transport> Peripheral<T> {
 
     /// Performs Transport Specific Key Distribution phase
     /// ([Vol 3] Part H, Section 3.6.1 and C.3).
-    async fn phase3(&self, a: KeyDist, b: KeyDist) -> Result<()> {
+    async fn phase3(&self, a: KeyDist, b: KeyDist, _k: &mut Keys) -> Result<()> {
         if !b.is_empty() {
             // TODO: IRK
             // TODO: BD_ADDR

@@ -3,6 +3,7 @@
 #![allow(dead_code)] // TODO: Remove
 
 use std::fmt::Debug;
+use std::io;
 
 use futures_core::future::BoxFuture;
 
@@ -18,7 +19,7 @@ mod peripheral;
 mod secdb;
 
 /// Error type returned by the SMP layer.
-#[derive(Clone, Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum Error {
     #[error(transparent)]
@@ -27,6 +28,8 @@ pub enum Error {
     Local(Reason),
     #[error("remote failure: {0}")]
     Remote(Reason),
+    #[error("io error: {0}")]
+    Io(#[from] io::Error),
     #[error("pairing timeout")]
     Timeout,
 }
