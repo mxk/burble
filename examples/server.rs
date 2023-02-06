@@ -1,3 +1,7 @@
+#![allow(clippy::print_stdout)]
+#![allow(clippy::print_stderr)]
+#![allow(clippy::similar_names)]
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -23,17 +27,14 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
     let args = Args::parse();
     let usb = host::Usb::new()?;
-    let mut ctlr = match (args.vid, args.pid) {
-        (Some(vid), Some(pid)) => usb.open_first(vid, pid)?,
-        _ => {
-            println!(
-                "Available controllers (pass 'ID <VID>:<PID>' to '--vid' and '--pid' options):"
-            );
-            for ctlr in usb.controllers()? {
-                println!("{ctlr}");
-            }
-            return Ok(());
+    let mut ctlr = if let (Some(vid), Some(pid)) = (args.vid, args.pid) {
+        usb.open_first(vid, pid)?
+    } else {
+        println!("Available controllers (pass 'ID <VID>:<PID>' to '--vid' and '--pid' options):");
+        for ctlr in usb.controllers()? {
+            println!("{ctlr}");
         }
+        return Ok(());
     };
     ctlr.init()?;
     let host = hci::Host::new(ctlr);

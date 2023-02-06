@@ -377,12 +377,15 @@ impl Future for EventReceiverTask {
     }
 }
 
+// TODO: Use event masks for filtering.
+
 /// Defines event matching criteria.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum EventFilter {
     Command(Opcode),
     AdvManager,
     ChanManager,
+    SecDb,
 }
 
 impl EventFilter {
@@ -502,11 +505,12 @@ impl<T: host::Transport> EventGuard<T> {
     }
 
     /// Returns whether the event matches filter `f`.
+    #[allow(clippy::match_same_arms)]
     fn matches(&self, f: &EventFilter) -> bool {
         use {EventFilter::*, EventType::*};
         match self.typ {
             Hci(EventCode::DisconnectionComplete | EventCode::NumberOfCompletedPackets) => {
-                *f == ChanManager
+                matches!(*f, ChanManager)
             }
             Hci(EventCode::CommandComplete | EventCode::CommandStatus) => {
                 matches!(*f, Command(op) if op == self.opcode)
@@ -518,9 +522,11 @@ impl<T: host::Transport> EventGuard<T> {
                         LeConnectionComplete::from(&mut self.get()).role == Role::Peripheral
                     }
                     ChanManager => true,
+                    SecDb => true,
                 }
             }
-            Le(SubeventCode::AdvertisingSetTerminated) => *f == AdvManager,
+            Le(SubeventCode::LongTermKeyRequest) => matches!(*f, SecDb),
+            Le(SubeventCode::AdvertisingSetTerminated) => matches!(*f, AdvManager),
             _ => false,
         }
     }
