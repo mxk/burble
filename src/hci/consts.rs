@@ -59,6 +59,8 @@ pub enum Opcode {
     LeSetEventMask = Le.ocf(0x0001),
     LeReadBufferSize = Le.ocf(0x0002),
     LeReadBufferSizeV2 = Le.ocf(0x0060),
+    LeLongTermKeyRequestReply = Le.ocf(0x001A),
+    LeLongTermKeyRequestNegativeReply = Le.ocf(0x001B),
     LeSetAdvertisingSetRandomAddress = Le.ocf(0x0035),
     LeSetExtendedAdvertisingParameters = Le.ocf(0x0036),
     LeSetExtendedAdvertisingData = Le.ocf(0x0037),
