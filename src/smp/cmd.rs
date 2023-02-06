@@ -1,5 +1,5 @@
 use structbuf::{Pack, Packer, Unpack, Unpacker};
-use tracing::{error, trace};
+use tracing::{debug, error, trace};
 
 use burble_crypto::{Check, Codec, Confirm, Nonce, PublicKey};
 
@@ -160,7 +160,7 @@ impl Codec for PairingParams {
             max_key_len: {
                 let v = p.u8();
                 #[allow(clippy::manual_range_contains)]
-                (v < 7 || 16 < v).then_some(v)?
+                (7 <= v && v <= 16).then_some(v)?
             },
             initiator_keys: KeyDist::from_bits_truncate(p.u8()),
             responder_keys: KeyDist::from_bits_truncate(p.u8()),

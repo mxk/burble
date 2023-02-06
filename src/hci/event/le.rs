@@ -66,7 +66,7 @@ pub struct LeLongTermKeyRequest {
 impl From<&mut Event<'_>> for LeLongTermKeyRequest {
     fn from(e: &mut Event<'_>) -> Self {
         Self {
-            conn_handle: ConnHandle::new(e.u16()).unwrap(),
+            conn_handle: e.conn_handle().unwrap(),
             rand: e.u64(),
             ediv: e.u16(),
         }

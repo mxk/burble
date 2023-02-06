@@ -19,7 +19,7 @@ pub use {consts::*, handle::*};
 use crate::hci::{Role, ACL_HDR};
 use crate::host::Transfer;
 use crate::le::Addr;
-use crate::{att, hci, host};
+use crate::{att, hci, host, smp};
 
 mod chan;
 mod consts;
@@ -107,8 +107,8 @@ impl<T: host::Transport + 'static> ChanManager<T> {
 
     /// Returns the Security Manager (SM) fixed channel for the specified LE-U
     /// logical link.
-    pub(crate) fn sm_chan(&mut self, link: LeU) -> Option<BasicChan<T>> {
-        self.conns.get_mut(&link).and_then(|cn| cn.sm_opt.take())
+    pub fn sm_chan(&mut self, link: LeU) -> Option<smp::Peripheral<T>> {
+        self.conns.get_mut(&link).and_then(|cn| cn.sm_opt.take()).map(smp::Peripheral::new)
     }
 
     /// Handles HCI control events.

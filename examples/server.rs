@@ -7,9 +7,11 @@ use std::time::Duration;
 
 use anyhow::Result;
 use clap::Parser;
+use futures_core::future::BoxFuture;
 use tracing::info;
 
 use burble::*;
+use burble_crypto::NumCompare;
 
 #[derive(Debug, clap::Parser)]
 struct Args {
@@ -44,6 +46,9 @@ async fn main() -> Result<()> {
     info!("Local version: {:?}", host.read_local_version().await?);
     let local_addr = host.read_bd_addr().await?;
     info!("Device address: {:?}", local_addr);
+
+    let mut secdb = smp::SecDb::new(host.clone(), Arc::new(burble_fs::SecDb::new()))?;
+    tokio::task::spawn(async move { secdb.event_loop().await });
 
     let cm = tokio::task::spawn(server_loop(
         db(),
@@ -92,6 +97,13 @@ async fn server_loop<T: host::Transport + 'static>(
         let link = cm.recv().await?;
         let Some(att) = cm.att_chan(link) else { continue };
         tokio::task::spawn(serve(gatt::Server::new(att, Arc::clone(&db))));
+        let Some(mut smp) = cm.sm_chan(link) else { continue };
+        tokio::task::spawn(async move {
+            let mut dev = smp::Device::new()
+                .with_display(Box::new(Dev))
+                .with_confirm(Box::new(Dev));
+            smp.respond(&mut dev, &burble_fs::SecDb::new()).await
+        });
     }
 }
 
@@ -154,6 +166,35 @@ fn db() -> Arc<gatt::Db> {
     let db = Arc::new(gatt::Db::new(b.freeze()));
     db.write().insert(dev_name, b"Burble".to_vec());
     db
+}
+
+#[derive(Debug)]
+struct Dev;
+
+impl smp::Display for Dev {
+    fn show(&mut self, n: NumCompare) -> BoxFuture<bool> {
+        println!("Numeric comparison: {n}");
+        Box::pin(std::future::ready(true))
+    }
+}
+
+impl smp::Confirm for Dev {
+    fn confirm(&mut self) -> BoxFuture<bool> {
+        use tokio::io::AsyncBufReadExt;
+        Box::pin(async {
+            let buf = tokio::io::BufReader::new(tokio::io::stdin());
+            let mut lines = buf.lines();
+            loop {
+                print!("Match? (yes/no) ");
+                let Ok(Some(ln)) = lines.next_line().await else { return false };
+                match ln.to_ascii_lowercase().as_str() {
+                    "yes" | "y" => return true,
+                    "no" | "n" => return false,
+                    _ => {}
+                }
+            }
+        })
+    }
 }
 
 pub fn hex16(mut s: &str) -> Result<u16, String> {

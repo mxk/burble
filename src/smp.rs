@@ -39,6 +39,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 /// SMP interface to the local device.
 #[derive(Debug)]
+#[must_use]
 pub struct Device {
     display: Option<Box<dyn Display>>,
     confirm: Option<Box<dyn Confirm>>,
@@ -47,7 +48,7 @@ pub struct Device {
 impl Device {
     /// Creates a new device with no I/O capabilities.
     #[inline(always)]
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             display: None,
             confirm: None,
@@ -56,14 +57,14 @@ impl Device {
 
     /// Provides a display device.
     #[inline(always)]
-    fn with_display(mut self, d: Box<dyn Display>) -> Self {
+    pub fn with_display(mut self, d: Box<dyn Display>) -> Self {
         self.display = Some(d);
         self
     }
 
     /// Provides a yes/no input device.
     #[inline(always)]
-    fn with_confirm(&mut self, c: Box<dyn Confirm>) -> &mut Self {
+    pub fn with_confirm(mut self, c: Box<dyn Confirm>) -> Self {
         self.confirm = Some(c);
         self
     }

@@ -36,17 +36,19 @@ impl<T: host::Transport> Host<T> {
         cn: ConnHandle,
         k: Option<&LTK>,
     ) -> Result<()> {
-        if let Some(k) = k {
+        let r = if let Some(k) = k {
             let r = self.exec_params(Opcode::LeLongTermKeyRequestReply, |cmd| {
                 cmd.u16(cn).u128(k);
             });
-            r.await?.into()
+            r.await?
         } else {
             let r = self.exec_params(Opcode::LeLongTermKeyRequestNegativeReply, |cmd| {
                 cmd.u16(cn);
             });
-            r.await?.into()
-        }
+            r.await?
+        };
+        assert_eq!(ConnHandle::new(r.get().u16()), Some(cn));
+        Ok(())
     }
 
     /// Sets the random device address for an advertising set

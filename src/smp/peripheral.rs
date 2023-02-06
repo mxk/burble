@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use std::time::Duration;
 
 use tracing::{debug, error};
@@ -16,21 +15,19 @@ use super::*;
 /// mode ([Vol 3] Part C, Section 10.2.1 and 10.2.4).
 #[derive(Debug)]
 pub struct Peripheral<T: host::Transport> {
-    dev: Device,
     ch: BasicChan<T>,
-    store: Arc<dyn Store>,
 }
 
 impl<T: host::Transport> Peripheral<T> {
     /// Creates a new peripheral security manager.
     #[inline(always)]
-    pub(crate) fn new(dev: Device, ch: BasicChan<T>, store: Arc<dyn Store>) -> Self {
+    pub(crate) fn new(ch: BasicChan<T>) -> Self {
         assert_eq!(ch.conn_info().role, Role::Peripheral);
-        Self { dev, ch, store }
+        Self { ch }
     }
 
     /// Handles responder pairing role. This method is not cancel safe.
-    pub async fn respond(&mut self) -> Result<()> {
+    pub async fn respond(&mut self, dev: &mut Device, store: &dyn Store) -> Result<()> {
         // TODO: Return a cancellable task?
         let init = match Command::try_from(self.ch.recv().await?) {
             Ok(Command::PairingRequest(init)) => init,
@@ -44,22 +41,22 @@ impl<T: host::Transport> Peripheral<T> {
             }
             Err(reason) => return self.fail(reason).await,
         };
-        let Phase1 { a, b, method } = self.phase1(init).await?;
-        let (peer, ltk) = self.phase2(method, a.into(), b.into()).await?;
+        let Phase1 { a, b, method } = self.phase1(dev, init).await?;
+        let (peer, ltk) = self.phase2(dev, method, a.into(), b.into()).await?;
         let mut keys = Keys { ltk };
         (self.phase3(b.initiator_keys, b.responder_keys, &mut keys)).await?;
-        if let Err(e) = self.store.save(peer, &keys) {
-            error!("Failed to save keys for {peer}: {e}");
+        if let Err(e) = store.save(peer, &keys) {
+            error!("Failed to save keys for {peer:?}: {e}");
             Err(e.into())
         } else {
-            debug!("Saved keys for {peer}");
+            debug!("Saved keys for {peer:?}");
             Ok(())
         }
     }
 
     /// Performs Pairing Feature Exchange phase
     /// ([Vol 3] Part H, Section 2.3.5.1 and C.1).
-    async fn phase1(&self, a: PairingParams) -> Result<Phase1> {
+    async fn phase1(&self, dev: &Device, a: PairingParams) -> Result<Phase1> {
         if !a.auth_req.contains(AuthReq::SC) {
             // [Vol 3] Part H, Section 2.3 and C.5.1
             error!("Peer does not support LE Secure Connections");
@@ -75,7 +72,7 @@ impl<T: host::Transport> Peripheral<T> {
             return self.fail(Reason::EncryptionKeySize).await;
         }
         let mut b = PairingParams {
-            io_cap: self.dev.io_cap(),
+            io_cap: dev.io_cap(),
             ..PairingParams::default()
         };
         if !matches!(b.io_cap, IoCap::NoInputNoOutput) {
@@ -106,6 +103,7 @@ impl<T: host::Transport> Peripheral<T> {
     #[allow(clippy::similar_names)]
     async fn phase2(
         &mut self,
+        dev: &mut Device,
         method: KeyGenMethod,
         ioa: burble_crypto::IoCap,
         iob: burble_crypto::IoCap,
@@ -127,7 +125,8 @@ impl<T: host::Transport> Peripheral<T> {
         // Authentication stage 1 ([Vol 3] Part H, Section C.2.2.2)
         let Authn1 { na, nb, ra, rb } = match method {
             KeyGenMethod::JustWorks | KeyGenMethod::NumCompare => {
-                self.authn1_num_compare(method, pka.x(), pkb.x()).await?
+                self.authn1_num_compare(dev, method, pka.x(), pkb.x())
+                    .await?
             }
             KeyGenMethod::PasskeyEntry => unimplemented!("Passkey Entry protocol"), // TODO
         };
@@ -155,6 +154,7 @@ impl<T: host::Transport> Peripheral<T> {
     #[allow(clippy::similar_names)]
     async fn authn1_num_compare(
         &mut self,
+        dev: &mut Device,
         method: KeyGenMethod,
         pka: &PublicKeyX,
         pkb: &PublicKeyX,
@@ -173,8 +173,8 @@ impl<T: host::Transport> Peripheral<T> {
             return Ok(Authn1 { na, nb, ra, rb });
         }
         let vb = na.g2(pka, pkb, &nb);
-        let display = self.dev.display.as_mut().expect("display not available");
-        let yes_no = self.dev.confirm.as_mut().expect("input not available");
+        let display = dev.display.as_mut().expect("display not available");
+        let yes_no = dev.confirm.as_mut().expect("input not available");
         // TODO: Abort if PairingFailed is received while waiting for the user
         if !display.show(vb).await || !yes_no.confirm().await {
             // [Vol 3] Part H, Section C.2.2.2.4
