@@ -12,8 +12,10 @@ pub use {adv::*, cmd::*, consts::*, event::*, handle::*};
 use crate::host;
 
 mod adv;
+#[path = "cmd/cmd.rs"]
 mod cmd;
 mod consts;
+#[path = "event/event.rs"]
 mod event;
 mod handle;
 

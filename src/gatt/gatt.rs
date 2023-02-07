@@ -8,5 +8,6 @@ use crate::att::*;
 
 mod consts;
 mod db;
+#[path = "schema/schema.rs"]
 mod schema;
 mod server;

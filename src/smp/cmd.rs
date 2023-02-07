@@ -1,5 +1,5 @@
 use structbuf::{Pack, Packer, Unpack, Unpacker};
-use tracing::{debug, error, trace};
+use tracing::{error, trace};
 
 use burble_crypto::{Check, Codec, Confirm, Nonce, PublicKey};
 
