@@ -7,6 +7,8 @@
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
+pub use profile::*;
+
 #[path = "att/att.rs"]
 pub mod att;
 #[path = "gap/gap.rs"]
@@ -20,6 +22,8 @@ pub mod host;
 #[path = "l2cap/l2cap.rs"]
 pub mod l2cap;
 pub mod le;
+#[path = "profile/profile.rs"]
+mod profile;
 #[path = "smp/smp.rs"]
 pub mod smp;
 #[path = "util/util.rs"]

@@ -108,7 +108,7 @@ impl<T: host::Transport + 'static> ChanManager<T> {
     /// Returns the Security Manager (SM) fixed channel for the specified LE-U
     /// logical link.
     pub fn sm_chan(&mut self, link: LeU) -> Option<smp::Peripheral<T>> {
-        self.conns.get_mut(&link).and_then(|cn| cn.sm_opt.take()).map(smp::Peripheral::new)
+        (self.conns.get_mut(&link).and_then(|cn| cn.sm_opt.take())).map(smp::Peripheral::new)
     }
 
     /// Handles HCI control events.

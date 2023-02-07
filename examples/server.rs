@@ -147,7 +147,11 @@ fn db() -> Arc<gatt::Db> {
             |_| {},
         );
     });
-    let (batt, _) = b.secondary_service(Service::Battery, [], |b| {
+    dis::DeviceInfoService::new()
+        .with_manufacturer_name("Blackrock Neurotech")
+        .with_pnp_id(dis::PnpId::new(dis::VendorId::USB(0x1209), 0x0001, (1, 0, 0)).unwrap())
+        .define(&mut b, Access::READ);
+    /*let (batt, _) = b.secondary_service(Service::Battery, [], |b| {
         b.characteristic(
             Characteristic::BatteryLevel,
             Prop::READ,
@@ -162,7 +166,7 @@ fn db() -> Arc<gatt::Db> {
             Access::READ,
             |b| b.client_cfg(Access::READ_WRITE),
         );
-    });
+    });*/
     let db = Arc::new(gatt::Db::new(b.freeze()));
     db.write().insert(dev_name, b"Burble".to_vec());
     db
