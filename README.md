@@ -3,18 +3,21 @@ Blackrock User-Mode Bluetooth LE Library
 
 A user-mode BLE stack implementation starting from the USB transport layer via [libusb]. Tested on Windows and Linux.
 
+[libusb]: https://github.com/libusb/libusb
+
 **Status:** Under development
 
 Reference documents:
 
-* [Bluetooth Core Specification v5.3][core] (LE Core Configuration as defined in [Vol 0] Part B, Section 4.4)
-* [Core Specification Supplement v10][css]
-* [Assigned Numbers][an]
+* [Bluetooth Core Specification v5.4][Core] (LE Core Configuration as defined in [Vol 0] Part B, Section 4.4)
+* [Core Specification Supplement v11][CSS]
+* [Assigned Numbers][AN]
+* [GATT Specification Supplement][GSS]
 
-[libusb]: https://github.com/libusb/libusb
-[core]: https://www.bluetooth.com/specifications/specs/core-specification-5-3/
-[css]: https://www.bluetooth.com/specifications/specs/core-specification-supplement-10/
-[an]: https://www.bluetooth.com/specifications/assigned-numbers/
+[Core]: https://www.bluetooth.com/specifications/specs/core-specification-5-4/
+[CSS]: https://www.bluetooth.com/specifications/specs/core-specification-supplement-11/
+[AN]: https://www.bluetooth.com/specifications/specs/assigned-numbers/
+[GSS]: https://www.bluetooth.com/specifications/specs/gatt-specification-supplement/
 
 Example Server
 --------------
