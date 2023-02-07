@@ -19,6 +19,8 @@ use burble_crypto::LTK;
 pub struct SecDb(PathBuf);
 
 impl SecDb {
+    const FILE_NAME: &'static str = "P-001122334455";
+
     /// Creates a database store in the current user's local data directory.
     ///
     /// # Panics
@@ -38,10 +40,10 @@ impl SecDb {
             Addr::Public(ref raw) => (raw.as_le_bytes(), 'P'),
             Addr::Random(ref raw) => (raw.as_le_bytes(), 'R'),
         };
-        let mut buf = Cursor::new([0_u8; "P001122334455".len()]);
+        let mut buf = Cursor::new([0_u8; Self::FILE_NAME.len()]);
         write!(
             buf,
-            "{typ}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}",
+            "{typ}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}",
             raw[5], raw[4], raw[3], raw[2], raw[1], raw[0]
         )
         .expect("key file name overflow");
@@ -129,7 +131,7 @@ mod tests {
         let tmp = (Builder::new().prefix(concat!("burble-test-")).tempdir()).unwrap();
         let db = SecDb(tmp.path().to_path_buf());
         db.save(PEER, &KEYS).unwrap();
-        assert!(tmp.path().join("P001122334455").exists());
+        assert!(tmp.path().join(SecDb::FILE_NAME).exists());
         assert_eq!(db.load(PEER).unwrap(), KEYS);
     }
 }
