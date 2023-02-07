@@ -173,12 +173,30 @@ impl Builder<ServiceDef> {
         perms: impl Into<Perms>,
         descs: impl FnOnce(&mut Builder<CharacteristicDef>) -> T,
     ) -> (Handle, T) {
-        let uuid = uuid.into();
-        let hdl = self.decl_value(uuid, props, perms.into());
+        let hdl = self.decl_value(uuid.into(), props, perms.into());
         let b = self.builder(props.contains(Prop::EXT_PROPS));
         let v = descs(b);
         b.finalize();
         (hdl, v)
+    }
+
+    /// Defines a read-only characteristic with the value stored within the
+    /// schema ([Vol 3] Part G, Section 3.3).
+    #[inline]
+    pub fn ro_characteristic<T>(
+        &mut self,
+        uuid: impl Into<Uuid>,
+        val: impl AsRef<[u8]>,
+        perms: impl Into<Perms>,
+        descs: impl FnOnce(&mut Builder<CharacteristicDef>) -> T,
+    ) -> T {
+        self.decl_value(uuid.into(), Prop::READ, perms.into());
+        let val = self.append_data(val);
+        self.attr.last_mut().unwrap().val = val;
+        let b = self.builder(false);
+        let v = descs(b);
+        b.finalize();
+        v
     }
 
     // TODO: Method for multi-value characteristics
@@ -277,7 +295,7 @@ impl Builder<CharacteristicDef> {
             self.ext_props(ExtProp::empty());
         }
         if !self.have_aggregate_fmt && self.fmt.len() > 1 {
-            let fmt = std::mem::take(&mut self.fmt);
+            let fmt = mem::take(&mut self.fmt);
             self.aggregate_fmt(&fmt);
             self.fmt = fmt; // Preserve any allocated capacity
         }
@@ -331,7 +349,7 @@ impl SchemaBuilder {
     fn append_attr(&mut self, hdl: Handle, typ: Option<Uuid16>, perms: Perms) -> Handle {
         #[allow(clippy::cast_possible_truncation)]
         let i = match typ {
-            None => (self.data.len() - 16) as Idx,
+            None => self.data.len() as Idx,
             Some(_) => 0,
         };
         self.attr.push(Attr {

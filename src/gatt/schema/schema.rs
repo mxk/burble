@@ -346,11 +346,10 @@ impl Schema {
     #[inline]
     fn typ(&self, at: &Attr) -> Uuid {
         at.typ.map_or_else(
-            // SAFETY: 128-bit UUID is at self.data[at.val.0..]
+            // SAFETY: 128-bit UUID is at self.data[at.val.0 - 16..]
             || unsafe {
-                #[allow(clippy::cast_ptr_alignment)]
-                let p = (self.data.as_ptr().add(usize::from(at.val.0))).cast::<u128>();
-                Uuid::new_unchecked(u128::from_le(p.read_unaligned()))
+                let i = usize::from(at.val.0) - 16;
+                Uuid::new_unchecked(u128::from_le_bytes(*self.data.as_ptr().add(i).cast()))
             },
             Uuid16::as_uuid,
         )
@@ -541,7 +540,9 @@ struct CharInfo<'a> {
     desc: &'a [Attr],
 }
 
-/// Attribute entry.
+/// Attribute entry. `val` contains start and end indices of the attribute value
+/// in the data array. If `typ` is [`None`], then the 128-bit UUID is stored at
+/// `val.0 - 16..val.0` in the data array.
 #[derive(Clone, Copy, Debug)]
 #[must_use]
 struct Attr {
