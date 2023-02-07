@@ -36,7 +36,7 @@ impl ResponseDataMut {
         self.0
     }
 
-    /// Appends service class UUIDs ([CSS] Part A, Section 1.1). Each UUID is
+    /// Appends service class UUIDs (\[CSS\] Part A, Section 1.1). Each UUID is
     /// encoded in the optimal format.
     pub fn service_class<T: Copy + Into<Uuid>>(
         &mut self,
@@ -62,7 +62,7 @@ impl ResponseDataMut {
     }
 
     /// Appends either shortened or complete local device name
-    /// ([CSS] Part A, Section 1.2).
+    /// (\[CSS\] Part A, Section 1.2).
     pub fn local_name<T: AsRef<str>>(&mut self, complete: bool, v: T) -> &mut Self {
         let typ = u8::from(ResponseDataType::ShortLocalName) + u8::from(complete);
         self.put(typ, |b| {
@@ -70,28 +70,28 @@ impl ResponseDataMut {
         })
     }
 
-    /// Appends advertising flags ([CSS] Part A, Section 1.3).
+    /// Appends advertising flags (\[CSS\] Part A, Section 1.3).
     pub fn flags(&mut self, v: AdvFlag) -> &mut Self {
         self.put(ResponseDataType::Flags, |b| {
             b.u8(v.bits());
         })
     }
 
-    /// Appends manufacturer-specific data ([CSS] Part A, Section 1.4).
+    /// Appends manufacturer-specific data (\[CSS\] Part A, Section 1.4).
     pub fn manufacturer_data<T: AsRef<str>>(&mut self, company_id: u16, v: &[u8]) -> &mut Self {
         self.put(ResponseDataType::ManufacturerData, |b| {
             b.u16(company_id).put(v);
         })
     }
 
-    /// Appends TX power level ([CSS] Part A, Section 1.5).
+    /// Appends TX power level (\[CSS\] Part A, Section 1.5).
     pub fn tx_power(&mut self, v: TxPower) -> &mut Self {
         self.put(ResponseDataType::TxPower, |b| {
             b.i8(v);
         })
     }
 
-    /// Appends peripheral connection interval range ([CSS] Part A, Section 1.9).
+    /// Appends peripheral connection interval range (\[CSS\] Part A, Section 1.9).
     pub fn peripheral_connection_interval(
         &mut self,
         min: Option<Duration>,
@@ -103,14 +103,14 @@ impl ResponseDataMut {
         })
     }
 
-    /// Appends device appearance ([CSS] Part A, Section 1.12).
+    /// Appends device appearance (\[CSS\] Part A, Section 1.12).
     pub fn appearance(&mut self, v: Appearance) -> &mut Self {
         self.put(ResponseDataType::Appearance, |b| {
             b.u16(v);
         })
     }
 
-    /// Appends advertising Interval ([CSS] Part A, Section 1.15).
+    /// Appends advertising Interval (\[CSS\] Part A, Section 1.15).
     pub fn adv_interval(&mut self, v: Duration) -> &mut Self {
         let v: [u8; 4] = ticks_625us(v).unwrap().to_le_bytes();
         match v {

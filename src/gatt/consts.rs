@@ -119,12 +119,14 @@ pub enum Format {
     F32 = 0x14,
     /// IEEE-754 64-bit floating point.
     F64 = 0x15,
-    /// IEEE 11073-20601 16-bit SFLOAT.
+    /// IEEE 11073-20601 16-bit SFLOAT ([[PHD]] Section 2.2.2).
+    ///
+    /// [PHD]: https://www.bluetooth.com/wp-content/uploads/2019/03/PHD_Transcoding_WP_v16.pdf
     MedF16 = 0x16,
-    /// IEEE 11073-20601 32-bit FLOAT.
+    /// IEEE 11073-20601 32-bit FLOAT (\[PHD\] Section 2.2.1).
     MedF32 = 0x17,
-    /// IEEE 11073-20601 nomenclature code.
-    U16x2 = 0x18, // TODO: Proper name?
+    /// IEEE 11073-20601 nomenclature code (`[u16; 2]`).
+    MedType = 0x18,
     /// UTF-8 string.
     Utf8 = 0x19,
     /// UTF-16 string.

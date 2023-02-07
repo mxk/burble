@@ -377,7 +377,8 @@ impl Future for EventReceiverTask {
     }
 }
 
-// TODO: Use event masks for filtering.
+// TODO: Use event masks for filtering. These should also determine which events
+// are unmasked on the controller.
 
 /// Defines event matching criteria.
 #[derive(Clone, Debug, Eq, PartialEq)]
