@@ -1,10 +1,8 @@
 //! Device Information Service ([DIS]).
 //!
-//! See [Personal Health Devices Transcoding][PHD] Bluetooth White Paper for
-//! additional information on characteristic value formats.
+//! This service exposes manufacturer and/or vendor information about a device.
 //!
 //! [DIS]: https://www.bluetooth.org/docman/handlers/downloaddoc.ashx?doc_id=244369
-//! [PHD]: https://www.bluetooth.com/wp-content/uploads/2019/03/PHD_Transcoding_WP_v16.pdf
 
 use crate::att::Perms;
 use crate::gatt::{Builder, Characteristic, Schema, Service, ServiceDef};
@@ -24,6 +22,19 @@ pub struct DeviceInfoService {
     pub pnp_id: Option<PnpId>,
 }
 
+/// Implements `with_<x>` methods for [`String`] characteristics.
+macro_rules! with_str {
+    ($($(#[$doc:meta])* $f:ident),*$(,)?) => {$(::paste::paste! {
+        $(#[$doc])*
+        #[inline(always)]
+        #[must_use]
+        pub fn [<with_ $f>](mut self, v: impl AsRef<str>) -> Self {
+            self.$f = Some(v.as_ref().to_owned());
+            self
+        }
+    })*}
+}
+
 impl DeviceInfoService {
     /// Creates an empty device information service.
     #[inline(always)]
@@ -32,52 +43,19 @@ impl DeviceInfoService {
         Self::default()
     }
 
-    /// Sets device manufacturer name.
-    #[inline(always)]
-    #[must_use]
-    pub fn with_manufacturer_name(mut self, v: impl AsRef<str>) -> Self {
-        self.manufacturer_name = Some(v.as_ref().to_owned());
-        self
-    }
-
-    /// Sets device model number.
-    #[inline(always)]
-    #[must_use]
-    pub fn with_model_num(mut self, v: impl AsRef<str>) -> Self {
-        self.model_num = Some(v.as_ref().to_owned());
-        self
-    }
-
-    /// Sets device serial number.
-    #[inline(always)]
-    #[must_use]
-    pub fn with_serial_num(mut self, v: impl AsRef<str>) -> Self {
-        self.serial_num = Some(v.as_ref().to_owned());
-        self
-    }
-
-    /// Sets device hardware revision.
-    #[inline(always)]
-    #[must_use]
-    pub fn with_hardware_rev(mut self, v: impl AsRef<str>) -> Self {
-        self.hardware_rev = Some(v.as_ref().to_owned());
-        self
-    }
-
-    /// Sets device firmware revision.
-    #[inline(always)]
-    #[must_use]
-    pub fn with_firmware_rev(mut self, v: impl AsRef<str>) -> Self {
-        self.firmware_rev = Some(v.as_ref().to_owned());
-        self
-    }
-
-    /// Sets device software revision.
-    #[inline(always)]
-    #[must_use]
-    pub fn with_software_rev(mut self, v: impl AsRef<str>) -> Self {
-        self.software_rev = Some(v.as_ref().to_owned());
-        self
+    with_str! {
+        /// Sets device manufacturer name.
+        manufacturer_name,
+        /// Sets device model number.
+        model_num,
+        /// Sets device serial number.
+        serial_num,
+        /// Sets device hardware revision.
+        hardware_rev,
+        /// Sets device firmware revision.
+        firmware_rev,
+        /// Sets device software revision.
+        software_rev,
     }
 
     /// Sets device system ID.
@@ -160,13 +138,23 @@ impl Eui64 {
     }
 }
 
-/// IEEE 11073-20601 Regulatory Certification Data List ([[PHD]] Section 2.2.5).
+/// IEEE 11073-20601 Regulatory Certification Data List.
+///
+/// See Section 2.2.5 in [Personal Health Devices Transcoding][PHD] Bluetooth
+/// White Paper for format information.
 ///
 /// [PHD]: https://www.bluetooth.com/wp-content/uploads/2019/03/PHD_Transcoding_WP_v16.pdf
 #[derive(Clone, Debug)]
 pub struct RegulatoryData(Vec<u8>);
 
-/// PNP device ID.
+impl From<Vec<u8>> for RegulatoryData {
+    #[inline(always)]
+    fn from(v: Vec<u8>) -> Self {
+        Self(v)
+    }
+}
+
+/// Plug and Play device ID.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PnpId {
     pub vid: VendorId,
@@ -180,15 +168,12 @@ impl PnpId {
     #[allow(clippy::similar_names)]
     #[must_use]
     pub const fn new(vid: VendorId, pid: u16, ver: (u8, u8, u8)) -> Option<Self> {
-        // TODO: Use `then_some` when stable
+        // TODO: Use `then_some` when const stable
         if ver.1 > 0xf || ver.2 > 0xf {
             return None;
         }
-        Some(Self {
-            vid,
-            pid,
-            ver: (ver.0 as u16) << 8 | (ver.1 as u16) << 4 | ver.2 as u16,
-        })
+        let ver = (ver.0 as u16) << 8 | (ver.1 as u16) << 4 | ver.2 as u16;
+        Some(Self { vid, pid, ver })
     }
 
     /// Converts PNP ID to byte representation.
