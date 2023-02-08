@@ -425,9 +425,13 @@ impl<T: host::Transport> Alloc<T> {
     /// Allocates an outbound frame with a zero-filled basic L2CAP header.
     fn frame(self: &Arc<Self>, max_frame_len: usize) -> Frame<T> {
         if max_frame_len <= self.acl_data_len as usize {
-            let mut xfer = self.xfer();
+            // TODO: Reuse transfers. This change was made because remaining()
+            // has to report `max_frame_len` rather than `acl_data_len`.
+            //let mut xfer = self.xfer();
+            #[allow(clippy::cast_possible_truncation)]
+            let mut xfer = self.transport.acl(self.dir, max_frame_len as u16);
             xfer.at(ACL_HDR + L2CAP_HDR).put([]);
-            Frame::Transfer(xfer)
+            Frame::Transfer(AclTransfer::new(xfer, Arc::clone(self)))
         } else {
             // TODO: Reuse buffers?
             let mut buf = StructBuf::new(max_frame_len);
@@ -468,7 +472,10 @@ impl<T: host::Transport> AclTransfer<T> {
 impl<T: host::Transport> Drop for AclTransfer<T> {
     fn drop(&mut self) {
         // SAFETY: self.0 is not used again
-        let (xfer, alloc) = unsafe { ManuallyDrop::take(&mut self.0) };
+        let (mut xfer, alloc) = unsafe { ManuallyDrop::take(&mut self.0) };
+        if xfer.at(ACL_HDR).remaining() != alloc.acl_data_len as usize {
+            return; // TODO: Remove workaround
+        }
         let mut free = alloc.free.lock();
         if free.len() < free.capacity() {
             free.push(xfer);
