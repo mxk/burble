@@ -532,6 +532,7 @@ impl<'a, T> AsRef<[u8]> for SchemaEntry<'a, T> {
 }
 
 /// Information about a single characteristic.
+#[allow(dead_code)] // TODO: Remove
 #[derive(Clone, Copy, Debug)]
 struct CharInfo<'a> {
     props: Prop,

@@ -3,6 +3,7 @@ use bitflags::bitflags;
 // TODO: Remove Eq and PartialEq from types that don't need them
 
 /// User input capabilities ([Vol 3] Part H, Section 2.3.2, Table 2.3).
+#[allow(dead_code)] // TODO: Implement Keyboard
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub(super) enum InputCap {

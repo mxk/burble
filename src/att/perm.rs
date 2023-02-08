@@ -1,5 +1,3 @@
-#![allow(dead_code)] // TODO: Remove
-
 use std::ops::BitOr;
 
 use super::*;

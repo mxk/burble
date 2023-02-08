@@ -1,7 +1,5 @@
 //! Security Manager Protocol ([Vol 3] Part H).
 
-#![allow(dead_code)] // TODO: Remove
-
 use std::fmt::Debug;
 use std::io;
 

@@ -1,7 +1,5 @@
 //! Logical Link Control and Adaptation Protocol ([Vol 3] Part A).
 
-#![allow(dead_code)] // TODO: Remove
-
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, VecDeque};
 use std::fmt::Debug;
