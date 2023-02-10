@@ -19,6 +19,14 @@ Reference documents:
 [AN]: https://www.bluetooth.com/specifications/specs/assigned-numbers/
 [GSS]: https://www.bluetooth.com/specifications/specs/gatt-specification-supplement/
 
+Profiles and services:
+
+* [Battery Service][BAS]
+* [Device Information Service][DIS]
+
+[BAS]: https://www.bluetooth.com/specifications/specs/battery-service/
+[DIS]: https://www.bluetooth.com/specifications/specs/device-information-service-1-1/
+
 Example Server
 --------------
 

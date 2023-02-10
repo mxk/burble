@@ -151,14 +151,7 @@ fn db() -> Arc<gatt::Db> {
         .with_manufacturer_name("Blackrock Neurotech")
         .with_pnp_id(dis::PnpId::new(dis::VendorId::USB(0x1209), 0x0001, (1, 0, 0)).unwrap())
         .define(&mut b, Access::READ);
-    let (batt, _) = b.secondary_service(Service::Battery, [], |b| {
-        b.characteristic(
-            Characteristic::BatteryLevel,
-            Prop::READ,
-            Access::READ,
-            |_| {},
-        );
-    });
+    let batt = bas::BatteryService::new().define(&mut b, Access::READ);
     b.primary_service(Service::Glucose, [batt], |b| {
         b.characteristic(
             Characteristic::GlucoseMeasurement,
