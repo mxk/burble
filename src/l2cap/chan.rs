@@ -53,7 +53,7 @@ impl<T: host::Transport> BasicChan<T> {
     /// Returns the maximum MTU that avoids fragmentation.
     #[allow(clippy::cast_possible_truncation)]
     #[inline]
-    pub fn preferred_mtu(&self) -> u16 {
+    pub(crate) fn preferred_mtu(&self) -> u16 {
         self.tx.preferred_frame_len() - L2CAP_HDR as u16
     }
 

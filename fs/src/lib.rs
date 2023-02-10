@@ -1,25 +1,98 @@
 //! Bluetooth LE file system storage backend.
 
-#![warn(unused_crate_dependencies)]
-
-use std::fs::File;
-use std::io;
-use std::io::{BufRead, Cursor, Read, Write};
+use std::io::{Cursor, Write};
 use std::path::{Path, PathBuf};
+use std::{fs, io};
 
-use tracing::warn;
+use tracing::{debug, error, warn};
 
 use burble::le::Addr;
-use burble::smp;
-use burble::smp::Keys;
-use burble_crypto::LTK;
+use burble::{gatt, smp};
 
 /// Security database stored in a file system directory.
 #[derive(Clone, Debug)]
-pub struct SecDb(PathBuf);
+pub struct KeyStore(Dir);
 
-impl SecDb {
-    const FILE_NAME: &'static str = "P-001122334455";
+impl KeyStore {
+    /// Creates a security database store in the current user's local data
+    /// directory.
+    ///
+    /// # Panics
+    ///
+    /// Panics if it cannot determine the user directory.
+    #[inline(always)]
+    #[must_use]
+    pub fn new() -> Self {
+        Self(Dir::new("keys"))
+    }
+}
+
+impl Default for KeyStore {
+    #[inline(always)]
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl burble::PeerStore for KeyStore {
+    type Value = smp::Keys;
+
+    #[inline(always)]
+    fn save(&self, peer: Addr, v: &Self::Value) -> bool {
+        self.0.save(peer, v)
+    }
+
+    #[inline(always)]
+    fn load(&self, peer: Addr) -> Option<Self::Value> {
+        self.0.load(peer)
+    }
+}
+
+/// GATT server database stored in a file system directory.
+#[derive(Clone, Debug)]
+pub struct GattServerStore(Dir);
+
+impl GattServerStore {
+    /// Creates a GATT server database store in the current user's local data
+    /// directory.
+    ///
+    /// # Panics
+    ///
+    /// Panics if it cannot determine the user directory.
+    #[inline(always)]
+    #[must_use]
+    pub fn new() -> Self {
+        Self(Dir::new("gatts"))
+    }
+}
+
+impl Default for GattServerStore {
+    #[inline(always)]
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl burble::PeerStore for GattServerStore {
+    type Value = gatt::BondedClient;
+
+    #[inline(always)]
+    fn save(&self, peer: Addr, v: &Self::Value) -> bool {
+        self.0.save(peer, v)
+    }
+
+    #[inline(always)]
+    fn load(&self, peer: Addr) -> Option<Self::Value> {
+        self.0.load(peer)
+    }
+}
+
+/// Database in a file system directory.
+#[derive(Clone, Debug)]
+struct Dir(PathBuf);
+
+impl Dir {
+    const FILE_NAME_FMT: &'static str = "P-001122334455";
 
     /// Creates a database store in the current user's local data directory.
     ///
@@ -27,11 +100,55 @@ impl SecDb {
     ///
     /// Panics if it cannot determine the user directory.
     #[must_use]
-    pub fn new() -> Self {
+    fn new(name: impl AsRef<Path>) -> Self {
         let dir = dirs::data_local_dir()
             .expect("user directory not available")
-            .join("burble/secdb");
+            .join("burble/")
+            .join(name);
         Self(dir)
+    }
+
+    /// Saves peer data to the file system.
+    fn save(&self, peer: Addr, v: &impl serde::ser::Serialize) -> bool {
+        let s = toml::to_string(v).expect("failed to serialize peer data");
+        if let Err(e) = fs::create_dir_all(&self.0) {
+            warn!(
+                "Failed to create database directory: {} ({e})",
+                self.0.display()
+            );
+        }
+        let path = self.path(peer);
+        match fs::File::create(&path)
+            .and_then(|mut f| f.write_all(s.as_bytes()).and_then(|_| f.sync_data()))
+        {
+            Ok(_) => {
+                debug!("Wrote: {}", path.display());
+                true
+            }
+            Err(e) => {
+                error!("Failed to write: {} ({e})", path.display());
+                false
+            }
+        }
+    }
+
+    /// Loads peer data from the file system.
+    fn load<T: serde::de::DeserializeOwned>(&self, peer: Addr) -> Option<T> {
+        let path = self.path(peer);
+        let s = match fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return None,
+            Err(e) => {
+                error!("Failed to read: {} ({e})", path.display());
+                return None;
+            }
+        };
+        toml::from_str(&s)
+            .map_err(|e| {
+                error!("Invalid file contents: {} ({e})", path.display());
+                Err::<T, ()>(())
+            })
+            .ok()
     }
 
     /// Returns the key file path for the specified peer address.
@@ -40,7 +157,7 @@ impl SecDb {
             Addr::Public(ref raw) => (raw.as_le_bytes(), 'P'),
             Addr::Random(ref raw) => (raw.as_le_bytes(), 'R'),
         };
-        let mut buf = Cursor::new([0_u8; Self::FILE_NAME.len()]);
+        let mut buf = Cursor::new([0_u8; Self::FILE_NAME_FMT.len()]);
         write!(
             buf,
             "{typ}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}",
@@ -52,72 +169,12 @@ impl SecDb {
     }
 }
 
-impl Default for SecDb {
-    #[inline(always)]
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl smp::Store for SecDb {
-    fn save(&self, peer: Addr, keys: &Keys) -> io::Result<()> {
-        let mut buf = [0_u8; 256];
-        let mut cur = Cursor::new(buf.as_mut());
-        writeln!(cur, "LTK {:032x}", u128::from(&keys.ltk)).expect("key file buffer overflow");
-        #[allow(clippy::cast_possible_truncation)]
-        let n = cur.position() as usize;
-        if let Err(e) = std::fs::create_dir_all(&self.0) {
-            warn!(
-                "Failed to create security database directory: {} ({e})",
-                self.0.display()
-            );
-        }
-        let mut f = File::create(self.path(peer))?;
-        f.write_all(&buf[..n])?;
-        f.sync_data()
-    }
-
-    fn load(&self, peer: Addr) -> io::Result<Keys> {
-        let mut buf = [0_u8; 256];
-        let path = self.path(peer);
-        let mut f = File::open(&path)?;
-        let n = usize::try_from(f.metadata()?.len()).unwrap_or(usize::MAX);
-        if buf.len() < n {
-            return Err(corrupt(&path, "file too large"));
-        }
-        f.read_exact(&mut buf[..n])?;
-        drop(f);
-        let mut ltk = None;
-        for ln in buf[..n].lines() {
-            let ln = ln.map_err(|e| corrupt(&path, e))?;
-            let mut tok = ln.split_ascii_whitespace().fuse();
-            match (tok.next(), tok.next()) {
-                (Some("LTK"), Some(v)) => ltk = u128::from_str_radix(v, 16).ok().map(LTK::new),
-                _ => return Err(corrupt(&path, "invalid format")),
-            }
-        }
-        ltk.map_or_else(
-            || Err(corrupt(&path, "missing LTK")),
-            |ltk| Ok(Keys { ltk }),
-        )
-    }
-}
-
-/// Returns an `InvalidData` error due to a corrupt key file.
-#[inline]
-fn corrupt(p: impl AsRef<Path>, e: impl Into<Box<dyn std::error::Error>>) -> io::Error {
-    io::Error::new(
-        io::ErrorKind::InvalidData,
-        format!("corrupt key file: {} ({})", p.as_ref().display(), e.into()),
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use tempfile::Builder;
 
     use burble::le::RawAddr;
-    use burble::smp::Store;
+    use burble::PeerStore;
 
     use super::*;
 
@@ -125,13 +182,13 @@ mod tests {
     fn save_load() {
         const PEER: Addr =
             Addr::Public(RawAddr::from_le_bytes([0x55, 0x44, 0x33, 0x22, 0x11, 0x00]));
-        const KEYS: Keys = Keys {
-            ltk: LTK::new(u128::MAX),
+        const KEYS: smp::Keys = smp::Keys {
+            ltk: burble_crypto::LTK::new(u128::MAX),
         };
         let tmp = (Builder::new().prefix(concat!("burble-test-")).tempdir()).unwrap();
-        let db = SecDb(tmp.path().to_path_buf());
-        db.save(PEER, &KEYS).unwrap();
-        assert!(tmp.path().join(SecDb::FILE_NAME).exists());
+        let db = KeyStore(Dir(tmp.path().to_path_buf()));
+        assert!(db.save(PEER, &KEYS));
+        assert!(tmp.path().join(Dir::FILE_NAME_FMT).exists());
         assert_eq!(db.load(PEER).unwrap(), KEYS);
     }
 }

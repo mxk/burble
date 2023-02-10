@@ -47,7 +47,7 @@ async fn main() -> Result<()> {
     let local_addr = host.read_bd_addr().await?;
     info!("Device address: {:?}", local_addr);
 
-    let mut secdb = smp::SecDb::new(host.clone(), Arc::new(burble_fs::SecDb::new()))?;
+    let mut secdb = smp::SecDb::new(host.clone(), Arc::new(burble_fs::KeyStore::new()))?;
     tokio::task::spawn(async move { secdb.event_loop().await });
 
     let cm = tokio::task::spawn(server_loop(
@@ -102,7 +102,7 @@ async fn server_loop<T: host::Transport + 'static>(
             let mut dev = smp::Device::new()
                 .with_display(Box::new(Dev))
                 .with_confirm(Box::new(Dev));
-            smp.respond(&mut dev, &burble_fs::SecDb::new()).await
+            smp.respond(&mut dev, &burble_fs::KeyStore::new()).await
         });
     }
 }

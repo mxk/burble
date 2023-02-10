@@ -13,6 +13,7 @@ aes = "0.8.2"
 cmac = "0.7.1"
 p256 = { version = "0.12.0", features = ["arithmetic", "ecdh"] }
 rand_core = { version = "0.6.4", features = ["getrandom"] }
+serde.workspace = true
 structbuf.workspace = true
 subtle = "2.4.1"
 zeroize = { version = "1.5.7", features = ["zeroize_derive"] }

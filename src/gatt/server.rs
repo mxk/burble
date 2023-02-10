@@ -320,3 +320,12 @@ impl WriteQueue {
         })
     }
 }
+
+type ArcConnectedClient = Arc<parking_lot::Mutex<ConnectedClient>>;
+
+/// State shared by bearers for the same client.
+#[derive(Clone, Debug, Default)]
+struct ConnectedClient {
+    bond: BondedClient,
+    write_queue: WriteQueue,
+}

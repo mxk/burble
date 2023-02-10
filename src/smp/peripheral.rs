@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use tracing::{debug, error};
+use tracing::error;
 
 use burble_crypto::{Nonce, PublicKeyX, SecretKey, LTK};
 
@@ -27,7 +27,7 @@ impl<T: host::Transport> Peripheral<T> {
     }
 
     /// Handles responder pairing role. This method is not cancel safe.
-    pub async fn respond(&mut self, dev: &mut Device, store: &dyn Store) -> Result<()> {
+    pub async fn respond(&mut self, dev: &mut Device, store: &KeyStore) -> Result<()> {
         // TODO: Return a cancellable task?
         let init = match Command::try_from(self.ch.recv().await?) {
             Ok(Command::PairingRequest(init)) => init,
@@ -45,13 +45,13 @@ impl<T: host::Transport> Peripheral<T> {
         let (peer, ltk) = self.phase2(dev, method, a.into(), b.into()).await?;
         let mut keys = Keys { ltk };
         (self.phase3(b.initiator_keys, b.responder_keys, &mut keys)).await?;
-        if let Err(e) = store.save(peer, &keys) {
-            error!("Failed to save keys for {peer:?}: {e}");
-            Err(e.into())
-        } else {
-            debug!("Saved keys for {peer:?}");
-            Ok(())
+        if !store.save(peer, &keys) {
+            return Err(Error::Io(io::Error::new(
+                io::ErrorKind::Other,
+                "failed to save peer keys",
+            )));
         }
+        Ok(())
     }
 
     /// Performs Pairing Feature Exchange phase

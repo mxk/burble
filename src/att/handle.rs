@@ -5,8 +5,12 @@ use std::ops::{Bound, RangeBounds};
 use crate::util::name_of;
 
 /// Attribute handle ([Vol 3] Part F, Section 3.2.2).
-#[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[allow(clippy::unsafe_derive_deserialize)]
+#[derive(
+    Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Deserialize, serde::Serialize,
+)]
 #[repr(transparent)]
+#[serde(transparent)]
 pub struct Handle(NonZeroU16);
 
 impl Handle {

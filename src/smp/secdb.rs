@@ -1,9 +1,8 @@
 use std::collections::HashMap;
 use std::fmt::Debug;
-use std::io;
 use std::sync::Arc;
 
-use tracing::{debug, error, warn};
+use tracing::{error, warn};
 
 use burble_crypto::LTK;
 
@@ -11,32 +10,29 @@ use crate::hci::{EventCode, EventFilter};
 use crate::{hci, host, le};
 
 /// Security keys for a peer device.
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub struct Keys {
     pub ltk: LTK,
 }
 
-/// Interface to security database storage.
-pub trait Store: Debug + Send + Sync {
-    /// Saves keys for a peer address.
-    fn save(&self, peer: le::Addr, keys: &Keys) -> io::Result<()>;
-    /// Loads keys for a peer address.
-    fn load(&self, peer: le::Addr) -> io::Result<Keys>;
-}
+/// Interface to persistent security database storage.
+pub(crate) type KeyStore = dyn crate::PeerStore<Value = Keys>;
 
 /// Security database that stores encryption (LTK), identity (IRK), and CSRKs.
 #[derive(Debug)]
 pub struct SecDb<T: host::Transport> {
     ctl: hci::EventWaiterGuard<T>,
     host: hci::Host<T>,
-    store: Arc<dyn Store>,
+    store: Arc<KeyStore>,
     peer: HashMap<hci::ConnHandle, le::Addr>,
 }
 
 impl<T: host::Transport> SecDb<T> {
     /// Creates a security database that will handle HCI host key requests.
     #[inline]
-    pub fn new(host: hci::Host<T>, store: Arc<dyn Store>) -> hci::Result<Self> {
+    pub fn new(host: hci::Host<T>, store: Arc<KeyStore>) -> hci::Result<Self> {
         Ok(Self {
             ctl: host.register(EventFilter::SecDb)?,
             host,
@@ -96,15 +92,6 @@ impl<T: host::Transport> SecDb<T> {
             error!("LTK request for an unknown {hdl}");
             return None;
         };
-        self.store.load(peer).map_or_else(
-            |e| {
-                error!("Failed to load LTK for {peer}: {e}");
-                None
-            },
-            |k| {
-                debug!("Found LTK for {peer}");
-                Some(k.ltk)
-            },
-        )
+        self.store.load(peer).map(|k| k.ltk)
     }
 }

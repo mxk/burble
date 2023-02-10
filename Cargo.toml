@@ -22,6 +22,7 @@ publish.workspace = true
 [workspace.dependencies]
 num_enum = "0.5.7"
 paste = "1.0.11"
+serde = {version = "1.0.152", features = ["derive"]}
 structbuf = "0"
 strum = { version = "0.24.1", features = ["derive"] }
 tracing = "0.1.36"
@@ -36,6 +37,7 @@ num_enum.workspace = true
 parking_lot = { version = "0.12.1", features = ["hardware-lock-elision", "send_guard"] }
 paste.workspace = true
 rusb = "0.9.1"
+serde.workspace = true
 smallvec = { version = "1.10.0", features = ["const_generics", "const_new", "union"] }
 structbuf.workspace = true
 strum.workspace = true

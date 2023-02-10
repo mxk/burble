@@ -33,3 +33,14 @@ mod util;
 pub mod sdp {
     pub use burble_const::ServiceClass;
 }
+
+/// Interface to persistent peer data storage.
+pub trait PeerStore: std::fmt::Debug + Send + Sync {
+    /// Type of stored data.
+    type Value;
+
+    /// Saves peer data and returns `true` if the operation was successful.
+    fn save(&self, peer: le::Addr, v: &Self::Value) -> bool;
+    /// Loads peer data.
+    fn load(&self, peer: le::Addr) -> Option<Self::Value>;
+}

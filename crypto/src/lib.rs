@@ -205,10 +205,11 @@ impl MacKey {
 }
 
 /// LE Secure Connections Long Term Key.
-#[derive(Eq, PartialEq, Zeroize, ZeroizeOnDrop)]
+#[derive(Eq, PartialEq, Zeroize, ZeroizeOnDrop, serde::Deserialize, serde::Serialize)]
 #[must_use]
 #[repr(transparent)]
-pub struct LTK(u128);
+#[serde(transparent)]
+pub struct LTK(#[serde(with = "u128_hex")] u128);
 
 debug_secret!(LTK);
 
@@ -235,6 +236,33 @@ pub struct Check(u128);
 
 u128_codec!(Check);
 ct_newtype!(Check);
+
+mod u128_hex {
+    use serde::{de, ser};
+
+    pub(super) fn serialize<S: ser::Serializer>(v: &u128, s: S) -> Result<S::Ok, S::Error> {
+        use std::io::Write;
+        let mut b = std::io::Cursor::new([0_u8; 32]);
+        write!(b, "{v:032X}").expect("buffer overflow");
+        s.serialize_str(std::str::from_utf8(b.get_ref()).expect("invalid string"))
+    }
+
+    pub(super) fn deserialize<'de, D: de::Deserializer<'de>>(d: D) -> Result<u128, D::Error> {
+        struct U128;
+        impl de::Visitor<'_> for U128 {
+            type Value = u128;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("128-bit hex string")
+            }
+
+            fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                u128::from_str_radix(v, 16).map_err(de::Error::custom)
+            }
+        }
+        d.deserialize_str(U128)
+    }
+}
 
 #[allow(clippy::unusual_byte_groupings)]
 #[cfg(test)]

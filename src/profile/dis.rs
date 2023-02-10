@@ -2,7 +2,7 @@
 //!
 //! This service exposes manufacturer and/or vendor information about a device.
 //!
-//! [DIS]: https://www.bluetooth.org/docman/handlers/downloaddoc.ashx?doc_id=244369
+//! [DIS]: https://www.bluetooth.com/specifications/specs/device-information-service-1-1/
 
 use crate::att::Perms;
 use crate::gatt::{Builder, Characteristic, Schema, Service, ServiceDef};
