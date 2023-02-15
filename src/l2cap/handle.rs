@@ -1,4 +1,4 @@
-use std::fmt::{Debug, Display, Formatter};
+use std::fmt::{Debug, Display, Formatter, Write};
 use std::num::NonZeroU16;
 
 use crate::hci;
@@ -63,9 +63,9 @@ impl Cid {
     /// Attribute protocol channel.
     pub(super) const ATT: Self = Self::fixed(0x0004);
     /// LE signaling channel.
-    pub(super) const LE_SIGNAL: Self = Self::fixed(0x0005);
+    pub(super) const SIG: Self = Self::fixed(0x0005);
     /// Security Manager protocol channel.
-    pub(super) const SM: Self = Self::fixed(0x0006);
+    pub(super) const SMP: Self = Self::fixed(0x0006);
 
     /// Wraps a fixed CID.
     #[inline]
@@ -97,6 +97,17 @@ impl Cid {
             0x0004 | 0x0005 | 0x0006 /* | 0x0020..=0x003E */ | 0x0040..=0x007F
         )
     }
+
+    /// Writes CID name to `f`.
+    #[inline(always)]
+    fn write_fmt(self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ATT => f.write_str("ATT"),
+            Self::SIG => f.write_str("SIG"),
+            Self::SMP => f.write_str("SMP"),
+            _ => write!(f, "{:#06X}", self.0.get()),
+        }
+    }
 }
 
 impl From<Cid> for u16 {
@@ -109,7 +120,10 @@ impl From<Cid> for u16 {
 impl Debug for Cid {
     #[allow(clippy::use_self)]
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}({:#06X})", name_of!(Cid), self.0.get())
+        f.write_str(name_of!(Cid))?;
+        f.write_char('(')?;
+        self.write_fmt(f)?;
+        f.write_char(')')
     }
 }
 
@@ -130,13 +144,9 @@ pub struct LeCid {
 impl Debug for LeCid {
     #[allow(clippy::use_self)]
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}({:#05X}, {:#04X})",
-            name_of!(LeCid),
-            u16::from(self.link),
-            u16::from(self.chan)
-        )
+        write!(f, "{}({:#05X}, ", name_of!(LeCid), u16::from(self.link),)?;
+        self.chan.write_fmt(f)?;
+        f.write_char(')')
     }
 }
 

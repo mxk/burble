@@ -3,7 +3,7 @@ use tracing::{error, trace};
 
 use burble_crypto::{Check, Codec, Confirm, Nonce, PublicKey};
 
-use crate::l2cap::Sdu;
+use crate::l2cap::Payload;
 use crate::{host, le};
 
 use super::*;
@@ -28,7 +28,7 @@ pub(super) enum Command {
 }
 
 impl Command {
-    pub fn pack<T: host::Transport>(&self, pdu: &mut Sdu<T>) {
+    pub fn pack<T: host::Transport>(&self, pdu: &mut Payload<T>) {
         use Command::*;
         let mut p = pdu.append();
         match *self {
@@ -51,10 +51,10 @@ impl Command {
     }
 }
 
-impl<T: host::Transport> TryFrom<Sdu<T>> for Command {
+impl<T: host::Transport> TryFrom<Payload<T>> for Command {
     type Error = Reason;
 
-    fn try_from(pdu: Sdu<T>) -> std::result::Result<Self, Self::Error> {
+    fn try_from(pdu: Payload<T>) -> std::result::Result<Self, Self::Error> {
         // [Vol 3] Part H, Section 3.3
         let mut p = pdu.unpack();
         if p.is_empty() {

@@ -409,14 +409,14 @@ impl<T: host::Transport> Bearer<T> {
 /// Server initiated encoders ([Vol 3] Part F, Section 3.4.7).
 impl<T: host::Transport> Bearer<T> {
     /// Sends an `ATT_HANDLE_VALUE_NTF` PDU ([Vol 3] Part F, Section 3.4.7.1).
-    pub async fn handle_value_ntf(&self, hdl: Handle, v: &[u8]) -> Result<()> {
+    pub async fn handle_value_ntf(&mut self, hdl: Handle, v: &[u8]) -> Result<()> {
         let ntf = self.pack(HandleValueNtf, |p| put_truncate(p.u16(hdl), v));
         self.send(ntf).await
     }
 
     /// Sends an `ATT_HANDLE_VALUE_IND` PDU and waits for the confirmation
     /// ([Vol 3] Part F, Section 3.4.7.2).
-    pub async fn handle_value_ind(&self, hdl: Handle, v: &[u8]) -> Result<()> {
+    pub async fn handle_value_ind(&mut self, hdl: Handle, v: &[u8]) -> Result<()> {
         let ind = self.pack(HandleValueInd, |p| put_truncate(p.u16(hdl), v));
         self.send(ind).await?;
         drop(self.recv_rsp(HandleValueCfm).await?);
@@ -426,7 +426,7 @@ impl<T: host::Transport> Bearer<T> {
     /// Sends an `ATT_MULTIPLE_HANDLE_VALUE_NTF` PDU
     /// ([Vol 3] Part F, Section 3.4.7.4).
     pub async fn multiple_handle_value_ntf(
-        &self,
+        &mut self,
         it: impl Iterator<Item = (Handle, &[u8])> + Send,
     ) -> Result<()> {
         let ntf = self.pack(MultipleHandleValueNtf, |p| {

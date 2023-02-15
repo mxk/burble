@@ -26,7 +26,7 @@ impl BatteryService {
         let p = perms.into();
         let (hdl, _) = b.primary_service(Service::Battery, [], |b| {
             use Characteristic::*;
-            b.ro_characteristic(BatteryLevel, &[100], p, |_| {});
+            b.ro_characteristic(BatteryLevel, [100], p, |_| {});
         });
         hdl
     }

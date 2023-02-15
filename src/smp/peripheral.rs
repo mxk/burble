@@ -56,7 +56,7 @@ impl<T: host::Transport> Peripheral<T> {
 
     /// Performs Pairing Feature Exchange phase
     /// ([Vol 3] Part H, Section 2.3.5.1 and C.1).
-    async fn phase1(&self, dev: &Device, a: PairingParams) -> Result<Phase1> {
+    async fn phase1(&mut self, dev: &Device, a: PairingParams) -> Result<Phase1> {
         if !a.auth_req.contains(AuthReq::SC) {
             // [Vol 3] Part H, Section 2.3 and C.5.1
             error!("Peer does not support LE Secure Connections");
@@ -185,7 +185,7 @@ impl<T: host::Transport> Peripheral<T> {
 
     /// Performs Transport Specific Key Distribution phase
     /// ([Vol 3] Part H, Section 3.6.1 and C.3).
-    async fn phase3(&self, a: KeyDist, b: KeyDist, _k: &mut Keys) -> Result<()> {
+    async fn phase3(&mut self, a: KeyDist, b: KeyDist, _k: &mut Keys) -> Result<()> {
         if !b.is_empty() {
             // TODO: IRK
             // TODO: BD_ADDR
@@ -202,7 +202,7 @@ impl<T: host::Transport> Peripheral<T> {
     }
 
     /// Returns the next command.
-    async fn recv(&self) -> Result<Command> {
+    async fn recv(&mut self) -> Result<Command> {
         // [Vol 3] Part H, Section 3.4
         let pdu = match tokio::time::timeout(Duration::from_secs(30), self.ch.recv()).await {
             Ok(Ok(pdu)) => pdu,
@@ -221,14 +221,14 @@ impl<T: host::Transport> Peripheral<T> {
 
     /// Sends a `PairingFailed(InvalidParameters)` response when the received
     /// command didn't match code `c`.
-    async fn expecting<R>(&self, c: Code) -> Result<R> {
+    async fn expecting<R>(&mut self, c: Code) -> Result<R> {
         error!("Command mismatch while waiting for {c}");
         self.fail(Reason::InvalidParameters).await
     }
 
     /// Sends a `PairingFailed` command over the channel to indicate a local
     /// failure.
-    async fn fail<R>(&self, r: Reason) -> Result<R> {
+    async fn fail<R>(&mut self, r: Reason) -> Result<R> {
         if let Err(e) = self.send(Command::PairingFailed(r)).await {
             error!("Error sending PairingFailed response: {e}");
         }
@@ -236,8 +236,8 @@ impl<T: host::Transport> Peripheral<T> {
     }
 
     /// Sends a command over the channel.
-    async fn send(&self, cmd: Command) -> Result<()> {
-        let mut pdu = self.ch.new_sdu();
+    async fn send(&mut self, cmd: Command) -> Result<()> {
+        let mut pdu = self.ch.new_payload();
         cmd.pack(&mut pdu);
         Ok(self.ch.send(pdu).await?)
     }

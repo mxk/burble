@@ -10,7 +10,7 @@ pub(crate) use consts::*;
 pub use {handle::*, perm::*};
 
 use crate::gap::Uuid;
-use crate::l2cap::{BasicChan, Sdu};
+use crate::l2cap::{BasicChan, Payload};
 use crate::{host, l2cap};
 
 mod consts;
@@ -39,12 +39,12 @@ pub type RspResult<T> = std::result::Result<T, ErrorRsp>;
 /// Received ATT protocol data unit ([Vol 3] Part F, Section 3.3).
 #[derive(Debug)]
 #[repr(transparent)]
-pub struct Pdu<T: host::Transport>(Sdu<T>);
+pub struct Pdu<T: host::Transport>(Payload<T>);
 
 /// Response PDU.
 #[derive(Debug)]
 #[repr(transparent)]
-pub struct Rsp<T: host::Transport>(Sdu<T>);
+pub struct Rsp<T: host::Transport>(Payload<T>);
 
 /// `ATT_ERROR_RSP` PDU ([Vol 3] Part F, Section 3.4.1.1).
 #[derive(Clone, Copy, Debug, thiserror::Error)]
@@ -64,7 +64,7 @@ impl ErrorRsp {
 }
 
 /// ATT bearer ([Vol 3] Part F, Section 3.2.11).
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 #[repr(transparent)]
 pub struct Bearer<T: host::Transport>(BasicChan<T>);
 
@@ -79,10 +79,10 @@ impl<T: host::Transport> Bearer<T> {
 
     /// Returns the next command, request, notification, or indication PDU. This
     /// method is cancel safe.
-    pub async fn recv(&self) -> Result<Pdu<T>> {
-        let sdu = self.0.recv().await?;
+    pub async fn recv(&mut self) -> Result<Pdu<T>> {
+        let pdu = self.0.recv().await?;
         // [Vol 3] Part F, Section 3.3
-        let Some(&op) = sdu.as_ref().first() else {
+        let Some(&op) = pdu.as_ref().first() else {
             warn!("Empty PDU");
             return Err(ErrorRsp::new(0, None, ErrorCode::InvalidPdu).into());
         };
@@ -95,7 +95,7 @@ impl<T: host::Transport> Bearer<T> {
             return Err(ErrorRsp::new(op as _, None, ErrorCode::UnlikelyError).into());
         }
         // TODO: Validate signature?
-        Ok(Pdu(sdu))
+        Ok(Pdu(pdu))
     }
 
     /// Returns the access request being made by the specified `pdu`. The
@@ -114,7 +114,7 @@ impl<T: host::Transport> Bearer<T> {
     /// Sends a response PDU or an `ATT_ERROR_RSP` if the request could not be
     /// completed ([Vol 3] Part F, Section 3.4.1.1). Command-related errors are
     /// ignored.
-    pub async fn send_rsp(&self, r: RspResult<Rsp<T>>) -> Result<()> {
+    pub async fn send_rsp(&mut self, r: RspResult<Rsp<T>>) -> Result<()> {
         let rsp = match r {
             Ok(r) => r.0,
             Err(e) => {
@@ -154,7 +154,7 @@ impl<T: host::Transport> Bearer<T> {
     }
 
     /// Receives a response or confirmation PDU ([Vol 3] Part F, Section 3.4.9).
-    async fn recv_rsp(&self, rsp: Opcode) -> Result<Sdu<T>> {
+    async fn recv_rsp(&mut self, rsp: Opcode) -> Result<Payload<T>> {
         let want = u8::from(rsp);
         let err = if rsp.typ() == PduType::Rsp {
             Opcode::ErrorRsp as u8
@@ -199,15 +199,15 @@ impl<T: host::Transport> Bearer<T> {
     /// Returns an outbound PDU, calling `f` to encode it after writing the
     /// opcode.
     #[inline]
-    fn pack(&self, op: Opcode, f: impl FnOnce(&mut Packer)) -> Sdu<T> {
-        let mut sdu = self.0.new_sdu();
-        f(sdu.append().u8(op));
-        sdu
+    fn pack(&self, op: Opcode, f: impl FnOnce(&mut Packer)) -> Payload<T> {
+        let mut pdu = self.0.new_payload();
+        f(pdu.append().u8(op));
+        pdu
     }
 
     /// Sends an SDU over the channel.
     #[inline(always)]
-    async fn send(&self, sdu: Sdu<T>) -> Result<()> {
-        Ok(self.0.send(sdu).await?)
+    async fn send(&mut self, pdu: Payload<T>) -> Result<()> {
+        Ok(self.0.send(pdu).await?)
     }
 }

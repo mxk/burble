@@ -41,14 +41,15 @@ impl<T: host::Transport> Server<T> {
     }
 
     /// Runs main server loop.
-    pub async fn serve(&self) -> Result<()> {
+    pub async fn serve(&mut self) -> Result<()> {
         loop {
-            self.handle_req(&self.br.recv().await?).await?;
+            let pdu = self.br.recv().await?;
+            self.handle_req(&pdu).await?;
         }
     }
 
     /// Handles one client request.
-    async fn handle_req(&self, pdu: &Pdu<T>) -> Result<()> {
+    async fn handle_req(&mut self, pdu: &Pdu<T>) -> Result<()> {
         use Opcode::*;
         let op = pdu.opcode();
         #[allow(clippy::match_same_arms)]

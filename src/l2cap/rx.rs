@@ -3,8 +3,6 @@
 use structbuf::Unpacker;
 use tracing::{error, trace, warn};
 
-use crate::util::CondvarGuard;
-
 use super::*;
 
 /// Inbound PDU transfer state.
@@ -29,12 +27,10 @@ impl<T: host::Transport + 'static> State<T> {
     /// Receives one or more PDU fragments, and returns the CID of the channel
     /// that has a new complete PDU. This method is cancel safe.
     #[inline]
-    pub async fn recv(&mut self) -> Result<LeCid> {
+    pub async fn recv(&mut self) -> Result<()> {
         loop {
             let xfer = self.xfer.recv().await.unwrap()?;
-            if let Some(cid) = self.recv.lock().recombine(xfer) {
-                return Ok(cid);
-            }
+            self.recv.lock().recombine(xfer);
         }
     }
 
@@ -115,12 +111,12 @@ impl<T: host::Transport> Receiver<T> {
 
     /// Recombines a received PDU fragment, and returns the CID of the channel
     /// that has a new complete PDU ([Vol 3] Part A, Section 7.2.2).
-    fn recombine(&mut self, xfer: AclTransfer<T>) -> Option<LeCid> {
+    fn recombine(&mut self, xfer: AclTransfer<T>) {
         let pkt = xfer.as_ref();
-        let Some((link, l2cap_hdr, data)) = parse_hdr(pkt) else { return None };
+        let Some((link, l2cap_hdr, data)) = parse_hdr(pkt) else { return };
         let Some(cont_cid) = self.cont.get_mut(&link) else {
             warn!("PDU fragment for an unknown {link}: {pkt:02X?}");
-            return None;
+            return;
         };
         if let Some((pdu_len, cid)) = l2cap_hdr {
             if let Some(cid) = *cont_cid {
@@ -131,32 +127,30 @@ impl<T: host::Transport> Receiver<T> {
             if !cid.is_le() {
                 // [Vol 3] Part A, Section 3
                 warn!("PDU fragment for an invalid {cid}: {pkt:02X?}");
-                return None;
+                return;
             }
             let cid = link.chan(cid);
             let Some(ch) = self.chans.get_mut(&cid) else {
                 warn!("PDU fragment for an unknown {cid}: {pkt:02X?}");
-                return None;
+                return;
             };
             trace!("PDU fragment for {cid}: {pkt:02X?}");
-            return ch.first(pdu_len, xfer).or_else(|| {
-                if !ch.buf.is_none() {
-                    *cont_cid = Some(cid.chan);
-                }
-                None
-            });
+            ch.first(pdu_len, xfer);
+            if !ch.buf.is_none() {
+                *cont_cid = Some(cid.chan);
+            }
+            return;
         }
         let Some(cid) = *cont_cid else {
             warn!("Unexpected continuation PDU fragment for {link}: {pkt:02X?}");
-            return None;
+            return;
         };
         trace!("Cont. PDU fragment for {cid}: {pkt:02X?}");
         let ch = self.chans.get_mut(&link.chan(cid)).unwrap();
-        let r = ch.cont(data);
+        ch.cont(data);
         if ch.buf.is_none() {
             *cont_cid = None;
         }
-        r
     }
 }
 
@@ -170,10 +164,6 @@ struct Chan<T: host::Transport> {
 }
 
 impl<T: host::Transport> Chan<T> {
-    /// Maximum number of PDUs that may be queued. Reaching this limit likely
-    /// means that the channel is broken and isn't receiving data.
-    const MAX_PDUS: usize = 64;
-
     /// Creates PDU receive state for channel `ch`.
     #[inline]
     #[must_use]
@@ -195,31 +185,21 @@ impl<T: host::Transport> Chan<T> {
     }
 
     /// Receives the first, possibly incomplete, PDU fragment.
-    pub fn first(&mut self, pdu_len: u16, xfer: AclTransfer<T>) -> Option<LeCid> {
+    pub fn first(&mut self, pdu_len: u16, xfer: AclTransfer<T>) {
         self.ensure_complete();
-        let cs = self.raw.state.lock();
-        if !cs.is_ok() {
-            return None;
-        }
+        let mut cs = self.raw.state.lock();
         let frame_len = L2CAP_HDR + usize::from(pdu_len);
-        if frame_len > cs.max_frame_len {
-            error!(
-                "PDU for {} exceeds maximum frame length ({} > {})",
-                self.raw.cid, frame_len, cs.max_frame_len
-            );
-            chan::State::set_fatal(cs, Status::ERROR);
-            return None;
-        }
-        if xfer.as_ref().len() == ACL_HDR + frame_len {
-            self.complete(cs, Frame::complete(xfer))
-        } else {
-            self.buf = Frame::first(&xfer, frame_len);
-            None
+        if cs.can_recv(self.raw.cid, frame_len) {
+            if xfer.as_ref().len() == ACL_HDR + frame_len {
+                cs.push(self.raw.cid, Frame::complete(xfer));
+            } else {
+                self.buf = Frame::first(&xfer, frame_len);
+            }
         }
     }
 
     /// Receives a continuation PDU fragment.
-    pub fn cont(&mut self, acl_data: &[u8]) -> Option<LeCid> {
+    pub fn cont(&mut self, acl_data: &[u8]) {
         let mut p = self.buf.append();
         if !p.can_put(acl_data.len()) {
             error!(
@@ -230,33 +210,13 @@ impl<T: host::Transport> Chan<T> {
             );
             self.buf = StructBuf::none();
             self.raw.set_error();
-            return None;
+            return;
         }
         p.put(acl_data);
         if self.buf.is_full() {
             let buf = Frame::Buf(self.buf.take());
-            self.complete(self.raw.state.lock(), buf)
-        } else {
-            None
+            self.raw.state.lock().push(self.raw.cid, buf);
         }
-    }
-
-    /// Adds a complete PDU to the channel queue and notifies any waiters.
-    pub fn complete(&self, mut cs: CondvarGuard<chan::State<T>>, pdu: Frame<T>) -> Option<LeCid> {
-        if !cs.is_ok() {
-            return None;
-        }
-        if cs.pdu.len() == Self::MAX_PDUS {
-            error!("PDU queue overflow for {}", self.raw.cid);
-            chan::State::set_fatal(cs, Status::ERROR);
-            return None;
-        }
-        trace!("New PDU for {}", self.raw.cid);
-        cs.pdu.push_back(pdu);
-        if cs.pdu.len() == 1 {
-            cs.notify_all();
-        }
-        Some(self.raw.cid)
     }
 }
 

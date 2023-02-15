@@ -92,7 +92,7 @@ impl<T: host::Transport + 'static> ChanManager<T> {
                         return Ok(link);
                     }
                 }
-                r = self.rm.rx.recv() => self.handle_signal(r?),
+                _ = self.rm.rx.recv() => {} //self.handle_signal(r?),
             };
         }
     }
@@ -106,7 +106,7 @@ impl<T: host::Transport + 'static> ChanManager<T> {
     /// Returns the Security Manager (SM) fixed channel for the specified LE-U
     /// logical link.
     pub fn sm_chan(&mut self, link: LeU) -> Option<smp::Peripheral<T>> {
-        (self.conns.get_mut(&link).and_then(|cn| cn.sm_opt.take())).map(smp::Peripheral::new)
+        (self.conns.get_mut(&link).and_then(|cn| cn.smp_opt.take())).map(smp::Peripheral::new)
     }
 
     /// Handles HCI control events.
@@ -129,7 +129,7 @@ impl<T: host::Transport + 'static> ChanManager<T> {
 
     /// Handles signaling channel communications.
     fn handle_signal(&mut self, cid: LeCid) {
-        if cid.chan != Cid::LE_SIGNAL {
+        if cid.chan != Cid::SIG {
             return;
         }
         let _ = self;
@@ -151,12 +151,12 @@ impl<T: host::Transport + 'static> ChanManager<T> {
         });
 
         // [Vol 3] Part A, Section 4
-        let sig = BasicChan::new(link.chan(Cid::LE_SIGNAL), &ci, &self.rm.tx, 23);
+        let sig = BasicChan::new(link.chan(Cid::SIG), &ci, &self.rm.tx, 23);
         // [Vol 3] Part G, Section 5.2
         let att = BasicChan::new(link.chan(Cid::ATT), &ci, &self.rm.tx, 23);
         // [Vol 3] Part H, Section 3.2
         // TODO: MTU is 23 when LE Secure Connections is not supported
-        let sm = BasicChan::new(link.chan(Cid::SM), &ci, &self.rm.tx, 65);
+        let sm = BasicChan::new(link.chan(Cid::SMP), &ci, &self.rm.tx, 65);
 
         // [Vol 3] Part A, Section 2.2
         self.rm.tx.register_link(LeU::new(evt.handle));
@@ -167,8 +167,8 @@ impl<T: host::Transport + 'static> ChanManager<T> {
             sig,
             att: Arc::clone(&att.raw),
             att_opt: Some(att),
-            sm: Arc::clone(&sm.raw),
-            sm_opt: Some(sm),
+            smp: Arc::clone(&sm.raw),
+            smp_opt: Some(sm),
         };
         assert!(self.conns.insert(link, cn).is_none());
         Some(link)
@@ -181,7 +181,7 @@ impl<T: host::Transport + 'static> ChanManager<T> {
         let Some(mut cn) = self.conns.remove(&LeU::new(evt.handle)) else { return };
         self.rm.rx.remove_chan(cn.sig.raw.cid);
         self.rm.rx.remove_chan(cn.att.cid);
-        self.rm.rx.remove_chan(cn.sm.cid);
+        self.rm.rx.remove_chan(cn.smp.cid);
         self.rm.tx.on_disconnect(evt);
         cn.set_closed();
     }
@@ -247,8 +247,8 @@ struct Conn<T: host::Transport> {
     att: Arc<RawChan<T>>,
     att_opt: Option<BasicChan<T>>,
     /// Security Manager fixed channel.
-    sm: Arc<RawChan<T>>,
-    sm_opt: Option<BasicChan<T>>,
+    smp: Arc<RawChan<T>>,
+    smp_opt: Option<BasicChan<T>>,
 }
 
 impl<T: host::Transport> Conn<T> {
@@ -256,7 +256,7 @@ impl<T: host::Transport> Conn<T> {
     fn set_closed(&mut self) {
         self.sig.raw.set_closed();
         self.att.set_closed();
-        self.sm.set_closed();
+        self.smp.set_closed();
     }
 }
 
@@ -264,21 +264,21 @@ impl<T: host::Transport> Conn<T> {
 /// information payload ([Vol 3] Part A, Section 3).
 #[derive(Debug)]
 #[must_use]
-pub(crate) struct Sdu<T: host::Transport> {
-    i: usize,
+pub(crate) struct Payload<T: host::Transport> {
     f: Frame<T>,
+    i: usize,
 }
 
-impl<T: host::Transport> Sdu<T> {
+impl<T: host::Transport> Payload<T> {
     /// Creates an SDU from a frame with information payload at index `i`.
     #[inline]
     fn new(f: Frame<T>, i: usize) -> Self {
         debug_assert!(f.as_ref().len() >= i);
-        Self { i, f }
+        Self { f, i }
     }
 }
 
-impl<T: host::Transport> AsRef<[u8]> for Sdu<T> {
+impl<T: host::Transport> AsRef<[u8]> for Payload<T> {
     /// Returns the SDU information payload.
     #[inline]
     fn as_ref(&self) -> &[u8] {
@@ -287,7 +287,7 @@ impl<T: host::Transport> AsRef<[u8]> for Sdu<T> {
     }
 }
 
-impl<T: host::Transport> Pack for Sdu<T> {
+impl<T: host::Transport> Pack for Payload<T> {
     #[inline]
     fn append(&mut self) -> Packer {
         self.f.append()
