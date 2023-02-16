@@ -84,10 +84,10 @@ impl Host {
     /// Creates an HCI host using transport layer `t`.
     #[inline]
     #[must_use]
-    pub fn new(transport: Arc<dyn host::Transport>) -> Self {
+    pub fn new(t: Arc<dyn host::Transport>) -> Self {
         Self {
-            transport,
-            router: Arc::default(),
+            transport: t,
+            router: Arc::new(EventRouter::default()),
         }
     }
 
@@ -100,7 +100,7 @@ impl Host {
 
     /// Registers an event waiter with filter `f`.
     #[inline]
-    pub(crate) fn register(&self, f: EventFilter) -> Result<EventWaiterGuard> {
+    pub(crate) fn register(&self, f: EventFilter) -> Result<EventReceiver> {
         self.router.register(f)
     }
 
@@ -142,8 +142,8 @@ impl Host {
     /// encountered. The task is canceled when the returned future is dropped.
     #[inline]
     #[must_use]
-    pub fn enable_events(&self) -> EventReceiverTask {
-        EventReceiverTask::new(self.clone())
+    pub fn enable_events(&self) -> EventTransferTask {
+        EventTransferTask::new(self.clone())
     }
 
     /// Executes a command with no parameters and returns the command completion

@@ -1,7 +1,7 @@
 use std::fmt::{Debug, Display, Formatter};
 use std::num::{NonZeroU16, NonZeroU8};
 
-use crate::util::name_of;
+use crate::name_of;
 
 /// Connection handle ([Vol 4] Part E, Section 5.4.2).
 #[derive(Clone, Copy, Eq, Hash, PartialEq)]

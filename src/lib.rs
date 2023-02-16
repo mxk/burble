@@ -26,8 +26,6 @@ pub mod le;
 mod profile;
 #[path = "smp/smp.rs"]
 pub mod smp;
-#[path = "util/util.rs"]
-mod util;
 
 /// Service Discovery Protocol constants ([Vol 3] Part B).
 pub mod sdp {
@@ -44,3 +42,13 @@ pub trait PeerStore: std::fmt::Debug + Send + Sync {
     /// Loads peer data.
     fn load(&self, peer: le::Addr) -> Option<Self::Value>;
 }
+
+/// Returns a string representation of the specified type.
+macro_rules! name_of {
+    ($t:ty) => {{
+        // TODO: Switch to `std::any::type_name` when stabilized
+        type _T = $t; // Allows $t to be recognized as a type for refactoring
+        stringify!($t)
+    }};
+}
+pub(crate) use name_of;

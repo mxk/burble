@@ -4,7 +4,7 @@ use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{ready, Context, Poll};
+use std::task::{ready, Context, Poll, Waker};
 use std::time::Duration;
 
 use structbuf::Unpacker;
@@ -14,7 +14,6 @@ use tracing::{debug, trace};
 
 pub use {hci::*, le::*};
 
-use crate::util::Condvar;
 use crate::{host, le::RawAddr};
 
 use super::*;
@@ -232,14 +231,13 @@ impl Default for EventType {
 /// the event asynchronously before the next receive operation can happen.
 #[derive(Debug, Default)]
 pub(super) struct EventRouter {
-    // TODO: Avoid notifying all waiters for each event?
-    waiters: Condvar<Waiters>,
-    recv: tokio::sync::Mutex<SharedEventReceiver>,
+    waiters: parking_lot::Mutex<Waiters>,
+    recv: tokio::sync::Mutex<SharedEventTransfer>,
 }
 
 impl EventRouter {
     /// Registers an event waiter with filter `f`.
-    pub fn register(self: &Arc<Self>, f: EventFilter) -> Result<EventWaiterGuard> {
+    pub fn register(self: &Arc<Self>, f: EventFilter) -> Result<EventReceiver> {
         let mut ws = self.waiters.lock();
         if ws.queue.iter().any(|w| f.conflicts_with(&w.filter)) {
             return Err(Error::FilterConflict);
@@ -260,9 +258,10 @@ impl EventRouter {
             id,
             filter: f,
             ready: None,
+            waker: None,
         });
         drop(ws);
-        Ok(EventWaiterGuard {
+        Ok(EventReceiver {
             router: Arc::clone(self),
             id,
         })
@@ -283,10 +282,18 @@ impl EventRouter {
         // an event is not being awaited. The timeout should catch that.
         let mut recv = (timeout(Duration::from_secs(3), Arc::clone(&rwlock).write_owned()).await)
             .expect("recv_event stalled (EventGuard held for too long)");
-        recv.next(t).await?;
-
-        // TODO: Remove and notify receivers for certain fatal errors, like lost
-        // device.
+        recv.next(t).await.map_err(|e| {
+            if let Error::Host(e) = e {
+                let mut ws = self.waiters.lock();
+                ws.err = Some(e);
+                for w in &mut ws.queue {
+                    if let Some(waker) = w.waker.take() {
+                        waker.wake();
+                    }
+                }
+            }
+            e
+        })?;
 
         // TODO: One second command timeout ([Vol 4] Part E, Section 4.4)
 
@@ -303,11 +310,12 @@ impl EventRouter {
             // try_read_owned() is guaranteed to succeed since we are
             // holding our own read lock and there are no writers waiting.
             w.ready = Some(Arc::clone(&rwlock).try_read_owned().unwrap());
+            if let Some(waker) = w.waker.take() {
+                waker.wake();
+            }
             received = true;
         }
-        if received {
-            ws.notify_all();
-        } else {
+        if !received {
             trace!("Ignored event: {evt:?}");
         }
         Ok(evt)
@@ -316,13 +324,13 @@ impl EventRouter {
 
 /// Future that continuously receives HCI events.
 #[derive(Debug)]
-pub struct EventReceiverTask {
+pub struct EventTransferTask {
     h: tokio::task::JoinHandle<Result<()>>,
     c: CancellationToken,
     _g: tokio_util::sync::DropGuard,
 }
 
-impl EventReceiverTask {
+impl EventTransferTask {
     /// Creates a new event receiver task.
     pub(super) fn new(host: Host) -> Self {
         let c = CancellationToken::new();
@@ -359,7 +367,7 @@ impl EventReceiverTask {
     }
 }
 
-impl Future for EventReceiverTask {
+impl Future for EventTransferTask {
     type Output = Result<()>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -394,6 +402,7 @@ impl EventFilter {
 #[derive(Debug)]
 struct Waiters {
     queue: VecDeque<Waiter>,
+    err: Option<host::Error>,
     next_id: u64,
     cmd_quota: u8,
 }
@@ -403,6 +412,7 @@ impl Default for Waiters {
     fn default() -> Self {
         Self {
             queue: VecDeque::with_capacity(4),
+            err: None,
             next_id: 0,
             cmd_quota: 1, // [Vol 4] Part E, Section 4.4
         }
@@ -414,34 +424,51 @@ impl Default for Waiters {
 struct Waiter {
     id: u64,
     filter: EventFilter,
-    ready: Option<tokio::sync::OwnedRwLockReadGuard<EventReceiver>>,
+    ready: Option<tokio::sync::OwnedRwLockReadGuard<EventTransfer>>,
+    waker: Option<Waker>,
 }
 
 /// Guard that unregisters the event waiter when dropped.
 #[derive(Debug)]
-pub(crate) struct EventWaiterGuard {
+pub(crate) struct EventReceiver {
+    id: u64,
     router: Arc<EventRouter>,
-    id: u64, // TODO: Use direct pointer registration rather than ids
 }
 
-impl EventWaiterGuard {
-    /// Returns the next matching event or an error if the waiter is no longer
-    /// registered (e.g. if the controller is lost). This method is cancel safe.
-    pub async fn next(&self) -> Result<EventGuard> {
-        let mut ws = self.router.waiters.lock();
-        loop {
-            match ws.queue.iter_mut().find(|w| w.id == self.id) {
-                Some(w) => match w.ready.take() {
-                    Some(ready) => return Ok(EventGuard::new(ready)),
-                    None => ws.notified().await,
-                },
-                None => return Err(Status::UnspecifiedError.into()),
-            }
+impl EventReceiver {
+    /// Returns a future that resolves to the next event.
+    #[inline(always)]
+    pub fn next(&mut self) -> NextEvent {
+        NextEvent(self)
+    }
+}
+
+/// Next event future. This future is cancel safe.
+#[derive(Debug)]
+#[repr(transparent)]
+pub(crate) struct NextEvent<'a>(&'a mut EventReceiver);
+
+impl Future for NextEvent<'_> {
+    type Output = Result<EventGuard>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut ws = self.0.router.waiters.lock();
+        if let Some(e) = ws.err {
+            return Poll::Ready(Err(e.into()));
+        }
+        let w = (ws.queue.iter_mut())
+            .find(|w| w.id == self.0.id)
+            .expect("unregistered event waiter");
+        if let Some(ready) = w.ready.take() {
+            Poll::Ready(Ok(EventGuard::new(ready)))
+        } else {
+            w.waker = Some(cx.waker().clone());
+            Poll::Pending
         }
     }
 }
 
-impl Drop for EventWaiterGuard {
+impl Drop for EventReceiver {
     fn drop(&mut self) {
         let mut ws = self.router.waiters.lock();
         if let Some(i) = ws.queue.iter().position(|w| w.id == self.id) {
@@ -458,14 +485,14 @@ impl Drop for EventWaiterGuard {
 #[derive(Debug)]
 #[must_use]
 pub struct EventGuard {
-    r: tokio::sync::OwnedRwLockReadGuard<EventReceiver>,
+    r: tokio::sync::OwnedRwLockReadGuard<EventTransfer>,
     _not_send: PhantomData<*const ()>,
 }
 
 impl EventGuard {
     /// Creates an event read lock that is !Send and !Sync.
     #[inline]
-    fn new(r: tokio::sync::OwnedRwLockReadGuard<EventReceiver>) -> Self {
+    fn new(r: tokio::sync::OwnedRwLockReadGuard<EventTransfer>) -> Self {
         Self {
             r,
             _not_send: PhantomData,
@@ -548,17 +575,17 @@ impl<T: for<'a, 'b> From<&'a mut Event<'b>>> From<EventGuard> for Result<T> {
     }
 }
 
-type SharedEventReceiver = Arc<tokio::sync::RwLock<EventReceiver>>;
+type SharedEventTransfer = Arc<tokio::sync::RwLock<EventTransfer>>;
 
-/// HCI event receiver.
+/// HCI event transfer.
 #[derive(Debug, Default)]
-struct EventReceiver {
+struct EventTransfer {
     xfer: Option<Box<dyn host::Transfer>>,
     evt: Event<'static>,
     params: usize,
 }
 
-impl EventReceiver {
+impl EventTransfer {
     /// Receives and validates the next event.
     async fn next(&mut self, t: &dyn host::Transport) -> Result<()> {
         self.params = 0;

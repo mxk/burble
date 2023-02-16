@@ -1,5 +1,5 @@
 use structbuf::Pack;
-use tracing::{trace, warn};
+use tracing::{error, trace};
 
 pub use {hci_control::*, info_params::*, le::*};
 
@@ -41,9 +41,13 @@ impl Command {
         // Event registration must happen first to ensure that the command quota
         // is not exceeded, to check for any conflicting commands, and to
         // guarantee that the completion event will not be missed.
-        let waiter = self.router.register(EventFilter::Command(self.opcode))?;
-        self.xfer.submit()?.await.map_err(|e| {
-            warn!("Failed to execute {} command: {e}", self.opcode);
+        let mut waiter = self.router.register(EventFilter::Command(self.opcode))?;
+        let xfer = self.xfer.submit().map_err(|e| {
+            error!("Failed to submit {} command: {e}", self.opcode);
+            e
+        })?;
+        xfer.await.map_err(|e| {
+            error!("Failed to execute {} command: {e}", self.opcode);
             e
         })?;
         // [Vol 4] Part E, Section 4.4

@@ -23,7 +23,7 @@ pub(crate) type KeyStore = dyn crate::PeerStore<Value = Keys>;
 /// Security database that stores encryption (LTK), identity (IRK), and CSRKs.
 #[derive(Debug)]
 pub struct SecDb {
-    ctl: hci::EventWaiterGuard,
+    ctl: hci::EventReceiver,
     host: hci::Host,
     store: Arc<KeyStore>,
     peer: HashMap<hci::ConnHandle, le::Addr>,

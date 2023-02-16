@@ -2,7 +2,7 @@ use std::fmt::{Debug, Display, Formatter};
 use std::num::NonZeroU16;
 use std::ops::{Bound, RangeBounds};
 
-use crate::util::name_of;
+use crate::name_of;
 
 /// Attribute handle ([Vol 3] Part F, Section 3.2.2).
 #[allow(clippy::unsafe_derive_deserialize)]

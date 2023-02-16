@@ -59,7 +59,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// information.
 #[derive(Debug)]
 pub struct ChanManager {
-    ctl: hci::EventWaiterGuard,
+    ctl: hci::EventReceiver,
     conns: HashMap<LeU, Conn>,
     rm: ResManager,
     local_addr: Addr,

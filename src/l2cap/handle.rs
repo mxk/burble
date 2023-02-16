@@ -1,8 +1,7 @@
 use std::fmt::{Debug, Display, Formatter, Write};
 use std::num::NonZeroU16;
 
-use crate::hci;
-use crate::util::name_of;
+use crate::{hci, name_of};
 
 /// LE-U logical link ([Vol 1] Part A, Section 3.5.5.2.2).
 #[derive(Clone, Copy, Eq, Hash, PartialEq)]

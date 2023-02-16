@@ -134,7 +134,7 @@ pub enum AdvEvent {
 
 #[derive(Debug)]
 pub struct AdvMonitor {
-    waiter: EventWaiterGuard,
+    recv: EventReceiver,
     conn: HashMap<ConnHandle, LeConnectionComplete>,
 }
 
@@ -142,9 +142,9 @@ impl AdvMonitor {
     /// Creates a new advertising monitor.
     #[inline]
     #[must_use]
-    fn new(waiter: EventWaiterGuard) -> Self {
+    fn new(recv: EventReceiver) -> Self {
         Self {
-            waiter,
+            recv,
             conn: HashMap::with_capacity(1),
         }
     }
@@ -153,7 +153,7 @@ impl AdvMonitor {
     pub async fn event(&mut self) -> Result<AdvEvent> {
         use SubeventCode::*;
         let term = loop {
-            let evt = self.waiter.next().await?;
+            let evt = self.recv.next().await?;
             match evt.typ() {
                 EventType::Le(ConnectionComplete | EnhancedConnectionComplete) => {
                     // TODO: High duty cycle connectable directed advertisements
@@ -183,7 +183,7 @@ impl AdvMonitor {
         // short amount of time for a matching ConnectionComplete event, which
         // normally comes within 5ms.
         if let Ok(Ok(evt)) =
-            tokio::time::timeout(Duration::from_millis(100), self.waiter.next()).await
+            tokio::time::timeout(Duration::from_millis(100), self.recv.next()).await
         {
             if let EventType::Le(ConnectionComplete | EnhancedConnectionComplete) = evt.typ() {
                 let conn = LeConnectionComplete::from(&mut evt.get());
