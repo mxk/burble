@@ -41,7 +41,7 @@ impl Command {
         // Event registration must happen first to ensure that the command quota
         // is not exceeded, to check for any conflicting commands, and to
         // guarantee that the completion event will not be missed.
-        let mut waiter = self.router.register(EventFilter::Command(self.opcode))?;
+        let mut recv = self.router.recv(self.opcode)?;
         let xfer = self.xfer.submit().map_err(|e| {
             error!("Failed to submit {} command: {e}", self.opcode);
             e
@@ -52,7 +52,7 @@ impl Command {
         })?;
         // [Vol 4] Part E, Section 4.4
         loop {
-            let g = waiter.next().await.map_err(|e| Error::CommandAborted {
+            let g = recv.next().await.map_err(|e| Error::CommandAborted {
                 opcode: self.opcode,
                 status: e.status().unwrap_or(Status::UnspecifiedError),
             })?;

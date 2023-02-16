@@ -69,7 +69,7 @@ impl ChanManager {
     /// Creates a new Channel Manager. `local_addr` is the address used to
     /// establish new connections, which is then used by the Security Manager.
     pub async fn new(host: &hci::Host, local_addr: Addr) -> Result<Self> {
-        let ctl = host.register(hci::EventFilter::ChanManager)?;
+        let ctl = host.recv()?;
         let rm = ResManager::new(host).await?;
         // TODO: Figure out how to get the local address on a per-connection
         // basis.

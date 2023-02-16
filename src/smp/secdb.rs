@@ -6,7 +6,7 @@ use tracing::{error, warn};
 
 use burble_crypto::LTK;
 
-use crate::hci::{EventCode, EventFilter};
+use crate::hci::EventCode;
 use crate::{hci, le};
 
 /// Security keys for a peer device.
@@ -34,7 +34,7 @@ impl SecDb {
     #[inline]
     pub fn new(host: hci::Host, store: Arc<KeyStore>) -> hci::Result<Self> {
         Ok(Self {
-            ctl: host.register(EventFilter::SecDb)?,
+            ctl: host.recv()?,
             host,
             store,
             peer: HashMap::new(),

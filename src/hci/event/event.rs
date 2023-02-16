@@ -236,13 +236,16 @@ pub(super) struct EventRouter {
 }
 
 impl EventRouter {
-    /// Registers an event waiter with filter `f`.
-    pub fn register(self: &Arc<Self>, f: EventFilter) -> Result<EventReceiver> {
+    // TODO: Use event masks for filtering. These should also determine which events
+    // are unmasked on the controller.
+
+    /// Returns an event receiver. Commands must specify their opcode.
+    pub fn recv(self: &Arc<Self>, opcode: Opcode) -> Result<EventReceiver> {
         let mut ws = self.waiters.lock();
-        if ws.queue.iter().any(|w| f.conflicts_with(&w.filter)) {
-            return Err(Error::FilterConflict);
-        }
-        if let EventFilter::Command(opcode) = f {
+        if !matches!(opcode, Opcode::None) {
+            if ws.queue.iter().any(|w| w.opcode == opcode) {
+                return Err(Error::DuplicateCommands { opcode });
+            }
             if ws.cmd_quota == 0 {
                 return Err(Error::CommandQuotaExceeded);
             }
@@ -256,7 +259,7 @@ impl EventRouter {
         ws.next_id = ws.next_id.checked_add(1).unwrap();
         ws.queue.push_back(Waiter {
             id,
-            filter: f,
+            opcode,
             ready: None,
             waker: None,
         });
@@ -306,7 +309,7 @@ impl EventRouter {
             ws.cmd_quota = evt.cmd_quota;
         }
         let mut received = false;
-        for w in ws.queue.iter_mut().filter(|w| evt.matches(&w.filter)) {
+        for w in ws.queue.iter_mut().filter(|w| w.matches(&evt)) {
             // try_read_owned() is guaranteed to succeed since we are
             // holding our own read lock and there are no writers waiting.
             w.ready = Some(Arc::clone(&rwlock).try_read_owned().unwrap());
@@ -375,27 +378,6 @@ impl Future for EventTransferTask {
     }
 }
 
-// TODO: Use event masks for filtering. These should also determine which events
-// are unmasked on the controller.
-
-/// Defines event matching criteria.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum EventFilter {
-    Command(Opcode),
-    AdvManager,
-    ChanManager,
-    SecDb,
-}
-
-impl EventFilter {
-    /// Returns whether two filters would create an ambiguity in event delivery
-    /// if both were registered.
-    #[inline]
-    fn conflicts_with(&self, other: &Self) -> bool {
-        self == other
-    }
-}
-
 /// Queue of event waiters. `VecDeque` is used because there are likely to be
 /// only a few waiters with frequent insertion and removal for commands, so it
 /// is likely to outperform `HashMap` and `BTreeMap`.
@@ -423,9 +405,17 @@ impl Default for Waiters {
 #[derive(Debug)]
 struct Waiter {
     id: u64,
-    filter: EventFilter,
+    opcode: Opcode,
     ready: Option<tokio::sync::OwnedRwLockReadGuard<EventTransfer>>,
     waker: Option<Waker>,
+}
+
+impl Waiter {
+    /// Returns whether the waiter should receive event `e`.
+    #[inline(always)]
+    fn matches(&self, e: &EventGuard) -> bool {
+        e.opcode == self.opcode && !(matches!(self.opcode, Opcode::None) && e.typ.is_cmd())
+    }
 }
 
 /// Guard that unregisters the event waiter when dropped.
@@ -520,33 +510,6 @@ impl EventGuard {
             });
         }
         Ok(self.get())
-    }
-
-    /// Returns whether the event matches filter `f`.
-    #[allow(clippy::match_same_arms)]
-    fn matches(&self, f: &EventFilter) -> bool {
-        use {EventFilter::*, EventType::*};
-        match self.typ {
-            Hci(EventCode::DisconnectionComplete | EventCode::NumberOfCompletedPackets) => {
-                matches!(*f, ChanManager)
-            }
-            Hci(EventCode::CommandComplete | EventCode::CommandStatus) => {
-                matches!(*f, Command(op) if op == self.opcode)
-            }
-            Le(SubeventCode::ConnectionComplete | SubeventCode::EnhancedConnectionComplete) => {
-                match *f {
-                    Command(_) => false,
-                    AdvManager => {
-                        LeConnectionComplete::from(&mut self.get()).role == Role::Peripheral
-                    }
-                    ChanManager => true,
-                    SecDb => true,
-                }
-            }
-            Le(SubeventCode::LongTermKeyRequest) => matches!(*f, SecDb),
-            Le(SubeventCode::AdvertisingSetTerminated) => matches!(*f, AdvManager),
-            _ => false,
-        }
     }
 }
 

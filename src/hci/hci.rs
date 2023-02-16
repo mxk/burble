@@ -39,8 +39,8 @@ pub enum Error {
         subevent: u8,
         params: Vec<u8>,
     },
-    #[error("event filter conflict (duplicate commands issued?)")]
-    FilterConflict,
+    #[error("duplicate {opcode} commands issued")]
+    DuplicateCommands { opcode: Opcode },
     #[error("command quota exceeded")]
     CommandQuotaExceeded,
     #[error("{opcode} command failed: {status}")]
@@ -63,7 +63,7 @@ impl Error {
             Host(_)
             | InvalidEvent(_)
             | UnknownEvent { .. }
-            | FilterConflict
+            | DuplicateCommands { .. }
             | CommandQuotaExceeded
             | NonCommandEvent { .. } => None,
         }
@@ -98,10 +98,10 @@ impl Host {
         &self.transport
     }
 
-    /// Registers an event waiter with filter `f`.
+    /// Returns an event receiver.
     #[inline]
-    pub(crate) fn register(&self, f: EventFilter) -> Result<EventReceiver> {
-        self.router.register(f)
+    pub(crate) fn recv(&self) -> Result<EventReceiver> {
+        self.router.recv(Opcode::None)
     }
 
     /// Performs a reset and basic controller initialization

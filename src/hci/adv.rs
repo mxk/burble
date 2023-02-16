@@ -61,9 +61,9 @@ impl Advertiser {
 
     /// Enable advertising.
     pub async fn enable(&mut self, p: AdvEnableParams) -> Result<AdvMonitor> {
-        let waiter = self.host.register(EventFilter::AdvManager)?;
+        let recv = self.host.recv()?;
         (self.host.le_set_extended_advertising_enable(true, &[p])).await?;
-        Ok(AdvMonitor::new(waiter))
+        Ok(AdvMonitor::new(recv))
     }
 
     // Disable advertising.
