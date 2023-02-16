@@ -2,7 +2,7 @@ use crate::hci::*;
 use crate::le::Addr;
 
 /// Informational parameters commands ([Vol 4] Part E, Section 7.4).
-impl<T: host::Transport> Host<T> {
+impl Host {
     /// Returns the controller's version information.
     pub async fn read_local_version(&self) -> Result<LocalVersion> {
         self.exec(Opcode::ReadLocalVersionInformation).await?.into()

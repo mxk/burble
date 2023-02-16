@@ -7,18 +7,18 @@ use super::*;
 
 /// Outbound PDU transfer state.
 #[derive(Debug)]
-pub(super) struct State<T: host::Transport> {
-    alloc: Arc<Alloc<T>>,
-    sched: parking_lot::Mutex<Scheduler<T>>,
+pub(super) struct State {
+    alloc: Arc<Alloc>,
+    sched: parking_lot::Mutex<Scheduler>,
 }
 
-impl<T: host::Transport> State<T> {
+impl State {
     /// Creates a new outbound transfer state.
     #[must_use]
     #[inline]
-    pub fn new(transport: T, max_pkts: u16, acl_data_len: u16) -> Arc<Self> {
+    pub fn new(t: &Arc<dyn host::Transport>, max_pkts: u16, acl_data_len: u16) -> Arc<Self> {
         Arc::new(Self {
-            alloc: Alloc::new(transport, host::Direction::Out, acl_data_len),
+            alloc: Alloc::new(Arc::clone(t), host::Direction::Out, acl_data_len),
             sched: parking_lot::Mutex::new(Scheduler::new(max_pkts)),
         })
     }
@@ -31,14 +31,14 @@ impl<T: host::Transport> State<T> {
 
     /// Allocates an outbound frame with a zero-filled basic L2CAP header.
     #[inline]
-    pub fn new_frame(&self, max_frame_len: usize) -> Frame<T> {
+    pub fn new_frame(&self, max_frame_len: usize) -> Frame {
         self.alloc.frame(max_frame_len)
     }
 
     /// Sends the PDU, returning as soon as the last fragment is submitted to
     /// the controller.
     #[inline]
-    pub async fn send(self: &Arc<Self>, ch: &Arc<RawChan<T>>, pdu: Frame<T>) -> Result<()> {
+    pub async fn send(self: &Arc<Self>, ch: &Arc<RawChan>, pdu: Frame) -> Result<()> {
         let (tx, ch) = (Arc::clone(self), Arc::clone(ch));
         let guard = self.sched.lock().schedule(tx, ch)?;
         guard.send(pdu).await
@@ -67,15 +67,15 @@ impl<T: host::Transport> State<T> {
 /// shared fairly between all logical links. Within each logical link, PDUs are
 /// transmitted in FIFO order.
 #[derive(Debug)]
-struct Scheduler<T: host::Transport> {
+struct Scheduler {
     /// Channels that are blocked from sending because another channel on the
     /// same logical link is sending a PDU ([Vol 3] Part A, Section 7.2.1).
-    blocked: HashMap<LeU, VecDeque<Arc<RawChan<T>>>>,
+    blocked: HashMap<LeU, VecDeque<Arc<RawChan>>>,
     /// Channels from distinct logical links that are ready to send PDU
     /// fragments as soon as controller buffer space is available.
-    ready: VecDeque<Arc<RawChan<T>>>,
+    ready: VecDeque<Arc<RawChan>>,
     /// Current channel with permission to send.
-    active: Option<Arc<RawChan<T>>>,
+    active: Option<Arc<RawChan>>,
     /// Number of PDU fragments sent to the controller for each logical link,
     /// but not yet acknowledged by `HCI_Number_Of_Completed_Packets` event.
     sent: HashMap<LeU, u16>,
@@ -83,7 +83,7 @@ struct Scheduler<T: host::Transport> {
     quota: u16,
 }
 
-impl<T: host::Transport> Scheduler<T> {
+impl Scheduler {
     /// Creates a new outbound PDU scheduler. This assumes that the controller
     /// is ready to accept `max_pkts` data packets.
     #[inline]
@@ -206,12 +206,12 @@ impl<T: host::Transport> Scheduler<T> {
     /// comparing pointers because connection handles can be reused before the
     /// channel is removed from the scheduler ([Vol 4] Part E, Section 5.3).
     #[inline]
-    fn is_active(&self, ch: &Arc<RawChan<T>>) -> bool {
+    fn is_active(&self, ch: &Arc<RawChan>) -> bool {
         (self.active.as_ref()).map_or(false, |act| Arc::ptr_eq(act, ch))
     }
 
     /// Schedules channel `ch` for sending a PDU.
-    fn schedule(&mut self, tx: Arc<State<T>>, ch: Arc<RawChan<T>>) -> Result<SchedulerGuard<T>> {
+    fn schedule(&mut self, tx: Arc<State>, ch: Arc<RawChan>) -> Result<SchedulerGuard> {
         let Some(blocked) = self.blocked.get_mut(&ch.cid.link) else {
             return Err(Error::InvalidConn(ch.cid.link.into()));
         };
@@ -244,7 +244,7 @@ impl<T: host::Transport> Scheduler<T> {
     }
 
     /// Updates scheduler state after a PDU fragment is sent to the controller.
-    fn sent(&mut self, ch: &Arc<RawChan<T>>, more: bool) {
+    fn sent(&mut self, ch: &Arc<RawChan>, more: bool) {
         debug_assert!(self.is_active(ch));
         if !self.blocked.contains_key(&ch.cid.link) {
             // remove_link was called. The channel already can't send, but keep
@@ -269,7 +269,7 @@ impl<T: host::Transport> Scheduler<T> {
     }
 
     /// Removes channel `ch` from the scheduler.
-    fn remove(&mut self, ch: &Arc<RawChan<T>>) {
+    fn remove(&mut self, ch: &Arc<RawChan>) {
         #[inline]
         fn position<V>(q: &VecDeque<Arc<V>>, v: &Arc<V>) -> Option<usize> {
             q.iter().position(|other| Arc::ptr_eq(other, v))
@@ -309,14 +309,14 @@ impl<T: host::Transport> Scheduler<T> {
 /// Scheduler when the send operation is done (or dropped).
 #[derive(Debug)]
 #[must_use]
-struct SchedulerGuard<T: host::Transport> {
-    tx: Arc<State<T>>,
-    ch: Arc<RawChan<T>>,
+struct SchedulerGuard {
+    tx: Arc<State>,
+    ch: Arc<RawChan>,
 }
 
-impl<T: host::Transport> SchedulerGuard<T> {
+impl SchedulerGuard {
     /// Performs PDU fragmentation and submits each fragment to the controller.
-    async fn send(self, mut pdu: Frame<T>) -> Result<()> {
+    async fn send(self, mut pdu: Frame) -> Result<()> {
         // Update basic L2CAP header ([Vol 3] Part A, Section 3.1)
         let mut hdr = pdu.at(0);
         let pdu_len = u16::try_from(hdr.as_ref().len() - L2CAP_HDR).unwrap();
@@ -344,10 +344,10 @@ impl<T: host::Transport> SchedulerGuard<T> {
     /// Sends a single PDU fragment.
     async fn send_frag(
         &self,
-        mut xfer: AclTransfer<T>,
+        mut xfer: AclTransfer,
         is_cont: bool,
         more: bool,
-    ) -> Result<AclTransfer<T>> {
+    ) -> Result<AclTransfer> {
         // Update ACL data packet header ([Vol 4] Part E, Section 5.4.2)
         let data_len = u16::try_from(xfer.as_ref().len() - ACL_HDR).unwrap();
         xfer.at(0)
@@ -373,7 +373,7 @@ impl<T: host::Transport> SchedulerGuard<T> {
     }
 }
 
-impl<T: host::Transport> Drop for SchedulerGuard<T> {
+impl Drop for SchedulerGuard {
     #[inline]
     fn drop(&mut self) {
         // TODO: Mark the channel as broken if the entire PDU was not sent?

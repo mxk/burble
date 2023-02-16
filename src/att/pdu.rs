@@ -9,9 +9,10 @@ use crate::gap::Uuid16;
 
 use super::*;
 
-impl<T: host::Transport> Pdu<T> {
+impl Pdu {
     /// Returns the PDU opcode.
     #[inline]
+    #[must_use]
     pub fn opcode(&self) -> Opcode {
         // SAFETY: Bearer::recv() validated the opcode
         unsafe { mem::transmute(*self.0.as_ref().get_unchecked(0)) }
@@ -78,7 +79,7 @@ impl<T: host::Transport> Pdu<T> {
 //
 
 /// MTU exchange decoders ([Vol 3] Part F, Section 3.4.2).
-impl<T: host::Transport> Pdu<T> {
+impl Pdu {
     /// Returns `ATT_EXCHANGE_MTU_REQ` PDU parameters
     /// ([Vol 3] Part F, Section 3.4.2.1).
     pub(super) fn exchange_mtu_req(&self) -> RspResult<u16> {
@@ -87,9 +88,9 @@ impl<T: host::Transport> Pdu<T> {
 }
 
 /// MTU exchange encoders ([Vol 3] Part F, Section 3.4.2).
-impl<T: host::Transport> Bearer<T> {
+impl Bearer {
     /// Returns an `ATT_EXCHANGE_MTU_RSP` PDU ([Vol 3] Part F, Section 3.4.2.2).
-    pub(super) fn exchange_mtu_rsp(&self, mtu: u16) -> RspResult<Rsp<T>> {
+    pub(super) fn exchange_mtu_rsp(&self, mtu: u16) -> RspResult<Rsp> {
         self.rsp(ExchangeMtuRsp, |p| {
             p.u16(mtu);
         })
@@ -101,7 +102,7 @@ impl<T: host::Transport> Bearer<T> {
 //
 
 /// Find information decoders ([Vol 3] Part F, Section 3.4.3).
-impl<T: host::Transport> Pdu<T> {
+impl Pdu {
     /// Returns `ATT_FIND_INFORMATION_REQ` PDU parameters
     /// ([Vol 3] Part F, Section 3.4.3.1).
     pub fn find_information_req(&self) -> RspResult<HandleRange> {
@@ -119,14 +120,14 @@ impl<T: host::Transport> Pdu<T> {
 }
 
 /// Find information encoders ([Vol 3] Part F, Section 3.4.3).
-impl<T: host::Transport> Bearer<T> {
+impl Bearer {
     /// Returns an `ATT_FIND_INFORMATION_RSP` PDU
     /// ([Vol 3] Part F, Section 3.4.3.2).
     pub fn find_information_rsp(
         &self,
         start: Handle,
         it: impl Iterator<Item = (Handle, Uuid)>,
-    ) -> RspResult<Rsp<T>> {
+    ) -> RspResult<Rsp> {
         let mut it = it.peekable();
         let Some(&(_, u)) = it.peek() else {
             return FindInformationReq.hdl_err(AttributeNotFound, start);
@@ -157,7 +158,7 @@ impl<T: host::Transport> Bearer<T> {
     pub fn find_by_type_value_rsp(
         &self,
         it: impl Iterator<Item = (Handle, Option<Handle>)>,
-    ) -> RspResult<Rsp<T>> {
+    ) -> RspResult<Rsp> {
         self.rsp(FindByTypeValueRsp, |p| {
             for (hdl, group_end) in it.take(p.remaining() / (2 + 2)) {
                 p.u16(hdl).u16(group_end.unwrap_or(hdl));
@@ -171,7 +172,7 @@ impl<T: host::Transport> Bearer<T> {
 //
 
 /// Reading attributes decoders ([Vol 3] Part F, Section 3.4.4).
-impl<T: host::Transport> Pdu<T> {
+impl Pdu {
     /// Returns `ATT_READ_BY_TYPE_REQ` PDU parameters
     /// ([Vol 3] Part F, Section 3.4.4.1).
     pub fn read_by_type_req(&self) -> RspResult<(HandleRange, Uuid)> {
@@ -237,36 +238,33 @@ impl<T: host::Transport> Pdu<T> {
 }
 
 /// Reading attributes encoders ([Vol 3] Part F, Section 3.4.4).
-impl<T: host::Transport> Bearer<T> {
+impl Bearer {
     /// Returns an `ATT_READ_BY_TYPE_RSP` PDU ([Vol 3] Part F, Section 3.4.4.2).
     #[allow(single_use_lifetimes)]
     pub fn read_by_type_rsp<'a>(
         &self,
         start: Handle,
         it: impl Iterator<Item = (Handle, &'a [u8])>,
-    ) -> RspResult<Rsp<T>> {
+    ) -> RspResult<Rsp> {
         self.read_by_type_op(ReadByTypeRsp, start, it, |p, hdl| {
             p.u16(hdl);
         })
     }
 
     /// Returns an `ATT_READ_RSP` PDU ([Vol 3] Part F, Section 3.4.4.4).
-    pub fn read_rsp(&self, v: &[u8]) -> RspResult<Rsp<T>> {
+    pub fn read_rsp(&self, v: &[u8]) -> RspResult<Rsp> {
         self.read_op(ReadRsp, v)
     }
 
     /// Returns an `ATT_READ_BLOB_RSP` PDU ([Vol 3] Part F, Section 3.4.4.6).
-    pub fn read_blob_rsp(&self, v: &[u8]) -> RspResult<Rsp<T>> {
+    pub fn read_blob_rsp(&self, v: &[u8]) -> RspResult<Rsp> {
         self.read_op(ReadBlobRsp, v)
     }
 
     /// Returns an `ATT_READ_MULTIPLE_RSP` PDU
     /// ([Vol 3] Part F, Section 3.4.4.8).
     #[allow(single_use_lifetimes)]
-    pub fn read_multiple_rsp<'a>(
-        &self,
-        mut it: impl Iterator<Item = &'a [u8]>,
-    ) -> RspResult<Rsp<T>> {
+    pub fn read_multiple_rsp<'a>(&self, mut it: impl Iterator<Item = &'a [u8]>) -> RspResult<Rsp> {
         self.rsp(ReadMultipleRsp, |p| {
             while p.remaining() > 0 {
                 let Some(v) = it.next() else { break };
@@ -282,7 +280,7 @@ impl<T: host::Transport> Bearer<T> {
         &self,
         start: Handle,
         it: impl Iterator<Item = (HandleRange, &'a [u8])>,
-    ) -> RspResult<Rsp<T>> {
+    ) -> RspResult<Rsp> {
         self.read_by_type_op(ReadByGroupTypeRsp, start, it, |p, hdls| {
             p.u16(hdls.start()).u16(hdls.end());
         })
@@ -294,7 +292,7 @@ impl<T: host::Transport> Bearer<T> {
     pub fn read_multiple_variable_rsp<'a>(
         &self,
         mut it: impl Iterator<Item = &'a [u8]>,
-    ) -> RspResult<Rsp<T>> {
+    ) -> RspResult<Rsp> {
         self.rsp(ReadMultipleVariableRsp, |p| {
             while p.remaining() >= 2 {
                 let Some(v) = it.next() else { break };
@@ -312,7 +310,7 @@ impl<T: host::Transport> Bearer<T> {
         start: Handle,
         it: impl Iterator<Item = (H, &'a [u8])>,
         put_hdl: impl Fn(&mut Packer, H),
-    ) -> RspResult<Rsp<T>> {
+    ) -> RspResult<Rsp> {
         let mut it = it.peekable();
         let Some(&(_, v)) = it.peek() else {
             return Err(super::ErrorRsp::new(u8::from(op) - 1, Some(start), AttributeNotFound))
@@ -337,7 +335,7 @@ impl<T: host::Transport> Bearer<T> {
     }
 
     #[inline]
-    fn read_op(&self, op: Opcode, v: &[u8]) -> RspResult<Rsp<T>> {
+    fn read_op(&self, op: Opcode, v: &[u8]) -> RspResult<Rsp> {
         self.rsp(op, |p| put_truncate(p, v))
     }
 }
@@ -347,7 +345,7 @@ impl<T: host::Transport> Bearer<T> {
 //
 
 /// Writing attributes parameter decoders ([Vol 3] Part F, Section 3.4.5).
-impl<T: host::Transport> Pdu<T> {
+impl Pdu {
     /// Returns `ATT_WRITE_REQ` or `ATT_WRITE_CMD` PDU parameters
     /// ([Vol 3] Part F, Section 3.4.5.1 and 3.4.5.3).
     pub fn write_req(&self) -> RspResult<(Handle, &[u8])> {
@@ -359,9 +357,9 @@ impl<T: host::Transport> Pdu<T> {
 }
 
 /// Writing attributes encoders ([Vol 3] Part F, Section 3.4.5).
-impl<T: host::Transport> Bearer<T> {
+impl Bearer {
     /// Returns an `ATT_WRITE_RSP` PDU ([Vol 3] Part F, Section 3.4.5.2).
-    pub fn write_rsp(&self) -> RspResult<Rsp<T>> {
+    pub fn write_rsp(&self) -> RspResult<Rsp> {
         self.rsp(WriteRsp, |_| ())
     }
 }
@@ -371,7 +369,7 @@ impl<T: host::Transport> Bearer<T> {
 //
 
 /// Queued writes decoders ([Vol 3] Part F, Section 3.4.6).
-impl<T: host::Transport> Pdu<T> {
+impl Pdu {
     /// Returns `ATT_PREPARE_WRITE_REQ` PDU parameters
     /// ([Vol 3] Part F, Section 3.4.6.1).
     pub fn prepare_write_req(&self) -> RspResult<(Handle, u16, &[u8])> {
@@ -386,10 +384,10 @@ impl<T: host::Transport> Pdu<T> {
 }
 
 /// Queued writes encoders ([Vol 3] Part F, Section 3.4.6).
-impl<T: host::Transport> Bearer<T> {
+impl Bearer {
     /// Returns an `ATT_PREPARE_WRITE_RSP` PDU
     /// ([Vol 3] Part F, Section 3.4.6.2).
-    pub fn prepare_write_rsp(&self, hdl: Handle, off: u16, v: &[u8]) -> RspResult<Rsp<T>> {
+    pub fn prepare_write_rsp(&self, hdl: Handle, off: u16, v: &[u8]) -> RspResult<Rsp> {
         self.rsp(PrepareWriteRsp, |p| {
             p.u16(hdl).u16(off).put(v);
         })
@@ -397,7 +395,7 @@ impl<T: host::Transport> Bearer<T> {
 
     /// Returns an `ATT_EXECUTE_WRITE_RSP` PDU
     /// ([Vol 3] Part F, Section 3.4.6.4).
-    pub fn execute_write_rsp(&self) -> RspResult<Rsp<T>> {
+    pub fn execute_write_rsp(&self) -> RspResult<Rsp> {
         self.rsp(ExecuteWriteRsp, |_| ())
     }
 }
@@ -407,7 +405,7 @@ impl<T: host::Transport> Bearer<T> {
 //
 
 /// Server initiated encoders ([Vol 3] Part F, Section 3.4.7).
-impl<T: host::Transport> Bearer<T> {
+impl Bearer {
     /// Sends an `ATT_HANDLE_VALUE_NTF` PDU ([Vol 3] Part F, Section 3.4.7.1).
     pub async fn handle_value_ntf(&mut self, hdl: Handle, v: &[u8]) -> Result<()> {
         let ntf = self.pack(HandleValueNtf, |p| put_truncate(p.u16(hdl), v));

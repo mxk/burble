@@ -7,17 +7,17 @@ use super::*;
 
 /// Inbound PDU transfer state.
 #[derive(Debug)]
-pub(super) struct State<T: host::Transport> {
-    xfer: tokio::sync::mpsc::Receiver<host::Result<AclTransfer<T>>>,
-    recv: parking_lot::Mutex<Receiver<T>>, // TODO: Get rid of Mutex
+pub(super) struct State {
+    xfer: tokio::sync::mpsc::Receiver<host::Result<AclTransfer>>,
+    recv: parking_lot::Mutex<Receiver>, // TODO: Get rid of Mutex
 }
 
-impl<T: host::Transport + 'static> State<T> {
+impl State {
     /// Creates a new inbound transfer state.
     #[must_use]
-    pub fn new(transport: T, acl_data_len: u16) -> Self {
+    pub fn new(t: &Arc<dyn host::Transport>, acl_data_len: u16) -> Self {
         let (tx, rx) = tokio::sync::mpsc::channel(1);
-        tokio::task::spawn(Self::recv_task(transport, acl_data_len, tx));
+        tokio::task::spawn(Self::recv_task(Arc::clone(t), acl_data_len, tx));
         Self {
             xfer: rx,
             recv: parking_lot::Mutex::new(Receiver::new()),
@@ -36,7 +36,7 @@ impl<T: host::Transport + 'static> State<T> {
 
     /// Registers a new LE-U channel.
     #[inline]
-    pub fn register_chan(&self, ch: &Arc<RawChan<T>>) {
+    pub fn register_chan(&self, ch: &Arc<RawChan>) {
         self.recv.lock().register_chan(Arc::clone(ch));
     }
 
@@ -49,11 +49,11 @@ impl<T: host::Transport + 'static> State<T> {
     /// Receives ACL data packets and sends them via a channel. This makes
     /// `recv()` cancel safe.
     async fn recv_task(
-        transport: T,
+        t: Arc<dyn host::Transport>,
         acl_data_len: u16,
-        ch: tokio::sync::mpsc::Sender<host::Result<AclTransfer<T>>>,
+        ch: tokio::sync::mpsc::Sender<host::Result<AclTransfer>>,
     ) {
-        let alloc = Alloc::new(transport, host::Direction::In, acl_data_len);
+        let alloc = Alloc::new(t, host::Direction::In, acl_data_len);
         loop {
             let r = tokio::select! {
                 r = alloc.xfer().submit() => r,
@@ -69,15 +69,15 @@ impl<T: host::Transport + 'static> State<T> {
 /// Inbound PDU receiver. Recombines PDU fragments and routes the PDUs to their
 /// channels.
 #[derive(Debug)]
-pub(super) struct Receiver<T: host::Transport> {
+pub(super) struct Receiver {
     /// CID of the current PDU for each logical link. Used to route continuation
     /// fragments to the appropriate channel ([Vol 3] Part A, Section 7.2.1).
     cont: HashMap<LeU, Option<Cid>>,
     /// Registered channels.
-    chans: HashMap<LeCid, Chan<T>>,
+    chans: HashMap<LeCid, Chan>,
 }
 
-impl<T: host::Transport> Receiver<T> {
+impl Receiver {
     /// Creates a new PDU receiver.
     #[inline]
     #[must_use]
@@ -89,7 +89,7 @@ impl<T: host::Transport> Receiver<T> {
     }
 
     /// Registers a new LE-U channel, allowing it to receive data.
-    fn register_chan(&mut self, ch: Arc<RawChan<T>>) {
+    fn register_chan(&mut self, ch: Arc<RawChan>) {
         trace!("Adding channel: {}", ch.cid);
         self.cont.entry(ch.cid.link).or_default();
         assert!(self.chans.insert(ch.cid, Chan::new(ch)).is_none());
@@ -111,7 +111,7 @@ impl<T: host::Transport> Receiver<T> {
 
     /// Recombines a received PDU fragment, and returns the CID of the channel
     /// that has a new complete PDU ([Vol 3] Part A, Section 7.2.2).
-    fn recombine(&mut self, xfer: AclTransfer<T>) {
+    fn recombine(&mut self, xfer: AclTransfer) {
         let pkt = xfer.as_ref();
         let Some((link, l2cap_hdr, data)) = parse_hdr(pkt) else { return };
         let Some(cont_cid) = self.cont.get_mut(&link) else {
@@ -156,18 +156,18 @@ impl<T: host::Transport> Receiver<T> {
 
 /// Channel PDU recombination state.
 #[derive(Debug)]
-struct Chan<T: host::Transport> {
+struct Chan {
     /// Destination channel.
-    raw: Arc<RawChan<T>>,
+    raw: Arc<RawChan>,
     /// PDU recombination buffer.
     buf: StructBuf,
 }
 
-impl<T: host::Transport> Chan<T> {
+impl Chan {
     /// Creates PDU receive state for channel `ch`.
     #[inline]
     #[must_use]
-    pub const fn new(ch: Arc<RawChan<T>>) -> Self {
+    pub const fn new(ch: Arc<RawChan>) -> Self {
         Self {
             raw: ch,
             buf: StructBuf::none(),
@@ -185,7 +185,7 @@ impl<T: host::Transport> Chan<T> {
     }
 
     /// Receives the first, possibly incomplete, PDU fragment.
-    pub fn first(&mut self, pdu_len: u16, xfer: AclTransfer<T>) {
+    pub fn first(&mut self, pdu_len: u16, xfer: AclTransfer) {
         self.ensure_complete();
         let mut cs = self.raw.state.lock();
         let frame_len = L2CAP_HDR + usize::from(pdu_len);

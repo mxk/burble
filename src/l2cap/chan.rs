@@ -9,7 +9,6 @@ use structbuf::{Unpack, Unpacker};
 use tracing::{error, trace};
 
 use crate::hci::ACL_LE_MIN_DATA_LEN;
-use crate::host;
 
 use super::*;
 
@@ -17,16 +16,16 @@ use super::*;
 
 /// Basic L2CAP channel over an LE-U logical link.
 #[derive(Clone, Debug)]
-pub(crate) struct BasicChan<T: host::Transport> {
-    pub(super) raw: Arc<RawChan<T>>,
-    tx: Arc<tx::State<T>>,
+pub(crate) struct BasicChan {
+    pub(super) raw: Arc<RawChan>,
+    tx: Arc<tx::State>,
     mtu: u16,
 }
 
-impl<T: host::Transport> BasicChan<T> {
+impl BasicChan {
     /// Creates a new channel.
     #[inline]
-    pub(super) fn new(cid: LeCid, cn: &Arc<ConnInfo>, tx: &Arc<tx::State<T>>, mtu: u16) -> Self {
+    pub(super) fn new(cid: LeCid, cn: &Arc<ConnInfo>, tx: &Arc<tx::State>, mtu: u16) -> Self {
         assert!(mtu >= L2CAP_LE_MIN_MTU);
         Self {
             raw: RawChan::new(cid, cn, L2CAP_HDR + mtu as usize),
@@ -69,20 +68,20 @@ impl<T: host::Transport> BasicChan<T> {
 
     /// Creates a new outbound SDU.
     #[inline]
-    pub fn new_payload(&self) -> Payload<T> {
+    pub fn new_payload(&self) -> Payload {
         Payload::new(self.tx.new_frame(L2CAP_HDR + self.mtu as usize), L2CAP_HDR)
     }
 
     /// Returns a future that will resolve to the next inbound SDU.
     #[inline(always)]
-    pub fn recv(&mut self) -> Recv<T> {
+    pub fn recv(&mut self) -> Recv {
         Recv(Arc::clone(&self.raw))
     }
 
     /// Returns the next inbound SDU that matches filter `f`. All other SDUs
     /// stay in the buffer.
     #[inline(always)]
-    pub fn recv_filter<F: Fn(Unpacker) -> bool + Send>(&mut self, f: F) -> RecvFilter<T, F> {
+    pub fn recv_filter<F: Fn(Unpacker) -> bool + Send>(&mut self, f: F) -> RecvFilter<F> {
         RecvFilter {
             raw: Arc::clone(&self.raw),
             f,
@@ -92,7 +91,7 @@ impl<T: host::Transport> BasicChan<T> {
     /// Sends an outbound SDU, returning as soon as the last fragment is
     /// submitted to the controller.
     #[inline]
-    pub async fn send(&mut self, sdu: Payload<T>) -> Result<()> {
+    pub async fn send(&mut self, sdu: Payload) -> Result<()> {
         self.tx.send(&self.raw, sdu.f).await
     }
 }
@@ -100,10 +99,10 @@ impl<T: host::Transport> BasicChan<T> {
 /// Channel receive future.
 #[derive(Debug)]
 #[repr(transparent)]
-pub(crate) struct Recv<T: host::Transport>(Arc<RawChan<T>>);
+pub(crate) struct Recv(Arc<RawChan>);
 
-impl<T: host::Transport> Future for Recv<T> {
-    type Output = Result<Payload<T>>;
+impl Future for Recv {
+    type Output = Result<Payload>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut cs = self.0.state.lock();
@@ -119,13 +118,13 @@ impl<T: host::Transport> Future for Recv<T> {
 
 /// Channel receive future with SDU filtering.
 #[derive(Debug)]
-pub(crate) struct RecvFilter<T: host::Transport, F> {
-    raw: Arc<RawChan<T>>,
+pub(crate) struct RecvFilter<F> {
+    raw: Arc<RawChan>,
     f: F,
 }
 
-impl<T: host::Transport, F: Fn(Unpacker) -> bool + Send> Future for RecvFilter<T, F> {
-    type Output = Result<Payload<T>>;
+impl<F: Fn(Unpacker) -> bool + Send> Future for RecvFilter<F> {
+    type Output = Result<Payload>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut cs = self.raw.state.lock();
@@ -145,13 +144,13 @@ impl<T: host::Transport, F: Fn(Unpacker) -> bool + Send> Future for RecvFilter<T
 /// Channel state shared between the Channel Manager, Resource Manager, and the
 /// channel owner.
 #[derive(Debug)]
-pub(super) struct RawChan<T: host::Transport> {
+pub(super) struct RawChan {
     pub cid: LeCid,
     pub conn: Arc<ConnInfo>,
-    pub state: parking_lot::Mutex<State<T>>,
+    pub state: parking_lot::Mutex<State>,
 }
 
-impl<T: host::Transport> RawChan<T> {
+impl RawChan {
     /// Creates new channel state.
     #[inline]
     fn new(cid: LeCid, cn: &Arc<ConnInfo>, max_frame_len: usize) -> Arc<Self> {
@@ -184,7 +183,7 @@ impl<T: host::Transport> RawChan<T> {
     /// Returns a future that blocks until the scheduler allows the channel to
     /// send a PDU fragment.
     #[inline(always)]
-    pub const fn may_send(&self) -> MaySend<T> {
+    pub const fn may_send(&self) -> MaySend {
         MaySend(self)
     }
 
@@ -204,9 +203,9 @@ impl<T: host::Transport> RawChan<T> {
 /// Channel send permission future.
 #[derive(Debug)]
 #[repr(transparent)]
-pub(crate) struct MaySend<'a, T: host::Transport>(&'a RawChan<T>);
+pub(crate) struct MaySend<'a>(&'a RawChan);
 
-impl<T: host::Transport> Future for MaySend<'_, T> {
+impl Future for MaySend<'_> {
     type Output = Result<()>;
 
     #[inline]
@@ -240,20 +239,20 @@ bitflags::bitflags! {
 /// Mutex-protected channel state. When interacting with [`tx::State`], the
 /// scheduler must always be locked before the channel to avoid a deadlock.
 #[derive(Debug)]
-pub(super) struct State<T: host::Transport> {
+pub(super) struct State {
     /// Channel status flags.
     status: Status,
     /// Maximum PDU length, including the L2CAP header.
     max_frame_len: usize,
     /// Received PDU queue.
-    pdu: VecDeque<Frame<T>>,
+    pdu: VecDeque<Frame>,
     /// Receive task waker.
     rx_waker: Option<Waker>,
     /// Transmit task waker.
     tx_waker: Option<Waker>,
 }
 
-impl<T: host::Transport> State<T> {
+impl State {
     /// Maximum number of PDUs that may be queued. Reaching this limit likely
     /// means that the channel is broken and isn't receiving data.
     const MAX_PDUS: usize = 64;
@@ -342,7 +341,7 @@ impl<T: host::Transport> State<T> {
 
     /// Adds a complete PDU to the channel queue.
     #[inline]
-    pub fn push(&mut self, cid: LeCid, pdu: Frame<T>) {
+    pub fn push(&mut self, cid: LeCid, pdu: Frame) {
         if !self.is_ok() {
             return;
         }

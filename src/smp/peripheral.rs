@@ -6,7 +6,7 @@ use burble_crypto::{Nonce, PublicKeyX, SecretKey, LTK};
 
 use crate::hci::Role;
 use crate::l2cap::BasicChan;
-use crate::{host, le};
+use crate::le;
 
 use super::*;
 
@@ -14,14 +14,14 @@ use super::*;
 /// "Authenticated LE Secure Connections pairing" in "Secure Connections Only"
 /// mode ([Vol 3] Part C, Section 10.2.1 and 10.2.4).
 #[derive(Debug)]
-pub struct Peripheral<T: host::Transport> {
-    ch: BasicChan<T>,
+pub struct Peripheral {
+    ch: BasicChan,
 }
 
-impl<T: host::Transport> Peripheral<T> {
+impl Peripheral {
     /// Creates a new peripheral security manager.
     #[inline(always)]
-    pub(crate) fn new(ch: BasicChan<T>) -> Self {
+    pub(crate) fn new(ch: BasicChan) -> Self {
         assert_eq!(ch.conn_info().role, Role::Peripheral);
         Self { ch }
     }

@@ -2,6 +2,8 @@
 
 use std::fmt::Debug;
 use std::future::Future;
+use std::pin::Pin;
+use std::task::{ready, Context, Poll};
 
 pub use usb::*;
 
@@ -37,35 +39,15 @@ impl Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// HCI transport layer.
-pub trait Transport: Clone + Debug + Send + Sync {
-    type Transfer: Transfer;
-
+pub trait Transport: Debug + Send + Sync {
     /// Returns an outbound command transfer.
-    fn command(&self) -> Self::Transfer;
+    fn command(&self) -> Box<dyn Transfer>;
 
     /// Returns an inbound event transfer.
-    fn event(&self) -> Self::Transfer;
+    fn event(&self) -> Box<dyn Transfer>;
 
     /// Returns an Asynchronous Connection-Oriented transfer.
-    fn acl(&self, dir: Direction, max_data_len: u16) -> Self::Transfer;
-}
-
-/// Asynchronous I/O transfer.
-pub trait Transfer:
-    AsRef<[u8]> + Debug + Send + Sync + structbuf::Pack + structbuf::Unpack
-{
-    type Future: Future<Output = Self> + Debug + Send + Unpin;
-
-    /// Submits the transfer for execution. The transfer may be cancelled by
-    /// dropping the returned future.
-    fn submit(self) -> Result<Self::Future>;
-
-    /// Returns the transfer result or [`None`] if the transfer was not yet
-    /// submitted.
-    fn result(&self) -> Option<Result<()>>;
-
-    /// Resets the transfer to its original state, allowing it to be reused.
-    fn reset(&mut self);
+    fn acl(&self, dir: Direction, max_data_len: u16) -> Box<dyn Transfer>;
 }
 
 /// Transfer direction.
@@ -74,4 +56,40 @@ pub trait Transfer:
 pub enum Direction {
     In,
     Out,
+}
+
+/// Asynchronous I/O transfer.
+pub trait Transfer:
+    AsRef<[u8]> + Debug + Send + Sync + structbuf::Pack + structbuf::Unpack
+{
+    /// Submits the transfer for execution. The transfer may be cancelled by
+    /// dropping the returned future.
+    fn submit(self: Box<Self>) -> Result<TransferFuture>;
+
+    /// Resets the transfer to its original state, allowing it to be reused.
+    fn reset(&mut self);
+}
+
+/// Submitted asynchronous I/O transfer.
+pub trait ActiveTransfer: Debug + Future<Output = Result<()>> + Send {
+    /// Returns the original transfer after successful completion.
+    fn ready(self: Box<Self>) -> Box<dyn Transfer>;
+}
+
+/// Future that resolves to a completed transfer.
+#[derive(Debug)]
+#[repr(transparent)]
+pub struct TransferFuture(Option<Box<dyn ActiveTransfer>>);
+
+impl Future for TransferFuture {
+    type Output = Result<Box<dyn Transfer>>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let opt = &mut self.get_mut().0;
+        let fut = (opt.as_mut().expect("poll of a finished transfer")).as_mut();
+        // SAFETY: Future is pinned via `self`
+        ready!(unsafe { Pin::new_unchecked(fut) }.poll(cx))?;
+        // SAFETY: Option is `Some`
+        Poll::Ready(Ok(unsafe { opt.take().unwrap_unchecked() }.ready()))
+    }
 }

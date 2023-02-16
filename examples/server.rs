@@ -39,7 +39,7 @@ async fn main() -> Result<()> {
         return Ok(());
     };
     ctlr.init()?;
-    let host = hci::Host::new(ctlr);
+    let host = hci::Host::new(Arc::new(ctlr));
 
     let hci_mon = host.enable_events();
     host.init().await?;
@@ -60,7 +60,7 @@ async fn main() -> Result<()> {
     Ok(hci_mon.disable().await?)
 }
 
-async fn advertise<T: host::Transport>(host: &hci::Host<T>) -> Result<()> {
+async fn advertise(host: &hci::Host) -> Result<()> {
     let mut adv = hci::Advertiser::new(host.clone()).await?;
     let params = hci::AdvParams {
         props: hci::AdvProp::CONNECTABLE | hci::AdvProp::INCLUDE_TX_POWER,
@@ -88,10 +88,7 @@ async fn advertise<T: host::Transport>(host: &hci::Host<T>) -> Result<()> {
     Ok(())
 }
 
-async fn server_loop<T: host::Transport + 'static>(
-    db: Arc<gatt::Db>,
-    mut cm: l2cap::ChanManager<T>,
-) -> Result<()> {
+async fn server_loop(db: Arc<gatt::Db>, mut cm: l2cap::ChanManager) -> Result<()> {
     db.dump();
     loop {
         let link = cm.recv().await?;
@@ -107,7 +104,7 @@ async fn server_loop<T: host::Transport + 'static>(
     }
 }
 
-async fn serve<T: host::Transport + 'static>(mut s: gatt::Server<T>) {
+async fn serve(mut s: gatt::Server) {
     s.configure().await.unwrap();
     s.serve().await.unwrap();
 }

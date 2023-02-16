@@ -15,7 +15,6 @@ pub(crate) use chan::*;
 pub use {consts::*, handle::*};
 
 use crate::hci::{Role, ACL_HDR};
-use crate::host::Transfer;
 use crate::le::Addr;
 use crate::{att, hci, host, smp};
 
@@ -59,17 +58,17 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// Channel manager responsible for maintaining connection and channel state
 /// information.
 #[derive(Debug)]
-pub struct ChanManager<T: host::Transport> {
-    ctl: hci::EventWaiterGuard<T>,
-    conns: HashMap<LeU, Conn<T>>,
-    rm: ResManager<T>,
+pub struct ChanManager {
+    ctl: hci::EventWaiterGuard,
+    conns: HashMap<LeU, Conn>,
+    rm: ResManager,
     local_addr: Addr,
 }
 
-impl<T: host::Transport + 'static> ChanManager<T> {
+impl ChanManager {
     /// Creates a new Channel Manager. `local_addr` is the address used to
     /// establish new connections, which is then used by the Security Manager.
-    pub async fn new(host: &hci::Host<T>, local_addr: Addr) -> Result<Self> {
+    pub async fn new(host: &hci::Host, local_addr: Addr) -> Result<Self> {
         let ctl = host.register(hci::EventFilter::ChanManager)?;
         let rm = ResManager::new(host).await?;
         // TODO: Figure out how to get the local address on a per-connection
@@ -99,13 +98,13 @@ impl<T: host::Transport + 'static> ChanManager<T> {
 
     /// Returns the Attribute Protocol (ATT) fixed channel for the specified
     /// LE-U logical link.
-    pub fn att_chan(&mut self, link: LeU) -> Option<att::Bearer<T>> {
+    pub fn att_chan(&mut self, link: LeU) -> Option<att::Bearer> {
         (self.conns.get_mut(&link)).and_then(|cn| cn.att_opt.take().map(att::Bearer::new))
     }
 
     /// Returns the Security Manager (SM) fixed channel for the specified LE-U
     /// logical link.
-    pub fn sm_chan(&mut self, link: LeU) -> Option<smp::Peripheral<T>> {
+    pub fn sm_chan(&mut self, link: LeU) -> Option<smp::Peripheral> {
         (self.conns.get_mut(&link).and_then(|cn| cn.smp_opt.take())).map(smp::Peripheral::new)
     }
 
@@ -190,16 +189,16 @@ impl<T: host::Transport + 'static> ChanManager<T> {
 /// Resource manager responsible for routing Service/Protocol Data Units between
 /// logical channels and host transport.
 #[derive(Debug)]
-struct ResManager<T: host::Transport> {
-    rx: rx::State<T>,
-    tx: Arc<tx::State<T>>,
+struct ResManager {
+    rx: rx::State,
+    tx: Arc<tx::State>,
 }
 
-impl<T: host::Transport + 'static> ResManager<T> {
+impl ResManager {
     /// Creates a new resource manager after configuring the ACL data packet
     /// parameters ([Vol 3] Part A, Section 1.1).
     #[allow(clippy::similar_names)]
-    async fn new(host: &hci::Host<T>) -> Result<Self> {
+    async fn new(host: &hci::Host) -> Result<Self> {
         // [Vol 4] Part E, Section 4.1 and [Vol 4] Part E, Section 7.8.2
         let mut cbuf = host.le_read_buffer_size().await?;
         let acl_num_pkts = if cbuf.acl_data_len == 0 || cbuf.acl_num_pkts == 0 {
@@ -221,8 +220,8 @@ impl<T: host::Transport + 'static> ResManager<T> {
         host.host_buffer_size(hbuf).await?;
 
         Ok(Self {
-            rx: rx::State::new(host.transport().clone(), hbuf.acl_data_len),
-            tx: tx::State::new(host.transport().clone(), acl_num_pkts, cbuf.acl_data_len),
+            rx: rx::State::new(host.transport(), hbuf.acl_data_len),
+            tx: tx::State::new(host.transport(), acl_num_pkts, cbuf.acl_data_len),
         })
     }
 }
@@ -240,18 +239,18 @@ pub(crate) struct ConnInfo {
 
 /// Established connection over an LE-U logical link.
 #[derive(Debug)]
-struct Conn<T: host::Transport> {
+struct Conn {
     /// LE Signaling fiexed channel.
-    sig: BasicChan<T>,
+    sig: BasicChan,
     /// Attribute Protocol fixed channel.
-    att: Arc<RawChan<T>>,
-    att_opt: Option<BasicChan<T>>,
+    att: Arc<RawChan>,
+    att_opt: Option<BasicChan>,
     /// Security Manager fixed channel.
-    smp: Arc<RawChan<T>>,
-    smp_opt: Option<BasicChan<T>>,
+    smp: Arc<RawChan>,
+    smp_opt: Option<BasicChan>,
 }
 
-impl<T: host::Transport> Conn<T> {
+impl Conn {
     /// Marks all channels as closed.
     fn set_closed(&mut self) {
         self.sig.raw.set_closed();
@@ -264,21 +263,21 @@ impl<T: host::Transport> Conn<T> {
 /// information payload ([Vol 3] Part A, Section 3).
 #[derive(Debug)]
 #[must_use]
-pub(crate) struct Payload<T: host::Transport> {
-    f: Frame<T>,
+pub(crate) struct Payload {
+    f: Frame,
     i: usize,
 }
 
-impl<T: host::Transport> Payload<T> {
+impl Payload {
     /// Creates an SDU from a frame with information payload at index `i`.
     #[inline]
-    fn new(f: Frame<T>, i: usize) -> Self {
+    fn new(f: Frame, i: usize) -> Self {
         debug_assert!(f.as_ref().len() >= i);
         Self { f, i }
     }
 }
 
-impl<T: host::Transport> AsRef<[u8]> for Payload<T> {
+impl AsRef<[u8]> for Payload {
     /// Returns the SDU information payload.
     #[inline]
     fn as_ref(&self) -> &[u8] {
@@ -287,7 +286,7 @@ impl<T: host::Transport> AsRef<[u8]> for Payload<T> {
     }
 }
 
-impl<T: host::Transport> Pack for Payload<T> {
+impl Pack for Payload {
     #[inline]
     fn append(&mut self) -> Packer {
         self.f.append()
@@ -303,24 +302,24 @@ impl<T: host::Transport> Pack for Payload<T> {
 /// ACL data packet. Each frame starts with a basic L2CAP header at index 0.
 #[derive(Debug)]
 #[must_use]
-enum Frame<T: host::Transport> {
+enum Frame {
     /// Complete PDU or SDU, starting with the ACL data packet header.
-    Transfer(AclTransfer<T>),
+    Transfer(AclTransfer),
     /// Possibly incomplete PDU or SDU, starting with the basic L2CAP header.
     Buf(StructBuf),
 }
 
-impl<T: host::Transport> Frame<T> {
+impl Frame {
     /// Creates a frame from a single ACL data packet.
     #[inline]
-    fn complete(xfer: AclTransfer<T>) -> Self {
+    fn complete(xfer: AclTransfer) -> Self {
         debug_assert!(ACL_HDR + L2CAP_HDR <= xfer.as_ref().len());
         Self::Transfer(xfer)
     }
 
     /// Allocates a PDU recombination buffer and appends the first fragment.
     #[inline]
-    fn first(xfer: &AclTransfer<T>, frame_len: usize) -> StructBuf {
+    fn first(xfer: &AclTransfer, frame_len: usize) -> StructBuf {
         let frag = xfer.as_ref();
         debug_assert!(ACL_HDR + L2CAP_HDR <= frag.len() && frag.len() < ACL_HDR + frame_len);
         let mut buf = StructBuf::with_capacity(frame_len);
@@ -332,7 +331,7 @@ impl<T: host::Transport> Frame<T> {
     /// Returns the transfer containing a complete PDU or `None` if the PDU is
     /// fragmented.
     #[inline]
-    fn take_xfer(&mut self) -> Option<AclTransfer<T>> {
+    fn take_xfer(&mut self) -> Option<AclTransfer> {
         if matches!(*self, Self::Buf(_)) {
             return None;
         }
@@ -343,14 +342,14 @@ impl<T: host::Transport> Frame<T> {
     }
 }
 
-impl<T: host::Transport> Default for Frame<T> {
+impl Default for Frame {
     #[inline]
     fn default() -> Self {
         Self::Buf(StructBuf::default())
     }
 }
 
-impl<T: host::Transport> AsRef<[u8]> for Frame<T> {
+impl AsRef<[u8]> for Frame {
     /// Returns PDU bytes, starting with the basic L2CAP header.
     #[inline]
     fn as_ref(&self) -> &[u8] {
@@ -362,7 +361,7 @@ impl<T: host::Transport> AsRef<[u8]> for Frame<T> {
     }
 }
 
-impl<T: host::Transport> Pack for Frame<T> {
+impl Pack for Frame {
     #[inline]
     fn append(&mut self) -> Packer {
         match *self {
@@ -382,22 +381,26 @@ impl<T: host::Transport> Pack for Frame<T> {
 
 /// ACL data transfer allocator.
 #[derive(Debug)]
-struct Alloc<T: host::Transport> {
+struct Alloc {
     /// Host transport.
-    transport: T,
+    transport: Arc<dyn host::Transport>,
     /// Transfers that can be reused.
-    free: parking_lot::Mutex<Vec<T::Transfer>>,
+    free: parking_lot::Mutex<Vec<Box<dyn host::Transfer>>>,
     /// Maximum size of a PDU fragment in an ACL data packet.
     acl_data_len: u16,
     /// Transfer direction.
     dir: host::Direction,
 }
 
-impl<T: host::Transport> Alloc<T> {
+impl Alloc {
     /// Creates a new transfer allocator.
     #[inline]
     #[must_use]
-    fn new(transport: T, dir: host::Direction, acl_data_len: u16) -> Arc<Self> {
+    fn new(
+        transport: Arc<dyn host::Transport>,
+        dir: host::Direction,
+        acl_data_len: u16,
+    ) -> Arc<Self> {
         assert!(acl_data_len >= hci::ACL_LE_MIN_DATA_LEN);
         Arc::new(Self {
             transport,
@@ -409,7 +412,7 @@ impl<T: host::Transport> Alloc<T> {
 
     /// Allocates an empty ACL data transfer.
     #[must_use]
-    fn xfer(self: &Arc<Self>) -> AclTransfer<T> {
+    fn xfer(self: &Arc<Self>) -> AclTransfer {
         let xfer = self.free.lock().pop().map_or_else(
             || self.transport.acl(self.dir, self.acl_data_len),
             |mut xfer| {
@@ -421,7 +424,7 @@ impl<T: host::Transport> Alloc<T> {
     }
 
     /// Allocates an outbound frame with a zero-filled basic L2CAP header.
-    fn frame(self: &Arc<Self>, max_frame_len: usize) -> Frame<T> {
+    fn frame(self: &Arc<Self>, max_frame_len: usize) -> Frame {
         if max_frame_len <= self.acl_data_len as usize {
             // TODO: Reuse transfers. This change was made because remaining()
             // has to report `max_frame_len` rather than `acl_data_len`.
@@ -442,12 +445,12 @@ impl<T: host::Transport> Alloc<T> {
 /// ACL data transfer containing a PDU fragment. The transfer starts with an ACL
 /// data packet header at index 0.
 #[derive(Debug)]
-struct AclTransfer<T: host::Transport>(ManuallyDrop<(T::Transfer, Arc<Alloc<T>>)>);
+struct AclTransfer(ManuallyDrop<(Box<dyn host::Transfer>, Arc<Alloc>)>);
 
-impl<T: host::Transport> AclTransfer<T> {
+impl AclTransfer {
     /// Wraps an ACL transfer obtained from `alloc`.
     #[inline]
-    fn new(xfer: T::Transfer, alloc: Arc<Alloc<T>>) -> Self {
+    fn new(xfer: Box<dyn host::Transfer>, alloc: Arc<Alloc>) -> Self {
         Self(ManuallyDrop::new((xfer, alloc)))
     }
 
@@ -463,11 +466,11 @@ impl<T: host::Transport> AclTransfer<T> {
         // SAFETY: self.0 is not used again
         let (xfer, alloc) = unsafe { ManuallyDrop::take(&mut self.0) };
         mem::forget(self);
-        Ok(Self::new(xfer.submit()?.await, alloc))
+        Ok(Self::new(xfer.submit()?.await?, alloc))
     }
 }
 
-impl<T: host::Transport> Drop for AclTransfer<T> {
+impl Drop for AclTransfer {
     fn drop(&mut self) {
         // SAFETY: self.0 is not used again
         let (mut xfer, alloc) = unsafe { ManuallyDrop::take(&mut self.0) };
@@ -481,18 +484,18 @@ impl<T: host::Transport> Drop for AclTransfer<T> {
     }
 }
 
-impl<T: host::Transport> Deref for AclTransfer<T> {
-    type Target = T::Transfer;
+impl Deref for AclTransfer {
+    type Target = dyn host::Transfer;
 
     #[inline(always)]
     fn deref(&self) -> &Self::Target {
-        &self.0 .0
+        self.0 .0.as_ref()
     }
 }
 
-impl<T: host::Transport> DerefMut for AclTransfer<T> {
+impl DerefMut for AclTransfer {
     #[inline(always)]
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0 .0
+        self.0 .0.as_mut()
     }
 }

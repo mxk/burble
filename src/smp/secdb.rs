@@ -7,7 +7,7 @@ use tracing::{error, warn};
 use burble_crypto::LTK;
 
 use crate::hci::{EventCode, EventFilter};
-use crate::{hci, host, le};
+use crate::{hci, le};
 
 /// Security keys for a peer device.
 #[derive(Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
@@ -22,17 +22,17 @@ pub(crate) type KeyStore = dyn crate::PeerStore<Value = Keys>;
 
 /// Security database that stores encryption (LTK), identity (IRK), and CSRKs.
 #[derive(Debug)]
-pub struct SecDb<T: host::Transport> {
-    ctl: hci::EventWaiterGuard<T>,
-    host: hci::Host<T>,
+pub struct SecDb {
+    ctl: hci::EventWaiterGuard,
+    host: hci::Host,
     store: Arc<KeyStore>,
     peer: HashMap<hci::ConnHandle, le::Addr>,
 }
 
-impl<T: host::Transport> SecDb<T> {
+impl SecDb {
     /// Creates a security database that will handle HCI host key requests.
     #[inline]
-    pub fn new(host: hci::Host<T>, store: Arc<KeyStore>) -> hci::Result<Self> {
+    pub fn new(host: hci::Host, store: Arc<KeyStore>) -> hci::Result<Self> {
         Ok(Self {
             ctl: host.register(EventFilter::SecDb)?,
             host,

@@ -1,21 +1,20 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::host;
 use crate::le::TxPower;
 
 use super::*;
 
 /// Advertisement manager.
 #[derive(Debug)]
-pub struct Advertiser<T: host::Transport> {
-    host: Host<T>,
+pub struct Advertiser {
+    host: Host,
     handles: HashSet<AdvHandle>,
     max_data_len: usize,
 }
 
-impl<T: host::Transport> Advertiser<T> {
+impl Advertiser {
     /// Creates a new advertisement manager.
-    pub async fn new(host: Host<T>) -> Result<Self> {
+    pub async fn new(host: Host) -> Result<Self> {
         host.le_clear_advertising_sets().await?;
         let handles = HashSet::with_capacity(usize::from(
             host.le_read_number_of_supported_advertising_sets().await?,
@@ -61,7 +60,7 @@ impl<T: host::Transport> Advertiser<T> {
     }
 
     /// Enable advertising.
-    pub async fn enable(&mut self, p: AdvEnableParams) -> Result<AdvMonitor<T>> {
+    pub async fn enable(&mut self, p: AdvEnableParams) -> Result<AdvMonitor> {
         let waiter = self.host.register(EventFilter::AdvManager)?;
         (self.host.le_set_extended_advertising_enable(true, &[p])).await?;
         Ok(AdvMonitor::new(waiter))
@@ -134,16 +133,16 @@ pub enum AdvEvent {
 }
 
 #[derive(Debug)]
-pub struct AdvMonitor<T: host::Transport> {
-    waiter: EventWaiterGuard<T>,
+pub struct AdvMonitor {
+    waiter: EventWaiterGuard,
     conn: HashMap<ConnHandle, LeConnectionComplete>,
 }
 
-impl<T: host::Transport> AdvMonitor<T> {
+impl AdvMonitor {
     /// Creates a new advertising monitor.
     #[inline]
     #[must_use]
-    fn new(waiter: EventWaiterGuard<T>) -> Self {
+    fn new(waiter: EventWaiterGuard) -> Self {
         Self {
             waiter,
             conn: HashMap::with_capacity(1),

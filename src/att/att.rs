@@ -10,8 +10,8 @@ pub(crate) use consts::*;
 pub use {handle::*, perm::*};
 
 use crate::gap::Uuid;
+use crate::l2cap;
 use crate::l2cap::{BasicChan, Payload};
-use crate::{host, l2cap};
 
 mod consts;
 mod handle;
@@ -39,12 +39,12 @@ pub type RspResult<T> = std::result::Result<T, ErrorRsp>;
 /// Received ATT protocol data unit ([Vol 3] Part F, Section 3.3).
 #[derive(Debug)]
 #[repr(transparent)]
-pub struct Pdu<T: host::Transport>(Payload<T>);
+pub struct Pdu(Payload);
 
 /// Response PDU.
 #[derive(Debug)]
 #[repr(transparent)]
-pub struct Rsp<T: host::Transport>(Payload<T>);
+pub struct Rsp(Payload);
 
 /// `ATT_ERROR_RSP` PDU ([Vol 3] Part F, Section 3.4.1.1).
 #[derive(Clone, Copy, Debug, thiserror::Error)]
@@ -66,20 +66,20 @@ impl ErrorRsp {
 /// ATT bearer ([Vol 3] Part F, Section 3.2.11).
 #[derive(Clone, Debug)]
 #[repr(transparent)]
-pub struct Bearer<T: host::Transport>(BasicChan<T>);
+pub struct Bearer(BasicChan);
 
-impl<T: host::Transport> Bearer<T> {
+impl Bearer {
     /// Creates an ATT bearer by associating an L2CAP channel with an ATT
     /// server.
     #[inline]
     #[must_use]
-    pub(crate) const fn new(ch: BasicChan<T>) -> Self {
+    pub(crate) const fn new(ch: BasicChan) -> Self {
         Self(ch)
     }
 
     /// Returns the next command, request, notification, or indication PDU. This
     /// method is cancel safe.
-    pub async fn recv(&mut self) -> Result<Pdu<T>> {
+    pub async fn recv(&mut self) -> Result<Pdu> {
         let pdu = self.0.recv().await?;
         // [Vol 3] Part F, Section 3.3
         let Some(&op) = pdu.as_ref().first() else {
@@ -106,7 +106,7 @@ impl<T: host::Transport> Bearer<T> {
     ///
     /// Panics if the `pdu` is not a read/write request.
     #[inline]
-    pub fn access_req(&self, pdu: &Pdu<T>) -> Request {
+    pub fn access_req(&self, pdu: &Pdu) -> Request {
         // TODO: Set authz/authn/key_len
         pdu.opcode().request()
     }
@@ -114,7 +114,7 @@ impl<T: host::Transport> Bearer<T> {
     /// Sends a response PDU or an `ATT_ERROR_RSP` if the request could not be
     /// completed ([Vol 3] Part F, Section 3.4.1.1). Command-related errors are
     /// ignored.
-    pub async fn send_rsp(&mut self, r: RspResult<Rsp<T>>) -> Result<()> {
+    pub async fn send_rsp(&mut self, r: RspResult<Rsp>) -> Result<()> {
         let rsp = match r {
             Ok(r) => r.0,
             Err(e) => {
@@ -134,7 +134,7 @@ impl<T: host::Transport> Bearer<T> {
     }
 
     /// Handles `ATT_EXCHANGE_MTU_REQ` ([Vol 3] Part F, Section 3.4.2.1).
-    pub(crate) async fn handle_exchange_mtu_req(&mut self, pdu: Pdu<T>) -> Result<()> {
+    pub(crate) async fn handle_exchange_mtu_req(&mut self, pdu: Pdu) -> Result<()> {
         let r = pdu.exchange_mtu_req().and_then(|mtu| {
             // This procedure can only be performed once, so the current MTU
             // is the minimum one allowed for the channel.
@@ -154,7 +154,7 @@ impl<T: host::Transport> Bearer<T> {
     }
 
     /// Receives a response or confirmation PDU ([Vol 3] Part F, Section 3.4.9).
-    async fn recv_rsp(&mut self, rsp: Opcode) -> Result<Payload<T>> {
+    async fn recv_rsp(&mut self, rsp: Opcode) -> Result<Payload> {
         let want = u8::from(rsp);
         let err = if rsp.typ() == PduType::Rsp {
             Opcode::ErrorRsp as u8
@@ -192,14 +192,14 @@ impl<T: host::Transport> Bearer<T> {
     /// Returns a response PDU.
     #[allow(clippy::unnecessary_wraps)]
     #[inline(always)]
-    fn rsp(&self, op: Opcode, f: impl FnOnce(&mut Packer)) -> RspResult<Rsp<T>> {
+    fn rsp(&self, op: Opcode, f: impl FnOnce(&mut Packer)) -> RspResult<Rsp> {
         Ok(Rsp(self.pack(op, f)))
     }
 
     /// Returns an outbound PDU, calling `f` to encode it after writing the
     /// opcode.
     #[inline]
-    fn pack(&self, op: Opcode, f: impl FnOnce(&mut Packer)) -> Payload<T> {
+    fn pack(&self, op: Opcode, f: impl FnOnce(&mut Packer)) -> Payload {
         let mut pdu = self.0.new_payload();
         f(pdu.append().u8(op));
         pdu
@@ -207,7 +207,7 @@ impl<T: host::Transport> Bearer<T> {
 
     /// Sends an SDU over the channel.
     #[inline(always)]
-    async fn send(&mut self, pdu: Payload<T>) -> Result<()> {
+    async fn send(&mut self, pdu: Payload) -> Result<()> {
         Ok(self.0.send(pdu).await?)
     }
 }

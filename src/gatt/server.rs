@@ -1,28 +1,27 @@
 use std::sync::Arc;
 
-use structbuf::Unpack;
+use structbuf::{StructBuf, Unpack};
 
 use ErrorCode::*;
 
 use crate::gap::{Uuid, Uuid16, UuidType};
 use crate::gatt::db::Db;
-use crate::host;
 
 use super::*;
 
 /// GATT server providing services to a single client.
 #[derive(Debug)]
-pub struct Server<T: host::Transport> {
-    br: Bearer<T>,
+pub struct Server {
+    br: Bearer,
     db: Arc<Db>,
     // TODO: These should be shared by all bearers for the same client
     write_queue: parking_lot::Mutex<WriteQueue>,
 }
 
-impl<T: host::Transport> Server<T> {
+impl Server {
     /// Creates a new GATT server.
     #[inline]
-    pub fn new(br: Bearer<T>, db: Arc<Db>) -> Self {
+    pub fn new(br: Bearer, db: Arc<Db>) -> Self {
         Self {
             br,
             db,
@@ -49,7 +48,7 @@ impl<T: host::Transport> Server<T> {
     }
 
     /// Handles one client request.
-    async fn handle_req(&mut self, pdu: &Pdu<T>) -> Result<()> {
+    async fn handle_req(&mut self, pdu: &Pdu) -> Result<()> {
         use Opcode::*;
         let op = pdu.opcode();
         #[allow(clippy::match_same_arms)]
@@ -76,7 +75,7 @@ impl<T: host::Transport> Server<T> {
     }
 
     /// Handles `ATT_READ_BY_TYPE_REQ` PDUs.
-    fn handle_read_by_type_req(&self, pdu: &Pdu<T>) -> RspResult<Rsp<T>> {
+    fn handle_read_by_type_req(&self, pdu: &Pdu) -> RspResult<Rsp> {
         let (hdls, typ) = pdu.read_by_type_req()?;
         if let Some(t) = typ.as_uuid16().map(Uuid16::typ) {
             match t {
@@ -100,7 +99,7 @@ impl<T: host::Transport> Server<T> {
 
     /// Handles "Discover All Primary Services" sub-procedure
     /// ([Vol 3] Part G, Section 4.4.1).
-    fn discover_primary_services(&self, pdu: &Pdu<T>) -> RspResult<Rsp<T>> {
+    fn discover_primary_services(&self, pdu: &Pdu) -> RspResult<Rsp> {
         let (hdls, typ) = pdu.read_by_group_type_req()?;
         if typ != Declaration::PrimaryService {
             return pdu.err(UnsupportedGroupType);
@@ -116,7 +115,7 @@ impl<T: host::Transport> Server<T> {
 
     /// Handles "Discover Primary Service by Service UUID" sub-procedure
     /// ([Vol 3] Part G, Section 4.4.2).
-    fn discover_primary_service_by_uuid(&self, pdu: &Pdu<T>) -> RspResult<Rsp<T>> {
+    fn discover_primary_service_by_uuid(&self, pdu: &Pdu) -> RspResult<Rsp> {
         let (hdls, typ, uuid) = pdu.find_by_type_value_req()?;
         if typ != Declaration::PrimaryService {
             return pdu.err(UnsupportedGroupType);
@@ -131,21 +130,21 @@ impl<T: host::Transport> Server<T> {
 
     /// Handles "Find Included Services" sub-procedure
     /// ([Vol 3] Part G, Section 4.5.1).
-    fn find_included_services(&self, hdls: HandleRange) -> RspResult<Rsp<T>> {
+    fn find_included_services(&self, hdls: HandleRange) -> RspResult<Rsp> {
         let it = self.db.includes(hdls).map(|v| (v.handle(), v.value()));
         self.br.read_by_type_rsp(hdls.start(), it)
     }
 
     /// Handles "Discover All Characteristics of a Service" and "Discover
     /// Characteristics by UUID" sub-procedures ([Vol 3] Part G, Section 4.6.1).
-    fn discover_service_characteristics(&self, hdls: HandleRange) -> RspResult<Rsp<T>> {
+    fn discover_service_characteristics(&self, hdls: HandleRange) -> RspResult<Rsp> {
         let it = (self.db.characteristics(hdls)).map(|v| (v.handle(), v.value()));
         self.br.read_by_type_rsp(hdls.start(), it)
     }
 
     /// Handles "Discover All Characteristic Descriptors" sub-procedure
     /// ([Vol 3] Part G, Section 4.7.1).
-    fn discover_characteristic_descriptors(&self, pdu: &Pdu<T>) -> RspResult<Rsp<T>> {
+    fn discover_characteristic_descriptors(&self, pdu: &Pdu) -> RspResult<Rsp> {
         let hdls = pdu.find_information_req()?;
         let it = self.db.descriptors(hdls).map(|at| (at.handle(), at.uuid()));
         self.br.find_information_rsp(hdls.start(), it)
@@ -153,7 +152,7 @@ impl<T: host::Transport> Server<T> {
 
     /// Handles "Read Characteristic Value" sub-procedure
     /// ([Vol 3] Part G, Section 4.8.1).
-    fn read(&self, pdu: &Pdu<T>) -> RspResult<Rsp<T>> {
+    fn read(&self, pdu: &Pdu) -> RspResult<Rsp> {
         let hdl = (self.db).try_access(self.br.access_req(pdu), pdu.read_req()?)?;
         let r = self.db.read();
         self.br.read_rsp(r.value(hdl).unwrap_or_default())
@@ -161,7 +160,7 @@ impl<T: host::Transport> Server<T> {
 
     /// Handles "Read Using Characteristic UUID" sub-procedure
     /// ([Vol 3] Part G, Section 4.8.2).
-    fn read_by_type(&self, start: Handle, hdls: Vec<Handle>) -> RspResult<Rsp<T>> {
+    fn read_by_type(&self, start: Handle, hdls: Vec<Handle>) -> RspResult<Rsp> {
         let r = self.db.read();
         let it = (hdls.into_iter()).map(|hdl| (hdl, r.value(hdl).unwrap_or_default()));
         self.br.read_by_type_rsp(start, it)
@@ -169,7 +168,7 @@ impl<T: host::Transport> Server<T> {
 
     /// Handles "Read Long Characteristic Values" and "Read Long Characteristic
     /// Descriptors" sub-procedures ([Vol 3] Part G, Section 4.8.3 and 4.12.2).
-    fn read_blob(&self, pdu: &Pdu<T>) -> RspResult<Rsp<T>> {
+    fn read_blob(&self, pdu: &Pdu) -> RspResult<Rsp> {
         let (hdl, off) = pdu.read_blob_req()?;
         let hdl = self.db.try_access(self.br.access_req(pdu), hdl)?;
         (self.db.read().value(hdl).unwrap_or_default())
@@ -182,7 +181,7 @@ impl<T: host::Transport> Server<T> {
 
     /// Handles "Read Multiple Characteristic Values" sub-procedure
     /// ([Vol 3] Part G, Section 4.8.4).
-    fn read_multiple(&self, pdu: &Pdu<T>) -> RspResult<Rsp<T>> {
+    fn read_multiple(&self, pdu: &Pdu) -> RspResult<Rsp> {
         let hdls = (self.db).try_multi_access(self.br.access_req(pdu), pdu.read_multiple_req()?)?;
         let r = self.db.read();
         let it = hdls.into_iter().map(|hdl| r.value(hdl).unwrap_or_default());
@@ -191,7 +190,7 @@ impl<T: host::Transport> Server<T> {
 
     /// Handles "Read Multiple Variable Length Characteristic Values"
     /// sub-procedure ([Vol 3] Part G, Section 4.8.5).
-    fn read_multiple_variable(&self, pdu: &Pdu<T>) -> RspResult<Rsp<T>> {
+    fn read_multiple_variable(&self, pdu: &Pdu) -> RspResult<Rsp> {
         let hdls = (self.db)
             .try_multi_access(self.br.access_req(pdu), pdu.read_multiple_variable_req()?)?;
         let r = self.db.read();
@@ -201,7 +200,7 @@ impl<T: host::Transport> Server<T> {
 
     /// Handles "Write Without Response" and "Write Characteristic Value"
     /// sub-procedures ([Vol 3] Part G, Section 4.9.1 and 4.9.3).
-    fn write(&self, pdu: &Pdu<T>) -> RspResult<Option<Rsp<T>>> {
+    fn write(&self, pdu: &Pdu) -> RspResult<Option<Rsp>> {
         let (hdl, v) = pdu.write_req()?;
         let hdl = self.db.try_access(self.br.access_req(pdu), hdl)?;
         if v.len() > MAX_VAL_LEN {
@@ -225,7 +224,7 @@ impl<T: host::Transport> Server<T> {
     /// Handles the first phase of "Write Long Characteristic Values" and
     /// "Reliable Writes" sub-procedures
     /// ([Vol 3] Part G, Section 4.9.4 and 4.9.5).
-    fn prepare_write(&self, pdu: &Pdu<T>) -> RspResult<Rsp<T>> {
+    fn prepare_write(&self, pdu: &Pdu) -> RspResult<Rsp> {
         let (hdl, off, v) = pdu.prepare_write_req()?;
         let hdl = self.db.try_access(self.br.access_req(pdu), hdl)?;
         if off as usize + v.len() > MAX_VAL_LEN {
@@ -240,7 +239,7 @@ impl<T: host::Transport> Server<T> {
     /// Handles the second phase of "Write Long Characteristic Values" and
     /// "Reliable Writes" sub-procedures
     /// ([Vol 3] Part G, Section 4.9.4 and 4.9.5).
-    fn execute_write(&self, pdu: &Pdu<T>) -> RspResult<Rsp<T>> {
+    fn execute_write(&self, pdu: &Pdu) -> RspResult<Rsp> {
         let commit = pdu.execute_write_req()?;
         let mut write_queue = self.write_queue.lock();
         if !commit {

@@ -3,8 +3,6 @@ use tracing::{trace, warn};
 
 pub use {hci_control::*, info_params::*, le::*};
 
-use crate::host::Transfer;
-
 use super::*;
 
 mod hci_control;
@@ -13,16 +11,16 @@ mod le;
 
 /// HCI command encoder.
 #[derive(Debug)]
-pub(super) struct Command<T: host::Transport> {
-    router: Arc<EventRouter<T>>,
+pub(super) struct Command {
+    router: Arc<EventRouter>,
     opcode: Opcode,
-    xfer: T::Transfer,
+    xfer: Box<dyn host::Transfer>,
 }
 
-impl<T: host::Transport> Command<T> {
+impl Command {
     /// Creates a new HCI command.
     #[must_use]
-    pub fn new(host: &Host<T>, opcode: Opcode) -> Self {
+    pub fn new(host: &Host, opcode: Opcode) -> Self {
         // TODO: Transfer reuse
         let mut cmd = Self {
             router: Arc::clone(&host.router),
@@ -36,16 +34,16 @@ impl<T: host::Transport> Command<T> {
     /// Executes the command and returns its completion event. The caller must
     /// check the completion status to determine whether the command was
     /// successful.
-    pub async fn exec(mut self) -> Result<EventGuard<T>> {
-        let n = u8::try_from(self.xfer.as_ref().len() - CMD_HDR).expect("command too long");
+    pub async fn exec(mut self) -> Result<EventGuard> {
+        let n = u8::try_from((*self.xfer).as_ref().len() - CMD_HDR).expect("command too long");
         self.xfer.at(CMD_HDR - 1).u8(n);
         trace!("Command: {:02X?}", self.xfer.as_ref());
         // Event registration must happen first to ensure that the command quota
         // is not exceeded, to check for any conflicting commands, and to
         // guarantee that the completion event will not be missed.
         let waiter = self.router.register(EventFilter::Command(self.opcode))?;
-        self.xfer.submit()?.await.result().unwrap().map_err(|e| {
-            warn!("Failed to submit {} command: {e}", self.opcode);
+        self.xfer.submit()?.await.map_err(|e| {
+            warn!("Failed to execute {} command: {e}", self.opcode);
             e
         })?;
         // [Vol 4] Part E, Section 4.4
@@ -63,7 +61,7 @@ impl<T: host::Transport> Command<T> {
     }
 }
 
-impl<T: host::Transport> Pack for Command<T> {
+impl Pack for Command {
     #[inline]
     fn append(&mut self) -> Packer {
         self.xfer.append()

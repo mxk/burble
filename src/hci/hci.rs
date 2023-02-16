@@ -75,16 +75,16 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 /// Host-side of a Host Controller Interface.
 #[derive(Clone, Debug)]
-pub struct Host<T: host::Transport> {
-    transport: T,
-    router: Arc<EventRouter<T>>,
+pub struct Host {
+    transport: Arc<dyn host::Transport>,
+    router: Arc<EventRouter>,
 }
 
-impl<T: host::Transport> Host<T> {
+impl Host {
     /// Creates an HCI host using transport layer `t`.
     #[inline]
     #[must_use]
-    pub fn new(transport: T) -> Self {
+    pub fn new(transport: Arc<dyn host::Transport>) -> Self {
         Self {
             transport,
             router: Arc::default(),
@@ -94,13 +94,13 @@ impl<T: host::Transport> Host<T> {
     /// Returns the underlying transport.
     #[inline]
     #[must_use]
-    pub const fn transport(&self) -> &T {
+    pub const fn transport(&self) -> &Arc<dyn host::Transport> {
         &self.transport
     }
 
     /// Registers an event waiter with filter `f`.
     #[inline]
-    pub(crate) fn register(&self, f: EventFilter) -> Result<EventWaiterGuard<T>> {
+    pub(crate) fn register(&self, f: EventFilter) -> Result<EventWaiterGuard> {
         self.router.register(f)
     }
 
@@ -134,14 +134,22 @@ impl<T: host::Transport> Host<T> {
     /// this method, only one will resolve to the received event and the others
     /// will continue to wait.
     #[inline]
-    pub async fn event(&self) -> Result<EventGuard<T>> {
-        self.router.recv_event(&self.transport).await
+    pub async fn event(&self) -> Result<EventGuard> {
+        self.router.recv_event(&*self.transport).await
+    }
+
+    /// Spawns a task that continuously receives HCI events until an error is
+    /// encountered. The task is canceled when the returned future is dropped.
+    #[inline]
+    #[must_use]
+    pub fn enable_events(&self) -> EventReceiverTask {
+        EventReceiverTask::new(self.clone())
     }
 
     /// Executes a command with no parameters and returns the command completion
     /// event.
     #[inline]
-    async fn exec(&self, opcode: Opcode) -> Result<EventGuard<T>> {
+    async fn exec(&self, opcode: Opcode) -> Result<EventGuard> {
         Command::new(self, opcode).exec().await
     }
 
@@ -152,20 +160,10 @@ impl<T: host::Transport> Host<T> {
         &self,
         opcode: Opcode,
         f: impl FnOnce(&mut Packer) + Send,
-    ) -> Result<EventGuard<T>> {
+    ) -> Result<EventGuard> {
         let mut cmd = Command::new(self, opcode);
         f(&mut cmd.append());
         cmd.exec().await
-    }
-}
-
-impl<T: host::Transport + 'static> Host<T> {
-    /// Spawns a task that continuously receives HCI events until an error is
-    /// encountered. The task is canceled when the returned future is dropped.
-    #[inline]
-    #[must_use]
-    pub fn enable_events(&self) -> EventReceiverTask {
-        EventReceiverTask::new(self.clone())
     }
 }
 
