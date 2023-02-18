@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::sync::Arc;
 
-use tracing::{error, warn};
+use tracing::error;
 
 use burble_crypto::LTK;
 
@@ -23,7 +23,7 @@ pub(crate) type KeyStore = dyn crate::PeerStore<Value = Keys>;
 /// Security database that stores encryption (LTK), identity (IRK), and CSRKs.
 #[derive(Debug)]
 pub struct SecDb {
-    ctl: hci::EventReceiver,
+    ctl: hci::EventStream,
     host: hci::Host,
     store: Arc<KeyStore>,
     peer: HashMap<hci::ConnHandle, le::Addr>,
@@ -34,7 +34,7 @@ impl SecDb {
     #[inline]
     pub fn new(host: hci::Host, store: Arc<KeyStore>) -> hci::Result<Self> {
         Ok(Self {
-            ctl: host.recv()?,
+            ctl: host.events()?,
             host,
             store,
             peer: HashMap::new(),
@@ -46,7 +46,7 @@ impl SecDb {
         loop {
             let req = {
                 let evt = self.ctl.next().await?;
-                match self.handle_event(&mut evt.get()) {
+                match self.handle_event(&evt) {
                     Some(req) => req,
                     None => continue,
                 }
@@ -68,20 +68,20 @@ impl SecDb {
     }
 
     /// Handles HCI control events.
-    fn handle_event(&mut self, e: &mut hci::Event<'_>) -> Option<hci::LeLongTermKeyRequest> {
+    fn handle_event(&mut self, e: &hci::Event) -> Option<hci::LeLongTermKeyRequest> {
         use hci::{EventType::*, SubeventCode::*};
         match e.typ() {
             Hci(EventCode::DisconnectionComplete) => {
                 self.peer.remove(&e.conn_handle().unwrap());
             }
             Le(ConnectionComplete | EnhancedConnectionComplete) => {
-                let e = hci::LeConnectionComplete::from(e);
+                let e = e.get::<hci::LeConnectionComplete>();
                 self.peer.insert(e.handle, e.peer_addr);
             }
             Le(LongTermKeyRequest) => {
-                return Some(hci::LeLongTermKeyRequest::from(e));
+                return Some(e.get());
             }
-            _ => warn!("Unexpected {}", e.typ()),
+            _ => {}
         }
         None
     }

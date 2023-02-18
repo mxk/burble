@@ -4,8 +4,6 @@ use std::fmt::{Debug, Display, Formatter};
 
 use structbuf::{Packer, Unpacker};
 
-use crate::hci::Event;
-
 /// Bluetooth device address ([Vol 6] Part B, Section 1.3).
 #[allow(clippy::exhaustive_enums)]
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, strum::Display)]
@@ -147,13 +145,6 @@ impl Default for TxPower {
     #[inline(always)]
     fn default() -> Self {
         Self(Self::MAX)
-    }
-}
-
-impl From<&mut Event<'_>> for TxPower {
-    #[inline(always)]
-    fn from(e: &mut Event<'_>) -> Self {
-        Self(e.i8())
     }
 }
 

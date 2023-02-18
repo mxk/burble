@@ -61,9 +61,9 @@ impl Advertiser {
 
     /// Enable advertising.
     pub async fn enable(&mut self, p: AdvEnableParams) -> Result<AdvMonitor> {
-        let recv = self.host.recv()?;
+        let ctl = self.host.events()?;
         (self.host.le_set_extended_advertising_enable(true, &[p])).await?;
-        Ok(AdvMonitor::new(recv))
+        Ok(AdvMonitor::new(ctl))
     }
 
     // Disable advertising.
@@ -134,7 +134,7 @@ pub enum AdvEvent {
 
 #[derive(Debug)]
 pub struct AdvMonitor {
-    recv: EventReceiver,
+    ctl: EventStream,
     conn: HashMap<ConnHandle, LeConnectionComplete>,
 }
 
@@ -142,9 +142,9 @@ impl AdvMonitor {
     /// Creates a new advertising monitor.
     #[inline]
     #[must_use]
-    fn new(recv: EventReceiver) -> Self {
+    fn new(ctl: EventStream) -> Self {
         Self {
-            recv,
+            ctl,
             conn: HashMap::with_capacity(1),
         }
     }
@@ -152,17 +152,17 @@ impl AdvMonitor {
     /// Returns the next event for enabled advertising sets.
     pub async fn event(&mut self) -> Result<AdvEvent> {
         use SubeventCode::*;
-        let term = loop {
-            let evt = self.recv.next().await?;
+        let term: LeAdvertisingSetTerminated = loop {
+            let evt = self.ctl.next().await?;
             match evt.typ() {
                 EventType::Le(ConnectionComplete | EnhancedConnectionComplete) => {
                     // TODO: High duty cycle connectable directed advertisements
                     // may terminate without an AdvertisingSetTerminated event.
-                    let conn = LeConnectionComplete::from(&mut evt.get());
+                    let conn: LeConnectionComplete = evt.get();
                     self.conn.insert(conn.handle, conn);
                 }
                 EventType::Le(AdvertisingSetTerminated) => {
-                    break LeAdvertisingSetTerminated::from(&mut evt.get())
+                    break evt.get();
                 }
                 _ => continue,
             }
@@ -182,11 +182,10 @@ impl AdvMonitor {
         // least one controller (RTL8761BUV) does the opposite, so we wait for a
         // short amount of time for a matching ConnectionComplete event, which
         // normally comes within 5ms.
-        if let Ok(Ok(evt)) =
-            tokio::time::timeout(Duration::from_millis(100), self.recv.next()).await
+        if let Ok(Ok(evt)) = tokio::time::timeout(Duration::from_millis(100), self.ctl.next()).await
         {
             if let EventType::Le(ConnectionComplete | EnhancedConnectionComplete) = evt.typ() {
-                let conn = LeConnectionComplete::from(&mut evt.get());
+                let conn: LeConnectionComplete = evt.get();
                 if conn.handle == cn {
                     return Ok(AdvEvent::Conn { conn, term });
                 }

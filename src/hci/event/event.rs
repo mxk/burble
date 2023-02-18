@@ -1,16 +1,14 @@
 use std::collections::VecDeque;
 use std::future::Future;
 use std::marker::PhantomData;
-use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{ready, Context, Poll, Waker};
+use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
 use structbuf::Unpacker;
 use tokio::time::timeout;
-use tokio_util::sync::CancellationToken;
-use tracing::{debug, trace};
+use tracing::{trace, warn};
 
 pub use {hci::*, le::*};
 
@@ -23,171 +21,6 @@ mod le;
 
 #[cfg(test)]
 mod tests;
-
-/// HCI event decoder.
-#[derive(Clone, Debug, Default)]
-#[must_use]
-pub struct Event<'a> {
-    typ: EventType,
-    status: Status,
-    cmd_quota: u8,
-    opcode: Opcode,
-    handle: u16,
-    params: Unpacker<'a>,
-}
-
-impl Event<'_> {
-    /// Returns the event type.
-    #[inline(always)]
-    #[must_use]
-    pub const fn typ(&self) -> EventType {
-        self.typ
-    }
-
-    /// Returns the event status or [`Status::Success`] for events without a
-    /// status parameter.
-    #[inline(always)]
-    #[must_use]
-    pub const fn status(&self) -> Status {
-        self.status
-    }
-
-    /// Returns the opcode from `CommandComplete` or `CommandStatus` events.
-    /// [`Opcode::None`] may be returned for either event that only updates the
-    /// command quota and for non-command events.
-    #[inline(always)]
-    #[must_use]
-    pub const fn opcode(&self) -> Opcode {
-        self.opcode
-    }
-
-    /// Returns the associated advertising handle or `None` for non-advertising
-    /// events.
-    #[inline]
-    #[must_use]
-    pub fn adv_handle(&self) -> Option<AdvHandle> {
-        #[allow(clippy::cast_possible_truncation)]
-        if self.typ.param_fmt().contains(EventFmt::ADV_HANDLE) {
-            AdvHandle::new(self.handle as u8)
-        } else {
-            None
-        }
-    }
-
-    /// Returns the associated connection handle or `None` for non-connection
-    /// events.
-    #[inline]
-    #[must_use]
-    pub fn conn_handle(&self) -> Option<ConnHandle> {
-        if self.typ.param_fmt().contains(EventFmt::CONN_HANDLE) {
-            ConnHandle::new(self.handle)
-        } else {
-            None
-        }
-    }
-
-    /// Returns the next `BD_ADDR`.
-    #[inline]
-    pub fn addr(&mut self) -> RawAddr {
-        // SAFETY: All bit patterns are valid
-        unsafe { self.params.read() }
-    }
-}
-
-impl<'a> Deref for Event<'a> {
-    type Target = Unpacker<'a>;
-
-    #[inline(always)]
-    fn deref(&self) -> &Self::Target {
-        &self.params
-    }
-}
-
-impl DerefMut for Event<'_> {
-    #[inline(always)]
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.params
-    }
-}
-
-impl<'a> TryFrom<&'a [u8]> for Event<'a> {
-    type Error = Error;
-
-    /// Tries to parse event header from `orig`. The subevent code for LE
-    /// events, event status, and handle parameters are also consumed.
-    fn try_from(orig: &'a [u8]) -> Result<Self> {
-        let mut evt = Unpacker::new(orig);
-        let Some(mut hdr) = evt.skip(EVT_HDR) else {
-            return Err(Error::InvalidEvent(Vec::from(orig)));
-        };
-        let code = hdr.u8();
-        if evt.len() != usize::from(hdr.u8()) {
-            return Err(Error::InvalidEvent(Vec::from(orig)));
-        }
-        let typ = match EventCode::try_from(code) {
-            Ok(EventCode::LeMetaEvent) => {
-                let subevent = evt.u8();
-                match SubeventCode::try_from(subevent) {
-                    Ok(subevent) => EventType::Le(subevent),
-                    Err(_) => {
-                        return Err(Error::UnknownEvent {
-                            code,
-                            subevent,
-                            params: Vec::from(evt.as_ref()),
-                        })
-                    }
-                }
-            }
-            Ok(code) => EventType::Hci(code),
-            Err(_) => {
-                return Err(Error::UnknownEvent {
-                    code,
-                    subevent: 0,
-                    params: Vec::from(evt.as_ref()),
-                })
-            }
-        };
-        let mut evt = Self {
-            typ,
-            params: evt,
-            ..Self::default()
-        };
-        match typ {
-            EventType::Hci(EventCode::CommandComplete) => {
-                evt.cmd_quota = evt.u8();
-                evt.opcode = Opcode::from(evt.u16());
-                if !evt.params.is_empty() {
-                    evt.status = Status::from(evt.u8());
-                }
-            }
-            EventType::Hci(EventCode::CommandStatus) => {
-                evt.status = Status::from(evt.u8());
-                evt.cmd_quota = evt.u8();
-                evt.opcode = Opcode::from(evt.u16());
-            }
-            _ => {
-                let pf = typ.param_fmt();
-                if pf.intersects(EventFmt::STATUS) {
-                    evt.status = Status::from(evt.u8());
-                }
-                if pf.intersects(EventFmt::HANDLE) {
-                    evt.handle = if pf.intersects(EventFmt::ADV_HANDLE | EventFmt::BIG_HANDLE) {
-                        u16::from(evt.u8())
-                    } else {
-                        evt.u16()
-                    };
-                }
-            }
-        }
-        Ok(evt)
-    }
-}
-
-impl From<&mut Event<'_>> for () {
-    /// Converts events without any additional parameters.
-    #[inline]
-    fn from(_: &mut Event) -> Self {}
-}
 
 /// HCI event or LE subevent code.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, strum::Display)]
@@ -203,8 +36,10 @@ impl EventType {
     #[inline]
     #[must_use]
     pub const fn is_cmd(self) -> bool {
-        use EventCode::{CommandComplete, CommandStatus};
-        matches!(self, Self::Hci(CommandComplete | CommandStatus))
+        matches!(
+            self,
+            Self::Hci(EventCode::CommandComplete | EventCode::CommandStatus)
+        )
     }
 
     /// Returns the format of the associated event parameters.
@@ -226,23 +61,292 @@ impl Default for EventType {
     }
 }
 
+/// Common event header. [`EventType`] determines the validity of other fields.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct EventHeader {
+    typ: EventType,
+    status: Status,
+    cmd_quota: u8,
+    opcode: Opcode,
+    handle: u16,
+}
+
+impl EventHeader {
+    /// Unpacks and validates the header of a received event, returning the
+    /// header and any remaining parameters.
+    fn unpack(raw: &[u8]) -> Result<(Self, &[u8])> {
+        let mut p = Unpacker::new(raw);
+        let (code, len) = (p.u8(), p.u8());
+        if p.len() != usize::from(len) || !p.is_ok() {
+            return Err(Error::InvalidEvent(Vec::from(raw)));
+        }
+        let typ = match EventCode::try_from(code) {
+            Ok(EventCode::LeMetaEvent) => {
+                let subevent = p.u8();
+                match SubeventCode::try_from(subevent) {
+                    Ok(subevent) => EventType::Le(subevent),
+                    Err(_) => {
+                        return Err(Error::UnknownEvent {
+                            code,
+                            subevent,
+                            params: Vec::from(p.as_ref()),
+                        })
+                    }
+                }
+            }
+            Ok(code) => EventType::Hci(code),
+            Err(_) => {
+                return Err(Error::UnknownEvent {
+                    code,
+                    subevent: 0,
+                    params: Vec::from(p.as_ref()),
+                })
+            }
+        };
+        let mut hdr = Self {
+            typ,
+            ..Self::default()
+        };
+        match typ {
+            EventType::Hci(EventCode::CommandComplete) => {
+                hdr.cmd_quota = p.u8();
+                hdr.opcode = Opcode::from(p.u16());
+                if !p.is_empty() {
+                    hdr.status = Status::from(p.u8());
+                }
+            }
+            EventType::Hci(EventCode::CommandStatus) => {
+                hdr.status = Status::from(p.u8());
+                hdr.cmd_quota = p.u8();
+                hdr.opcode = Opcode::from(p.u16());
+            }
+            _ => {
+                let pf = typ.param_fmt();
+                if pf.contains(EventFmt::STATUS) {
+                    hdr.status = Status::from(p.u8());
+                }
+                if pf.intersects(EventFmt::HANDLE) {
+                    hdr.handle = if pf.intersects(EventFmt::ADV_HANDLE | EventFmt::BIG_HANDLE) {
+                        u16::from(p.u8())
+                    } else {
+                        p.u16()
+                    };
+                }
+            }
+        }
+        if p.is_ok() {
+            Ok((hdr, p.into_inner()))
+        } else {
+            Err(Error::InvalidEvent(Vec::from(raw)))
+        }
+    }
+}
+
+/// HCI event handle. Provides access to common event metadata and methods for
+/// unpacking event parameters. The next event cannot be received until all
+/// existing event handles are dropped.
+///
+/// It is `!Send` to prevent it from being held across `await` points.
+#[derive(Debug)]
+#[must_use]
+#[repr(transparent)]
+pub struct Event(
+    tokio::sync::OwnedRwLockReadGuard<EventTransfer>,
+    PhantomData<*const ()>, // !Send
+);
+
+impl Event {
+    /// Creates a new event handle after unpacking and validating the event
+    /// header.
+    #[inline]
+    fn new(mut t: tokio::sync::OwnedRwLockWriteGuard<EventTransfer>) -> Result<Self> {
+        let raw = t.xfer.as_deref().expect("invalid event").as_ref();
+        let (hdr, params) = EventHeader::unpack(raw)?;
+        trace!("{hdr:?} {params:02X?}");
+        (t.hdr, t.params_off) = (hdr, raw.len() - params.len());
+        Ok(Self(t.downgrade(), PhantomData))
+    }
+
+    /// Returns the event type.
+    #[inline(always)]
+    #[must_use]
+    pub fn typ(&self) -> EventType {
+        self.0.hdr.typ
+    }
+
+    /// Returns the event status or [`Status::Success`] for events without a
+    /// status parameter.
+    #[inline(always)]
+    #[must_use]
+    pub fn status(&self) -> Status {
+        self.0.hdr.status
+    }
+
+    /// Returns the opcode from `CommandComplete` or `CommandStatus` events.
+    /// [`Opcode::None`] is returned for either event that only updates the
+    /// command quota and for non-command events.
+    #[inline(always)]
+    #[must_use]
+    pub fn opcode(&self) -> Opcode {
+        self.0.hdr.opcode
+    }
+
+    /// Returns the associated advertising handle or `None` for non-advertising
+    /// events.
+    #[inline]
+    #[must_use]
+    pub fn adv_handle(&self) -> Option<AdvHandle> {
+        #[allow(clippy::cast_possible_truncation)]
+        if self.typ().param_fmt().contains(EventFmt::ADV_HANDLE) {
+            AdvHandle::new(self.0.hdr.handle as u8)
+        } else {
+            None
+        }
+    }
+
+    /// Returns the associated connection handle or `None` for non-connection
+    /// events.
+    #[inline]
+    #[must_use]
+    pub fn conn_handle(&self) -> Option<ConnHandle> {
+        if self.typ().param_fmt().contains(EventFmt::CONN_HANDLE) {
+            ConnHandle::new(self.0.hdr.handle)
+        } else {
+            None
+        }
+    }
+
+    /// Unpacks event parameters.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `T` is not a representation of the event.
+    #[inline]
+    #[must_use]
+    pub(crate) fn get<T: FromEvent>(&self) -> T {
+        debug_assert!(T::matches(self), "event type mismatch for {}", self.typ());
+        self.unpack(T::unpack)
+    }
+
+    /// Unpacks successful command completion or status parameters. Returns an
+    /// error if the command failed.
+    ///
+    /// # Panics
+    ///
+    /// Panics for non-command events or if `T` is not a representation of the
+    /// event.
+    #[inline]
+    pub(crate) fn ok<T: FromEvent>(&self) -> Result<T> {
+        self.cmd_ok().map(|_| self.get())
+    }
+
+    /// Calls `f` to unpack successful command completion or status parameters.
+    /// Returns an error if the command failed.
+    ///
+    /// # Panics
+    ///
+    /// Panics for non-command events or if `T` is not a representation of the
+    /// event.
+    #[inline]
+    pub(crate) fn map_ok<T>(&self, f: impl FnOnce(&Self, &mut Unpacker) -> T) -> Result<T> {
+        self.cmd_ok().map(|_| self.unpack(f))
+    }
+
+    /// Ensures that the event represent successful command status or
+    /// completion.
+    pub(super) fn cmd_ok(&self) -> Result<()> {
+        assert!(self.typ().is_cmd(), "non-command {} event", self.typ());
+        if self.status().is_ok() {
+            Ok(())
+        } else {
+            Err(Error::CommandFailed {
+                opcode: self.opcode(),
+                status: self.status(),
+            })
+        }
+    }
+
+    /// Calls `f` to unpack event parameters.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `f` does not consume all event parameters or reads past the
+    /// end.
+    #[inline]
+    #[must_use]
+    fn unpack<T>(&self, f: impl FnOnce(&Self, &mut Unpacker) -> T) -> T {
+        let mut p = self.0.params();
+        let v = f(self, &mut p);
+        debug_assert!(p.is_ok(), "corrupt {} event", self.typ());
+        debug_assert!(p.is_empty(), "unconsumed {} event", self.typ());
+        v
+    }
+}
+
+/// Trait for unpacking event parameters.
+pub(crate) trait FromEvent {
+    /// Returns whether event `e` can be unpacked by this type.
+    #[inline(always)]
+    #[must_use]
+    fn matches(e: &Event) -> bool {
+        let _ = e;
+        true // Default to true for command completions and `()`
+    }
+
+    /// Unpacks event parameters.
+    #[must_use]
+    fn unpack(e: &Event, p: &mut Unpacker) -> Self;
+}
+
+/// Unpacker for events without parameters.
+impl FromEvent for () {
+    #[inline(always)]
+    fn unpack(_: &Event, _: &mut Unpacker) -> Self {}
+}
+
+/// Extension trait providing [`Event`]-specific [`Unpacker`] methods.
+pub(crate) trait EventUnpacker {
+    /// Returns the next `BD_ADDR`.
+    fn addr(&mut self) -> RawAddr;
+}
+
+impl EventUnpacker for Unpacker<'_> {
+    #[inline(always)]
+    fn addr(&mut self) -> RawAddr {
+        // SAFETY: All bit patterns are valid
+        unsafe { self.read() }
+    }
+}
+
 /// Received event router. When an event is received, all registered waiters
 /// with matching filters are notified in a broadcast fashion, and must process
 /// the event asynchronously before the next receive operation can happen.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(super) struct EventRouter {
     waiters: parking_lot::Mutex<Waiters>,
-    recv: tokio::sync::Mutex<SharedEventTransfer>,
+    xfer: tokio::sync::Mutex<Arc<tokio::sync::RwLock<EventTransfer>>>,
 }
 
 impl EventRouter {
-    // TODO: Use event masks for filtering. These should also determine which events
-    // are unmasked on the controller.
+    /// Creates a new event router.
+    #[inline]
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self {
+            waiters: parking_lot::Mutex::default(),
+            xfer: tokio::sync::Mutex::new(Arc::new(tokio::sync::RwLock::with_max_readers(
+                EventTransfer::default(),
+                64,
+            ))),
+        })
+    }
+
+    // TODO: Use event masks for filtering. These should also determine which
+    // events are unmasked on the controller.
 
     /// Returns an event receiver. Commands must specify their opcode.
-    pub fn recv(self: &Arc<Self>, opcode: Opcode) -> Result<EventReceiver> {
+    pub fn events(self: &Arc<Self>, opcode: Opcode) -> Result<EventStream> {
         let mut ws = self.waiters.lock();
-        if !matches!(opcode, Opcode::None) {
+        if opcode.is_some() {
             if ws.queue.iter().any(|w| w.opcode == opcode) {
                 return Err(Error::DuplicateCommands { opcode });
             }
@@ -256,15 +360,13 @@ impl EventRouter {
             }
         }
         let id = ws.next_id;
-        ws.next_id = ws.next_id.checked_add(1).unwrap();
+        ws.next_id += 1;
         ws.queue.push_back(Waiter {
             id,
             opcode,
-            ready: None,
-            waker: None,
+            ..Waiter::default()
         });
-        drop(ws);
-        Ok(EventReceiver {
+        Ok(EventStream {
             router: Arc::clone(self),
             id,
         })
@@ -272,109 +374,60 @@ impl EventRouter {
 
     /// Receives the next event, notifies registered waiters, and returns the
     /// event to the caller.
-    pub async fn recv_event(&self, t: &dyn host::Transport) -> Result<EventGuard> {
-        // Ensure that there are no calls to RwLock::write_owned() when
-        // RwLock::try_read_owned() is called. Since Tokio's RwLock is
-        // write-preferring, acquiring read locks would fail if there is a
-        // writer waiting.
-        let rwlock = self.recv.lock().await;
+    ///
+    /// # Panics
+    ///
+    /// Panics if there are multiple concurrent event receivers.
+    pub async fn next(&self, t: &dyn host::Transport) -> Result<Event> {
+        // Ensure that there is only one receiver. Since Tokio's RwLock is
+        // write-preferring, RwLock::try_read_owned() would fail if another
+        // receiver is blocked on RwLock::write_owned().
+        let rwlock = self.xfer.try_lock().expect("multiple event receivers");
 
-        // Wait for all read locks to be released and receive the next event.
-        // Clippy checks that EventGuards are not held across await points, so
+        // Wait for all event handles to be dropped and receive the next event.
+        // Clippy checks that Event handles are not held across await points, so
         // the caller can't deadlock, but it's possible that another Waiter with
-        // an event is not being awaited. The timeout should catch that.
-        let mut recv = (timeout(Duration::from_secs(3), Arc::clone(&rwlock).write_owned()).await)
-            .expect("recv_event stalled (EventGuard held for too long)");
-        recv.next(t).await.map_err(|e| {
-            if let Error::Host(e) = e {
-                let mut ws = self.waiters.lock();
-                ws.err = Some(e);
-                for w in &mut ws.queue {
-                    if let Some(waker) = w.waker.take() {
-                        waker.wake();
-                    }
+        // an event is not being polled. The timeout will detect that.
+        let mut xfer = timeout(Duration::from_secs(3), Arc::clone(&rwlock).write_owned())
+            .await
+            .expect("EventRouter stalled (Event not handled)");
+        xfer.next(t).await.map_err(|e| {
+            // Fatal transport error
+            let mut ws = self.waiters.lock();
+            ws.err = Some(e);
+            for w in &mut ws.queue {
+                if let Some(waker) = w.waker.take() {
+                    waker.wake();
                 }
             }
             e
         })?;
+        let evt = Event::new(xfer)?;
+        let hdr = &evt.0.hdr;
 
         // TODO: One second command timeout ([Vol 4] Part E, Section 4.4)
 
-        // Lock router before downgrading to a read lock
+        // Provide Events to registered waiters and notify them
         let mut ws = self.waiters.lock();
-        let evt = EventGuard::new(recv.downgrade());
-
-        // Provide EventGuards to registered waiters and notify them
-        if evt.typ.is_cmd() {
-            ws.cmd_quota = evt.cmd_quota;
-        }
-        let mut received = false;
-        for w in ws.queue.iter_mut().filter(|w| w.matches(&evt)) {
-            // try_read_owned() is guaranteed to succeed since we are
-            // holding our own read lock and there are no writers waiting.
-            w.ready = Some(Arc::clone(&rwlock).try_read_owned().unwrap());
-            if let Some(waker) = w.waker.take() {
-                waker.wake();
+        if hdr.typ.is_cmd() {
+            ws.cmd_quota = hdr.cmd_quota;
+            if hdr.opcode.is_some() {
+                (ws.queue.iter_mut().find(|w| w.opcode == hdr.opcode)).map_or_else(
+                    || warn!("Ignored {} command completion", hdr.opcode),
+                    |w| w.ready(&rwlock),
+                );
             }
-            received = true;
-        }
-        if !received {
-            trace!("Ignored event: {evt:?}");
+        } else {
+            let mut received = false;
+            for w in ws.queue.iter_mut().filter(|w| w.opcode.is_none()) {
+                w.ready(&rwlock);
+                received = true;
+            }
+            if !received {
+                trace!("Ignored event: {evt:?}");
+            }
         }
         Ok(evt)
-    }
-}
-
-/// Future that continuously receives HCI events.
-#[derive(Debug)]
-pub struct EventTransferTask {
-    h: tokio::task::JoinHandle<Result<()>>,
-    c: CancellationToken,
-    _g: tokio_util::sync::DropGuard,
-}
-
-impl EventTransferTask {
-    /// Creates a new event receiver task.
-    pub(super) fn new(host: Host) -> Self {
-        let c = CancellationToken::new();
-        Self {
-            h: tokio::spawn(Self::run(host, c.clone())),
-            c: c.clone(),
-            _g: c.drop_guard(),
-        }
-    }
-
-    /// Stops event processing.
-    pub async fn disable(self) -> Result<()> {
-        self.c.cancel();
-        self.h.await.unwrap()
-    }
-
-    /// Receives HCI events until cancellation.
-    async fn run(h: Host, c: CancellationToken) -> Result<()> {
-        debug!("Event receiver task started");
-        loop {
-            let r: Result<EventGuard> = tokio::select! {
-                r = h.event() => r,
-                _ = c.cancelled() => {
-                    debug!("Event receiver task terminating");
-                    return Ok(());
-                }
-            };
-            if let Err(e) = r {
-                // TODO: Ignore certain errors, like short write
-                debug!("Event receiver task error: {e}");
-                return Err(e);
-            }
-        }
-    }
-}
-
-impl Future for EventTransferTask {
-    type Output = Result<()>;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        Poll::Ready(ready!(Pin::new(&mut self.h).poll(cx)).unwrap())
     }
 }
 
@@ -402,7 +455,7 @@ impl Default for Waiters {
 }
 
 /// Registered event waiter.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct Waiter {
     id: u64,
     opcode: Opcode,
@@ -411,21 +464,32 @@ struct Waiter {
 }
 
 impl Waiter {
-    /// Returns whether the waiter should receive event `e`.
-    #[inline(always)]
-    fn matches(&self, e: &EventGuard) -> bool {
-        e.opcode == self.opcode && !(matches!(self.opcode, Opcode::None) && e.typ.is_cmd())
+    /// Provides a new event to the waiter and notifies the receiver.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `try_read_owned()` fails. The caller can prevent this by
+    /// holding another read lock and ensuring that there are no writers
+    /// waiting.
+    #[inline]
+    fn ready(&mut self, xfer: &Arc<tokio::sync::RwLock<EventTransfer>>) {
+        self.ready = Some(Arc::clone(xfer).try_read_owned().unwrap());
+        if let Some(w) = self.waker.take() {
+            w.wake();
+        }
     }
 }
 
-/// Guard that unregisters the event waiter when dropped.
+/// HCI event stream. The owner is guaranteed to receive all relevant events
+/// after the stream is created, and must continuously poll [`NextEvent`] future
+/// to avoid blocking event delivery.
 #[derive(Debug)]
-pub(crate) struct EventReceiver {
+pub(crate) struct EventStream {
     id: u64,
     router: Arc<EventRouter>,
 }
 
-impl EventReceiver {
+impl EventStream {
     /// Returns a future that resolves to the next event.
     #[inline(always)]
     pub fn next(&mut self) -> NextEvent {
@@ -436,21 +500,21 @@ impl EventReceiver {
 /// Next event future. This future is cancel safe.
 #[derive(Debug)]
 #[repr(transparent)]
-pub(crate) struct NextEvent<'a>(&'a mut EventReceiver);
+pub(crate) struct NextEvent<'a>(&'a mut EventStream);
 
 impl Future for NextEvent<'_> {
-    type Output = Result<EventGuard>;
+    type Output = Result<Event>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut ws = self.0.router.waiters.lock();
         if let Some(e) = ws.err {
-            return Poll::Ready(Err(e.into()));
+            return Poll::Ready(Err(Error::Host(e)));
         }
         let w = (ws.queue.iter_mut())
             .find(|w| w.id == self.0.id)
             .expect("unregistered event waiter");
-        if let Some(ready) = w.ready.take() {
-            Poll::Ready(Ok(EventGuard::new(ready)))
+        if let Some(xfer) = w.ready.take() {
+            Poll::Ready(Ok(Event(xfer, PhantomData)))
         } else {
             w.waker = Some(cx.waker().clone());
             Poll::Pending
@@ -458,7 +522,7 @@ impl Future for NextEvent<'_> {
     }
 }
 
-impl Drop for EventReceiver {
+impl Drop for EventStream {
     fn drop(&mut self) {
         let mut ws = self.router.waiters.lock();
         if let Some(i) = ws.queue.iter().position(|w| w.id == self.id) {
@@ -469,125 +533,42 @@ impl Drop for EventReceiver {
     }
 }
 
-/// Guard providing access to a received event. The next event cannot be
-/// received until all guards are dropped. It is `!Send` to prevent it from
-/// being held across `await` points.
-#[derive(Debug)]
-#[must_use]
-pub struct EventGuard {
-    r: tokio::sync::OwnedRwLockReadGuard<EventTransfer>,
-    _not_send: PhantomData<*const ()>,
-}
-
-impl EventGuard {
-    /// Creates an event read lock that is !Send and !Sync.
-    #[inline]
-    fn new(r: tokio::sync::OwnedRwLockReadGuard<EventTransfer>) -> Self {
-        Self {
-            r,
-            _not_send: PhantomData,
-        }
-    }
-
-    /// Returns the received event.
-    #[inline]
-    pub fn get(&self) -> Event {
-        // SAFETY: EventGuard can only contain a valid Event
-        unsafe { self.r.event().unwrap_unchecked() }
-    }
-
-    /// Returns the received event if it represents successful command
-    /// completion.
-    #[inline]
-    pub fn ok(&self) -> Result<Event> {
-        if !self.typ.is_cmd() {
-            return Err(Error::NonCommandEvent { typ: self.typ });
-        }
-        if !self.status.is_ok() {
-            return Err(Error::CommandFailed {
-                opcode: self.opcode,
-                status: self.status,
-            });
-        }
-        Ok(self.get())
-    }
-}
-
-impl Deref for EventGuard {
-    type Target = Event<'static>;
-
-    /// Provides access to `Event` metadata without parameters. Use
-    /// [`Self::get()`] or [`Self::ok()`] to get a decodable event.
-    #[inline]
-    fn deref(&self) -> &Self::Target {
-        &self.r.evt
-    }
-}
-
-// TODO: This should work for all events?
-
-impl<T: for<'a, 'b> From<&'a mut Event<'b>>> From<EventGuard> for Result<T> {
-    /// Converts `CommandComplete` parameters to a concrete type.
-    #[inline]
-    fn from(g: EventGuard) -> Self {
-        let mut evt = g.ok()?;
-        let r = T::from(&mut evt);
-        debug_assert!(evt.params.is_empty(), "unconsumed event");
-        debug_assert!(evt.params.is_ok(), "corrupt event");
-        Ok(r)
-    }
-}
-
-type SharedEventTransfer = Arc<tokio::sync::RwLock<EventTransfer>>;
-
 /// HCI event transfer.
 #[derive(Debug, Default)]
 struct EventTransfer {
     xfer: Option<Box<dyn host::Transfer>>,
-    evt: Event<'static>,
-    params: usize,
+    hdr: EventHeader,
+    params_off: usize,
 }
 
 impl EventTransfer {
-    /// Receives and validates the next event.
-    async fn next(&mut self, t: &dyn host::Transport) -> Result<()> {
-        self.params = 0;
-        let xfer = {
-            let xfer = self.xfer.take().map_or_else(
-                || t.event(),
-                |mut xfer| {
-                    xfer.reset();
-                    xfer
-                },
-            );
-            self.xfer = Some(xfer.submit()?.await?);
-            // SAFETY: xfer can't be None
-            unsafe { self.xfer.as_ref().unwrap_unchecked().as_ref() }
-        };
-        let buf = xfer.as_ref();
-        let r = Event::try_from(buf);
-        trace!("{r:?}");
-        r.map(|evt| {
-            self.evt = Event {
-                params: Unpacker::default(),
-                ..evt
-            };
-            self.params = buf.len() - evt.params.len();
-        })
+    /// Receives the next event.
+    async fn next(&mut self, t: &dyn host::Transport) -> host::Result<()> {
+        self.hdr = EventHeader::default();
+        self.params_off = 0;
+        let xfer = self.xfer.take().map_or_else(
+            || t.event(),
+            |mut xfer| {
+                xfer.reset();
+                xfer
+            },
+        );
+        self.xfer = Some(xfer.submit()?.await?);
+        Ok(())
     }
 
-    /// Returns the received event or [`None`] if the most recent call to
-    /// `next()` failed.
+    /// Returns the event parameters after the header or an invalid [`Unpacker`]
+    /// if there is no valid event.
     #[inline]
-    #[must_use]
-    fn event(&self) -> Option<Event> {
-        (self.params >= EVT_HDR).then_some(Event {
-            // SAFETY: We have a valid Event and EVT_HDR <= self.params <= buf.len()
-            params: Unpacker::new(unsafe {
-                let xfer = self.xfer.as_ref().unwrap_unchecked().as_ref();
-                xfer.as_ref().get_unchecked(self.params..)
-            }),
-            ..self.evt
+    fn params(&self) -> Unpacker {
+        if self.params_off < EVT_HDR {
+            return Unpacker::invalid();
+        }
+        // SAFETY: We have a valid Event and
+        // `EVT_HDR <= self.params_off <= xfer.len()`
+        Unpacker::new(unsafe {
+            let xfer = self.xfer.as_deref().unwrap_unchecked();
+            xfer.as_ref().get_unchecked(self.params_off..)
         })
     }
 }

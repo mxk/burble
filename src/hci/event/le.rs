@@ -18,15 +18,24 @@ pub struct LeConnectionComplete {
     pub central_clock_accuracy: u16,
 }
 
-#[allow(clippy::fallible_impl_from)]
-impl From<&mut Event<'_>> for LeConnectionComplete {
-    fn from(e: &mut Event<'_>) -> Self {
-        let role = Role::try_from(e.u8()).expect("invalid role");
-        let peer_addr = Addr::peer(e.u8(), e.addr());
+impl FromEvent for LeConnectionComplete {
+    #[inline]
+    fn matches(e: &Event) -> bool {
+        matches!(
+            e.typ(),
+            EventType::Le(
+                SubeventCode::ConnectionComplete | SubeventCode::EnhancedConnectionComplete
+            )
+        )
+    }
+
+    fn unpack(e: &Event, p: &mut Unpacker) -> Self {
+        let role = Role::try_from(p.u8()).expect("invalid role");
+        let peer_addr = Addr::peer(p.u8(), p.addr());
         let (local_rpa, peer_rpa) = match e.typ() {
             EventType::Le(SubeventCode::ConnectionComplete) => Default::default(),
-            EventType::Le(SubeventCode::EnhancedConnectionComplete) => (e.addr(), e.addr()),
-            t => panic!("Invalid event type: {t}"),
+            EventType::Le(SubeventCode::EnhancedConnectionComplete) => (p.addr(), p.addr()),
+            typ => unreachable!("unexpected {typ} event"),
         };
         Self {
             status: e.status(),
@@ -35,10 +44,10 @@ impl From<&mut Event<'_>> for LeConnectionComplete {
             peer_addr,
             local_rpa,
             peer_rpa,
-            conn_interval: duration_1250us(e.u16()),
-            peripheral_latency: e.u16(),
-            supervision_timeout: duration_10ms(e.u16()),
-            central_clock_accuracy: match e.u8() {
+            conn_interval: duration_1250us(p.u16()),
+            peripheral_latency: p.u16(),
+            supervision_timeout: duration_10ms(p.u16()),
+            central_clock_accuracy: match p.u8() {
                 0x00 => 500,
                 0x01 => 250,
                 0x02 => 150,
@@ -62,13 +71,17 @@ pub struct LeLongTermKeyRequest {
     pub ediv: u16,
 }
 
-#[allow(clippy::fallible_impl_from)]
-impl From<&mut Event<'_>> for LeLongTermKeyRequest {
-    fn from(e: &mut Event<'_>) -> Self {
+impl FromEvent for LeLongTermKeyRequest {
+    #[inline]
+    fn matches(e: &Event) -> bool {
+        matches!(e.typ(), EventType::Le(SubeventCode::LongTermKeyRequest))
+    }
+
+    fn unpack(e: &Event, p: &mut Unpacker) -> Self {
         Self {
             conn_handle: e.conn_handle().unwrap(),
-            rand: e.u64(),
-            ediv: e.u16(),
+            rand: p.u64(),
+            ediv: p.u16(),
         }
     }
 }
@@ -83,21 +96,28 @@ pub struct LeAdvertisingSetTerminated {
     pub num_events: u8,
 }
 
-#[allow(clippy::fallible_impl_from)]
-impl From<&mut Event<'_>> for LeAdvertisingSetTerminated {
-    fn from(e: &mut Event<'_>) -> Self {
+impl FromEvent for LeAdvertisingSetTerminated {
+    #[inline]
+    fn matches(e: &Event) -> bool {
+        matches!(
+            e.typ(),
+            EventType::Le(SubeventCode::AdvertisingSetTerminated)
+        )
+    }
+
+    fn unpack(e: &Event, p: &mut Unpacker) -> Self {
         Self {
             status: e.status(),
             adv_handle: e.adv_handle().unwrap(),
             conn_handle: {
-                let cn = e.u16();
+                let cn = p.u16();
                 if e.status().is_ok() {
                     ConnHandle::new(cn)
                 } else {
                     None
                 }
             },
-            num_events: e.u8(),
+            num_events: p.u8(),
         }
     }
 }

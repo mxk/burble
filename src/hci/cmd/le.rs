@@ -1,3 +1,5 @@
+use structbuf::Unpacker;
+
 use burble_crypto::LTK;
 
 use crate::hci::*;
@@ -11,7 +13,7 @@ impl Host {
         let r = self.exec_params(Opcode::LeSetEventMask, |cmd| {
             cmd.u64(enable.0);
         });
-        r.await?.into()
+        r.await?.ok()
     }
 
     /// Returns the controller's packet size and count limits. ISO limits will
@@ -22,10 +24,10 @@ impl Host {
         {
             let r = self.exec(Opcode::LeReadBufferSizeV2).await?;
             if r.status() != Status::UnknownCommand {
-                return r.into();
+                return r.ok();
             }
         }
-        self.exec(Opcode::LeReadBufferSize).await?.into()
+        self.exec(Opcode::LeReadBufferSize).await?.ok()
     }
 
     /// Replies to an `HCI_LE_Long_Term_Key_Request` event from the controller,
@@ -47,7 +49,7 @@ impl Host {
             });
             r.await?
         };
-        assert_eq!(ConnHandle::new(r.get().u16()), Some(cn));
+        assert_eq!(r.map_ok(|_, p| ConnHandle::new(p.u16()))?, Some(cn));
         Ok(())
     }
 
@@ -61,7 +63,7 @@ impl Host {
         let r = self.exec_params(Opcode::LeSetAdvertisingSetRandomAddress, |cmd| {
             cmd.u8(h).put(a);
         });
-        r.await?.into()
+        r.await?.ok()
     }
 
     /// Sets advertising parameters ([Vol 4] Part E, Section 7.8.53).
@@ -90,7 +92,7 @@ impl Host {
                 .u8(p.sid)
                 .bool(p.scan_request_notify);
         });
-        r.await?.into()
+        r.await?.map_ok(|_, p| TxPower::new(p.i8()))
     }
 
     /// Sets the data used in advertising PDUs that have a data field
@@ -106,7 +108,7 @@ impl Host {
             cmd.u8(h).u8(op).bool(dont_frag);
             cmd.u8(u8::try_from(data.len()).unwrap()).put(data);
         });
-        r.await?.into()
+        r.await?.ok()
     }
 
     /// Sets the data used in scan response PDUs
@@ -122,7 +124,7 @@ impl Host {
             cmd.u8(h).u8(op).bool(dont_frag);
             cmd.u8(u8::try_from(data.len()).unwrap()).put(data);
         });
-        r.await?.into()
+        r.await?.ok()
     }
 
     /// Enables or disables one or more advertising sets
@@ -141,14 +143,14 @@ impl Host {
                 cmd.u8(c.max_events);
             }
         });
-        r.await?.into()
+        r.await?.ok()
     }
 
     /// Returns the maximum length of advertisement or scan response data
     /// supported by the controller ([Vol 4] Part E, Section 7.8.57).
     pub async fn le_read_maximum_advertising_data_length(&self) -> Result<usize> {
         let r = self.exec(Opcode::LeReadMaximumAdvertisingDataLength);
-        Ok(usize::from(r.await?.ok()?.u16()))
+        r.await?.map_ok(|_, p| usize::from(p.u16()))
     }
 
     /// Returns the maximum number of advertising sets supported by the
@@ -156,7 +158,7 @@ impl Host {
     /// dynamic.
     pub async fn le_read_number_of_supported_advertising_sets(&self) -> Result<u8> {
         let r = self.exec(Opcode::LeReadNumberOfSupportedAdvertisingSets);
-        Ok(r.await?.ok()?.u8())
+        r.await?.map_ok(|_, p| p.u8())
     }
 
     /// Removes an advertising set from the controller
@@ -165,13 +167,13 @@ impl Host {
         let r = self.exec_params(Opcode::LeRemoveAdvertisingSet, |cmd| {
             cmd.u8(h);
         });
-        r.await?.into()
+        r.await?.ok()
     }
 
     /// Removes all advertising sets from the controller
     /// ([Vol 4] Part E, Section 7.8.60).
     pub async fn le_clear_advertising_sets(&self) -> Result<()> {
-        self.exec(Opcode::LeClearAdvertisingSets).await?.into()
+        self.exec(Opcode::LeClearAdvertisingSets).await?.ok()
     }
 
     /// Sets the parameters for periodic advertising
@@ -189,7 +191,7 @@ impl Host {
                 .u16(ticks_1250us(max).unwrap_or(0))
                 .u16(p.bits());
         });
-        r.await?.into()
+        r.await?.ok()
     }
 
     /// Sets the data used in periodic advertising PDUs
@@ -206,7 +208,7 @@ impl Host {
                 .u8(u8::try_from(data.len()).unwrap())
                 .put(data);
         });
-        r.await?.into()
+        r.await?.ok()
     }
 
     /// Enables or disables periodic advertising
@@ -220,7 +222,7 @@ impl Host {
         let r = self.exec_params(Opcode::LeSetPeriodicAdvertisingEnable, |cmd| {
             cmd.u8(u8::from(include_adi) << 1 | u8::from(enable)).u8(h);
         });
-        r.await?.into()
+        r.await?.ok()
     }
 }
 
@@ -252,14 +254,14 @@ pub struct LeBufferSize {
     pub iso_num_pkts: u8,
 }
 
-impl From<&mut Event<'_>> for LeBufferSize {
-    fn from(e: &mut Event) -> Self {
+impl FromEvent for LeBufferSize {
+    fn unpack(e: &Event, p: &mut Unpacker) -> Self {
         let v2 = e.opcode() == Opcode::LeReadBufferSizeV2;
         Self {
-            acl_data_len: e.u16(),
-            acl_num_pkts: e.u8(),
-            iso_data_len: v2.then(|| e.u16()).unwrap_or_default(),
-            iso_num_pkts: v2.then(|| e.u8()).unwrap_or_default(),
+            acl_data_len: p.u16(),
+            acl_num_pkts: p.u8(),
+            iso_data_len: v2.then(|| p.u16()).unwrap_or_default(),
+            iso_num_pkts: v2.then(|| p.u8()).unwrap_or_default(),
         }
     }
 }

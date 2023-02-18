@@ -41,7 +41,7 @@ async fn main() -> Result<()> {
     ctlr.init()?;
     let host = hci::Host::new(Arc::new(ctlr));
 
-    let hci_mon = host.enable_events();
+    let event_loop = host.event_loop();
     host.init().await?;
     info!("Local version: {:?}", host.read_local_version().await?);
     let local_addr = host.read_bd_addr().await?;
@@ -57,7 +57,7 @@ async fn main() -> Result<()> {
 
     advertise(&host).await?;
     let _ = cm.await?;
-    Ok(hci_mon.disable().await?)
+    Ok(event_loop.stop().await?)
 }
 
 async fn advertise(host: &hci::Host) -> Result<()> {

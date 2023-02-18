@@ -11,12 +11,17 @@ pub struct DisconnectionComplete {
 }
 
 #[allow(clippy::fallible_impl_from)]
-impl From<&mut Event<'_>> for DisconnectionComplete {
-    fn from(e: &mut Event<'_>) -> Self {
+impl FromEvent for DisconnectionComplete {
+    #[inline]
+    fn matches(e: &Event) -> bool {
+        matches!(e.typ(), EventType::Hci(EventCode::DisconnectionComplete))
+    }
+
+    fn unpack(e: &Event, p: &mut Unpacker) -> Self {
         Self {
             status: e.status(),
             handle: e.conn_handle().unwrap(),
-            reason: Status::from(e.u8()),
+            reason: Status::from(p.u8()),
         }
     }
 }
@@ -26,12 +31,17 @@ impl From<&mut Event<'_>> for DisconnectionComplete {
 #[repr(transparent)]
 pub struct NumberOfCompletedPackets(SmallVec<[(ConnHandle, u16); 4]>);
 
-impl From<&mut Event<'_>> for NumberOfCompletedPackets {
-    fn from(e: &mut Event<'_>) -> Self {
-        let n = usize::from(e.u8());
+impl FromEvent for NumberOfCompletedPackets {
+    #[inline]
+    fn matches(e: &Event) -> bool {
+        matches!(e.typ(), EventType::Hci(EventCode::NumberOfCompletedPackets))
+    }
+
+    fn unpack(_: &Event, p: &mut Unpacker) -> Self {
+        let n = usize::from(p.u8());
         let mut v = SmallVec::with_capacity(n);
         for _ in 0..n {
-            if let (Some(cn), n) = (ConnHandle::new(e.u16()), e.u16()) {
+            if let (Some(cn), n) = (ConnHandle::new(p.u16()), p.u16()) {
                 v.push((cn, n));
             }
         }

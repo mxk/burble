@@ -75,6 +75,22 @@ pub enum Opcode {
     LeSetPeriodicAdvertisingEnable = Le.ocf(0x0040),
 }
 
+impl Opcode {
+    /// Returns whether the opcode is `None`.
+    #[inline(always)]
+    #[must_use]
+    pub const fn is_none(self) -> bool {
+        matches!(self, Self::None)
+    }
+
+    /// Returns whether the opcode is other than `None`.
+    #[inline(always)]
+    #[must_use]
+    pub const fn is_some(self) -> bool {
+        !self.is_none()
+    }
+}
+
 // Opcode group field definitions.
 #[derive(Clone, Copy)]
 #[repr(u16)]
@@ -562,7 +578,7 @@ pub enum Status {
 
 impl Status {
     /// Returns whether status is `Success`.
-    #[inline]
+    #[inline(always)]
     #[must_use]
     pub const fn is_ok(self) -> bool {
         matches!(self, Status::Success)

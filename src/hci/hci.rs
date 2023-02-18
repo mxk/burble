@@ -1,11 +1,16 @@
 //! Host Controller Interface ([Vol 4] Part E).
 
 use std::fmt::Debug;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{ready, Context, Poll};
 use std::time::Duration;
 
 use structbuf::{Pack, Packer};
 use strum::IntoEnumIterator;
+use tokio_util::sync::CancellationToken;
+use tracing::{debug, error};
 
 pub use {adv::*, cmd::*, consts::*, event::*, handle::*};
 
@@ -47,8 +52,6 @@ pub enum Error {
     CommandFailed { opcode: Opcode, status: Status },
     #[error("{opcode} command aborted: {status}")]
     CommandAborted { opcode: Opcode, status: Status },
-    #[error("non-command event: {typ}")]
-    NonCommandEvent { typ: EventType },
 }
 
 impl Error {
@@ -64,8 +67,7 @@ impl Error {
             | InvalidEvent(_)
             | UnknownEvent { .. }
             | DuplicateCommands { .. }
-            | CommandQuotaExceeded
-            | NonCommandEvent { .. } => None,
+            | CommandQuotaExceeded => None,
         }
     }
 }
@@ -73,11 +75,15 @@ impl Error {
 /// Common HCI result type.
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// Reusable HCI command transfer.
+type CommandTransfer = parking_lot::Mutex<Option<Box<dyn host::Transfer>>>;
+
 /// Host-side of a Host Controller Interface.
 #[derive(Clone, Debug)]
 pub struct Host {
     transport: Arc<dyn host::Transport>,
     router: Arc<EventRouter>,
+    cmd: Arc<CommandTransfer>,
 }
 
 impl Host {
@@ -87,7 +93,8 @@ impl Host {
     pub fn new(t: Arc<dyn host::Transport>) -> Self {
         Self {
             transport: t,
-            router: Arc::new(EventRouter::default()),
+            router: EventRouter::new(),
+            cmd: Arc::new(CommandTransfer::default()),
         }
     }
 
@@ -100,8 +107,8 @@ impl Host {
 
     /// Returns an event receiver.
     #[inline]
-    pub(crate) fn recv(&self) -> Result<EventReceiver> {
-        self.router.recv(Opcode::None)
+    pub(crate) fn events(&self) -> Result<EventStream> {
+        self.router.events(Opcode::None)
     }
 
     /// Performs a reset and basic controller initialization
@@ -126,31 +133,42 @@ impl Host {
 
     /// Receives the next HCI event, routes it to registered waiters, and
     /// returns it to the caller. This is a low-level method. In most cases,
-    /// `enable_events` is a better choice.
+    /// [`Self::event_loop`] is a better choice.
     ///
     /// No events are received, including command completion, unless the
     /// returned future is polled, and no new events can be received until the
-    /// returned guard is dropped. If there are multiple concurrent calls to
-    /// this method, only one will resolve to the received event and the others
-    /// will continue to wait.
+    /// returned event handle is dropped.
+    ///
+    /// This method is not cancel safe because dropping the future may cause an
+    /// event to be lost.
+    ///
+    /// # Panics
+    ///
+    /// Panics if there are multiple concurrent event receivers.
     #[inline]
-    pub async fn event(&self) -> Result<EventGuard> {
-        self.router.recv_event(&*self.transport).await
+    async fn next_event(&self) -> Result<Event> {
+        self.router.next(self.transport.as_ref()).await
     }
 
-    /// Spawns a task that continuously receives HCI events until an error is
-    /// encountered. The task is canceled when the returned future is dropped.
+    /// Spawns a task that continuously receives HCI events until a fatal error
+    /// is encountered. The task is canceled when the returned future is
+    /// dropped.
     #[inline]
     #[must_use]
-    pub fn enable_events(&self) -> EventTransferTask {
-        EventTransferTask::new(self.clone())
+    pub fn event_loop(&self) -> EventLoop {
+        let c = CancellationToken::new();
+        EventLoop {
+            h: tokio::spawn(EventLoop::run(self.clone(), c.clone())),
+            c: c.clone(),
+            _g: c.drop_guard(),
+        }
     }
 
     /// Executes a command with no parameters and returns the command completion
     /// event.
     #[inline]
-    async fn exec(&self, opcode: Opcode) -> Result<EventGuard> {
-        Command::new(self, opcode).exec().await
+    async fn exec(&self, opcode: Opcode) -> Result<Event> {
+        self.exec_params(opcode, |_| {}).await
     }
 
     /// Executes a command, calling `f` to provide parameters, and returns the
@@ -160,10 +178,69 @@ impl Host {
         &self,
         opcode: Opcode,
         f: impl FnOnce(&mut Packer) + Send,
-    ) -> Result<EventGuard> {
+    ) -> Result<Event> {
         let mut cmd = Command::new(self, opcode);
         f(&mut cmd.append());
-        cmd.exec().await
+        cmd.exec().await.map_err(|e| {
+            error!("{opcode} error: {e}");
+            e
+        })
+    }
+
+    /// Returns a new command transfer.
+    #[inline]
+    fn new_cmd(&self) -> Box<dyn host::Transfer> {
+        self.cmd.lock().take().map_or_else(
+            || self.transport.command(),
+            |mut cmd| {
+                cmd.reset();
+                cmd
+            },
+        )
+    }
+}
+
+/// Future that continuously receives HCI events.
+#[derive(Debug)]
+pub struct EventLoop {
+    h: tokio::task::JoinHandle<Result<()>>,
+    c: CancellationToken,
+    _g: tokio_util::sync::DropGuard,
+}
+
+impl EventLoop {
+    /// Stops event processing.
+    #[inline]
+    pub async fn stop(self) -> Result<()> {
+        self.c.cancel();
+        self.h.await.unwrap()
+    }
+
+    /// Receives HCI events until cancellation.
+    async fn run(h: Host, c: CancellationToken) -> Result<()> {
+        debug!("Event loop started");
+        loop {
+            let r: Result<Event> = tokio::select! {
+                r = h.next_event() => r,
+                _ = c.cancelled() => {
+                    debug!("Event loop terminating");
+                    return Ok(());
+                }
+            };
+            if let Err(e) = r {
+                // TODO: Ignore certain errors, like short write
+                error!("Event loop error: {e}");
+                return Err(e);
+            }
+        }
+    }
+}
+
+impl Future for EventLoop {
+    type Output = Result<()>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        Poll::Ready(ready!(Pin::new(&mut self.h).poll(cx)).unwrap())
     }
 }
 

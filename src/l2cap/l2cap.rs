@@ -59,7 +59,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// information.
 #[derive(Debug)]
 pub struct ChanManager {
-    ctl: hci::EventReceiver,
+    ctl: hci::EventStream,
     conns: HashMap<LeU, Conn>,
     rm: ResManager,
     local_addr: Addr,
@@ -69,7 +69,7 @@ impl ChanManager {
     /// Creates a new Channel Manager. `local_addr` is the address used to
     /// establish new connections, which is then used by the Security Manager.
     pub async fn new(host: &hci::Host, local_addr: Addr) -> Result<Self> {
-        let ctl = host.recv()?;
+        let ctl = host.events()?;
         let rm = ResManager::new(host).await?;
         // TODO: Figure out how to get the local address on a per-connection
         // basis.
@@ -86,8 +86,8 @@ impl ChanManager {
     pub async fn recv(&mut self) -> Result<LeU> {
         loop {
             tokio::select! {
-                r = self.ctl.next() => {
-                    if let Some(link) = self.handle_event(&mut r?.get()) {
+                evt = self.ctl.next() => {
+                    if let Some(link) = self.handle_event(&evt?) {
                         return Ok(link);
                     }
                 }
@@ -109,19 +109,19 @@ impl ChanManager {
     }
 
     /// Handles HCI control events.
-    fn handle_event(&mut self, evt: &mut hci::Event) -> Option<LeU> {
+    fn handle_event(&mut self, evt: &hci::Event) -> Option<LeU> {
         use hci::{EventCode, EventType::*, SubeventCode};
         match evt.typ() {
             Le(SubeventCode::ConnectionComplete | SubeventCode::EnhancedConnectionComplete) => {
-                return self.on_connect(&hci::LeConnectionComplete::from(evt));
+                return self.on_connect(&evt.get());
             }
             Hci(EventCode::DisconnectionComplete) => {
-                self.on_disconnect(hci::DisconnectionComplete::from(evt));
+                self.on_disconnect(evt.get());
             }
             Hci(EventCode::NumberOfCompletedPackets) => {
-                (self.rm.tx).on_num_completed(&hci::NumberOfCompletedPackets::from(evt));
+                self.rm.tx.on_num_completed(&evt.get());
             }
-            _ => unreachable!("Unhandled Channel Manager event: {}", evt.typ()),
+            _ => {}
         }
         None
     }

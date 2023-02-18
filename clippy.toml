@@ -1,0 +1,3 @@
+await-holding-invalid-types = [
+    { path = "burble::hci::Event", reason = "Event holds a lock that prevents the next event from being received" }
+]
