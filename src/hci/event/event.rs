@@ -22,49 +22,10 @@ mod le;
 #[cfg(test)]
 mod tests;
 
-/// HCI event or LE subevent code.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, strum::Display)]
-#[allow(clippy::exhaustive_enums)]
-pub enum EventType {
-    Hci(EventCode),
-    Le(SubeventCode),
-}
-
-impl EventType {
-    /// Returns whether the event type is either `CommandStatus` or
-    /// `CommandComplete`.
-    #[inline]
-    #[must_use]
-    pub const fn is_cmd(self) -> bool {
-        matches!(
-            self,
-            Self::Hci(EventCode::CommandComplete | EventCode::CommandStatus)
-        )
-    }
-
-    /// Returns the format of the associated event parameters.
-    #[inline]
-    #[must_use]
-    pub const fn param_fmt(self) -> EventFmt {
-        match self {
-            Self::Hci(c) => c.param_fmt(),
-            Self::Le(c) => c.param_fmt(),
-        }
-    }
-}
-
-impl Default for EventType {
-    /// Returns an invalid `EventType`.
-    #[inline]
-    fn default() -> Self {
-        Self::Hci(EventCode::LeMetaEvent)
-    }
-}
-
-/// Common event header. [`EventType`] determines the validity of other fields.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+/// Common event header. [`EventCode`] determines the validity of other fields.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct EventHeader {
-    typ: EventType,
+    code: EventCode,
     status: Status,
     cmd_quota: u8,
     opcode: Opcode,
@@ -80,48 +41,40 @@ impl EventHeader {
         if p.len() != usize::from(len) || !p.is_ok() {
             return Err(Error::InvalidEvent(Vec::from(raw)));
         }
-        let typ = match EventCode::try_from(code) {
-            Ok(EventCode::LeMetaEvent) => {
-                let subevent = p.u8();
-                match SubeventCode::try_from(subevent) {
-                    Ok(subevent) => EventType::Le(subevent),
-                    Err(_) => {
-                        return Err(Error::UnknownEvent {
-                            code,
-                            subevent,
-                            params: Vec::from(p.as_ref()),
-                        })
-                    }
-                }
-            }
-            Ok(code) => EventType::Hci(code),
-            Err(_) => {
+        let subcode = if code == EventCode::LeMetaEvent as u8 {
+            p.u8()
+        } else {
+            0
+        };
+        let code = match EventCode::try_from(u16::from(subcode) << 8 | u16::from(code)) {
+            Ok(code) if code != EventCode::LeMetaEvent => code,
+            _ => {
                 return Err(Error::UnknownEvent {
                     code,
-                    subevent: 0,
+                    subcode,
                     params: Vec::from(p.as_ref()),
                 })
             }
         };
         let mut hdr = Self {
-            typ,
+            code,
             ..Self::default()
         };
-        match typ {
-            EventType::Hci(EventCode::CommandComplete) => {
+        match code {
+            EventCode::CommandComplete => {
                 hdr.cmd_quota = p.u8();
                 hdr.opcode = Opcode::from(p.u16());
                 if !p.is_empty() {
                     hdr.status = Status::from(p.u8());
                 }
             }
-            EventType::Hci(EventCode::CommandStatus) => {
+            EventCode::CommandStatus => {
                 hdr.status = Status::from(p.u8());
                 hdr.cmd_quota = p.u8();
                 hdr.opcode = Opcode::from(p.u16());
             }
             _ => {
-                let pf = typ.param_fmt();
+                let pf = code.param_fmt();
                 if pf.contains(EventFmt::STATUS) {
                     hdr.status = Status::from(p.u8());
                 }
@@ -138,6 +91,19 @@ impl EventHeader {
             Ok((hdr, p.into_inner()))
         } else {
             Err(Error::InvalidEvent(Vec::from(raw)))
+        }
+    }
+}
+
+impl Default for EventHeader {
+    #[inline]
+    fn default() -> Self {
+        Self {
+            code: EventCode::LeMetaEvent, // Would never be unpacked
+            status: Status::Success,
+            cmd_quota: 0,
+            opcode: Opcode::None,
+            handle: 0,
         }
     }
 }
@@ -167,11 +133,11 @@ impl Event {
         Ok(Self(t.downgrade(), PhantomData))
     }
 
-    /// Returns the event type.
+    /// Returns the event code.
     #[inline(always)]
     #[must_use]
-    pub fn typ(&self) -> EventType {
-        self.0.hdr.typ
+    pub fn code(&self) -> EventCode {
+        self.0.hdr.code
     }
 
     /// Returns the event status or [`Status::Success`] for events without a
@@ -197,7 +163,7 @@ impl Event {
     #[must_use]
     pub fn adv_handle(&self) -> Option<AdvHandle> {
         #[allow(clippy::cast_possible_truncation)]
-        if self.typ().param_fmt().contains(EventFmt::ADV_HANDLE) {
+        if self.code().param_fmt().contains(EventFmt::ADV_HANDLE) {
             AdvHandle::new(self.0.hdr.handle as u8)
         } else {
             None
@@ -209,7 +175,7 @@ impl Event {
     #[inline]
     #[must_use]
     pub fn conn_handle(&self) -> Option<ConnHandle> {
-        if self.typ().param_fmt().contains(EventFmt::CONN_HANDLE) {
+        if self.code().param_fmt().contains(EventFmt::CONN_HANDLE) {
             ConnHandle::new(self.0.hdr.handle)
         } else {
             None
@@ -224,7 +190,11 @@ impl Event {
     #[inline]
     #[must_use]
     pub(crate) fn get<T: FromEvent>(&self) -> T {
-        debug_assert!(T::matches(self), "event type mismatch for {}", self.typ());
+        debug_assert!(
+            T::matches(self.code()),
+            "event type mismatch for {}",
+            self.code()
+        );
         self.unpack(T::unpack)
     }
 
@@ -255,7 +225,7 @@ impl Event {
     /// Ensures that the event represent successful command status or
     /// completion.
     pub(super) fn cmd_ok(&self) -> Result<()> {
-        assert!(self.typ().is_cmd(), "non-command {} event", self.typ());
+        assert!(self.code().is_cmd(), "non-command {} event", self.code());
         if self.status().is_ok() {
             Ok(())
         } else {
@@ -277,8 +247,8 @@ impl Event {
     fn unpack<T>(&self, f: impl FnOnce(&Self, &mut Unpacker) -> T) -> T {
         let mut p = self.0.params();
         let v = f(self, &mut p);
-        debug_assert!(p.is_ok(), "corrupt {} event", self.typ());
-        debug_assert!(p.is_empty(), "unconsumed {} event", self.typ());
+        debug_assert!(p.is_ok(), "corrupt {} event", self.code());
+        debug_assert!(p.is_empty(), "unconsumed {} event", self.code());
         v
     }
 }
@@ -288,9 +258,8 @@ pub(crate) trait FromEvent {
     /// Returns whether event `e` can be unpacked by this type.
     #[inline(always)]
     #[must_use]
-    fn matches(e: &Event) -> bool {
-        let _ = e;
-        true // Default to true for command completions and `()`
+    fn matches(c: EventCode) -> bool {
+        matches!(c, EventCode::CommandComplete)
     }
 
     /// Unpacks event parameters.
@@ -298,7 +267,7 @@ pub(crate) trait FromEvent {
     fn unpack(e: &Event, p: &mut Unpacker) -> Self;
 }
 
-/// Unpacker for events without parameters.
+/// Unpacker for command completion events without parameters.
 impl FromEvent for () {
     #[inline(always)]
     fn unpack(_: &Event, _: &mut Unpacker) -> Self {}
@@ -409,7 +378,7 @@ impl EventRouter {
 
         // Provide Events to registered waiters and notify them
         let mut ws = self.waiters.lock();
-        if hdr.typ.is_cmd() {
+        if hdr.code.is_cmd() {
             ws.cmd_quota = hdr.cmd_quota;
             if hdr.opcode.is_some() {
                 (ws.queue.iter_mut().find(|w| w.opcode == hdr.opcode)).map_or_else(

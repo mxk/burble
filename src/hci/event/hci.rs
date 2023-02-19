@@ -10,11 +10,10 @@ pub struct DisconnectionComplete {
     pub reason: Status,
 }
 
-#[allow(clippy::fallible_impl_from)]
 impl FromEvent for DisconnectionComplete {
-    #[inline]
-    fn matches(e: &Event) -> bool {
-        matches!(e.typ(), EventType::Hci(EventCode::DisconnectionComplete))
+    #[inline(always)]
+    fn matches(c: EventCode) -> bool {
+        matches!(c, EventCode::DisconnectionComplete)
     }
 
     fn unpack(e: &Event, p: &mut Unpacker) -> Self {
@@ -32,9 +31,9 @@ impl FromEvent for DisconnectionComplete {
 pub struct NumberOfCompletedPackets(SmallVec<[(ConnHandle, u16); 4]>);
 
 impl FromEvent for NumberOfCompletedPackets {
-    #[inline]
-    fn matches(e: &Event) -> bool {
-        matches!(e.typ(), EventType::Hci(EventCode::NumberOfCompletedPackets))
+    #[inline(always)]
+    fn matches(c: EventCode) -> bool {
+        matches!(c, EventCode::NumberOfCompletedPackets)
     }
 
     fn unpack(_: &Event, p: &mut Unpacker) -> Self {

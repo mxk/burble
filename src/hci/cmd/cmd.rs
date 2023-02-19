@@ -53,7 +53,7 @@ impl Command {
                 opcode: self.opcode,
                 status: e.status().unwrap_or(Status::UnspecifiedError),
             })?;
-            if e.typ() == EventType::Hci(EventCode::CommandComplete) {
+            if matches!(e.code(), EventCode::CommandComplete) {
                 return Ok(e);
             } else if let Err(e) = e.cmd_ok() {
                 return Err(e); // Failed CommandStatus

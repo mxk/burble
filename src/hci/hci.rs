@@ -36,12 +36,12 @@ pub enum Error {
         status: Status,
         // TODO: Add backtrace once stabilized
     },
-    #[error("invalid event: {0:?}")]
+    #[error("invalid event: {0:02X?}")]
     InvalidEvent(Vec<u8>),
-    #[error("unknown event [code={code:#04X}, subevent={subevent:#04X}]: {params:?}")]
+    #[error("unknown event [code={code:#04X}, subcode={subcode:#04X}]: {params:02X?}")]
     UnknownEvent {
         code: u8,
-        subevent: u8,
+        subcode: u8,
         params: Vec<u8>,
     },
     #[error("duplicate {opcode} commands issued")]
@@ -119,13 +119,10 @@ impl Host {
         self.reset().await?;
 
         // Unmask all events.
-        self.set_event_mask(EventMask::enable(EventCode::iter()))
-            .await?;
-        let _ignore_unknown = self
-            .set_event_mask_page_2(EventMask2::enable(EventCode::iter()))
-            .await;
-        self.le_set_event_mask(LeEventMask::enable(SubeventCode::iter()))
-            .await?;
+        let all = EventCode::iter().collect();
+        self.set_event_mask(&all).await?;
+        let _ignore_unknown = self.set_event_mask_page_2(&all).await;
+        self.le_set_event_mask(&all).await?;
 
         let _ignore_unknown = self.write_le_host_support(true).await;
         Ok(())

@@ -12,7 +12,7 @@ fn hci() {
     assert_eq!(
         e,
         EventHeader {
-            typ: EventType::Hci(EventCode::InquiryComplete),
+            code: EventCode::InquiryComplete,
             status: Status::HardwareFailure,
             ..EventHeader::default()
         }
@@ -27,7 +27,7 @@ fn le() {
     assert_eq!(
         e,
         EventHeader {
-            typ: EventType::Le(SubeventCode::AdvertisingReport),
+            code: EventCode::LeAdvertisingReport,
             status: Status::Success,
             ..EventHeader::default()
         }
@@ -42,7 +42,7 @@ fn cmd_complete() {
     assert_eq!(
         e,
         EventHeader {
-            typ: EventType::Hci(EventCode::CommandComplete),
+            code: EventCode::CommandComplete,
             status: Status::Success,
             cmd_quota: 3,
             opcode: Opcode::ReadLocalVersionInformation,
@@ -70,7 +70,7 @@ fn cmd_status() {
     assert_eq!(
         e,
         EventHeader {
-            typ: EventType::Hci(EventCode::CommandStatus),
+            code: EventCode::CommandStatus,
             status: Status::UnspecifiedError,
             cmd_quota: 3,
             opcode: Opcode::ReadLocalVersionInformation,
@@ -91,7 +91,15 @@ fn error() {
         event(&[0, 1, 2]),
         Error::UnknownEvent {
             code: 0,
-            subevent: 0,
+            subcode: 0,
+            ..
+        }
+    );
+    assert_matches!(
+        event(&[EventCode::LeMetaEvent as u8, 1, 0]),
+        Error::UnknownEvent {
+            code: 0x3e,
+            subcode: 0,
             ..
         }
     );
@@ -99,7 +107,7 @@ fn error() {
         event(&[EventCode::LeMetaEvent as u8, 1, 0xff]),
         Error::UnknownEvent {
             code: 0x3e,
-            subevent: 0xff,
+            subcode: 0xff,
             ..
         }
     );

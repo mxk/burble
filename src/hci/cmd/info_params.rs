@@ -33,6 +33,7 @@ pub struct LocalVersion {
 }
 
 impl FromEvent for LocalVersion {
+    #[inline]
     fn unpack(_: &Event, p: &mut Unpacker) -> Self {
         Self {
             hci_version: CoreVersion::from(p.u8()),
@@ -52,6 +53,7 @@ pub struct BufferSize {
 }
 
 impl FromEvent for BufferSize {
+    #[inline]
     fn unpack(_: &Event, p: &mut Unpacker) -> Self {
         let (acl_data_len, _sco_data_len) = (p.u16(), p.u8());
         let (acl_num_pkts, _sco_num_pkts) = (p.u16(), p.u16());

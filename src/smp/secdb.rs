@@ -6,7 +6,6 @@ use tracing::error;
 
 use burble_crypto::LTK;
 
-use crate::hci::EventCode;
 use crate::{hci, le};
 
 /// Security keys for a peer device.
@@ -69,16 +68,16 @@ impl SecDb {
 
     /// Handles HCI control events.
     fn handle_event(&mut self, e: &hci::Event) -> Option<hci::LeLongTermKeyRequest> {
-        use hci::{EventType::*, SubeventCode::*};
-        match e.typ() {
-            Hci(EventCode::DisconnectionComplete) => {
+        use hci::EventCode::*;
+        match e.code() {
+            DisconnectionComplete => {
                 self.peer.remove(&e.conn_handle().unwrap());
             }
-            Le(ConnectionComplete | EnhancedConnectionComplete) => {
+            LeConnectionComplete | LeEnhancedConnectionComplete => {
                 let e = e.get::<hci::LeConnectionComplete>();
                 self.peer.insert(e.handle, e.peer_addr);
             }
-            Le(LongTermKeyRequest) => {
+            LeLongTermKeyRequest => {
                 return Some(e.get());
             }
             _ => {}

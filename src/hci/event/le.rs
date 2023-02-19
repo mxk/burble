@@ -19,23 +19,21 @@ pub struct LeConnectionComplete {
 }
 
 impl FromEvent for LeConnectionComplete {
-    #[inline]
-    fn matches(e: &Event) -> bool {
+    #[inline(always)]
+    fn matches(c: EventCode) -> bool {
         matches!(
-            e.typ(),
-            EventType::Le(
-                SubeventCode::ConnectionComplete | SubeventCode::EnhancedConnectionComplete
-            )
+            c,
+            EventCode::LeConnectionComplete | EventCode::LeEnhancedConnectionComplete
         )
     }
 
     fn unpack(e: &Event, p: &mut Unpacker) -> Self {
         let role = Role::try_from(p.u8()).expect("invalid role");
         let peer_addr = Addr::peer(p.u8(), p.addr());
-        let (local_rpa, peer_rpa) = match e.typ() {
-            EventType::Le(SubeventCode::ConnectionComplete) => Default::default(),
-            EventType::Le(SubeventCode::EnhancedConnectionComplete) => (p.addr(), p.addr()),
-            typ => unreachable!("unexpected {typ} event"),
+        let (local_rpa, peer_rpa) = match e.code() {
+            EventCode::LeConnectionComplete => Default::default(),
+            EventCode::LeEnhancedConnectionComplete => (p.addr(), p.addr()),
+            code => unreachable!("unexpected {code} event"),
         };
         Self {
             status: e.status(),
@@ -72,9 +70,9 @@ pub struct LeLongTermKeyRequest {
 }
 
 impl FromEvent for LeLongTermKeyRequest {
-    #[inline]
-    fn matches(e: &Event) -> bool {
-        matches!(e.typ(), EventType::Le(SubeventCode::LongTermKeyRequest))
+    #[inline(always)]
+    fn matches(c: EventCode) -> bool {
+        matches!(c, EventCode::LeLongTermKeyRequest)
     }
 
     fn unpack(e: &Event, p: &mut Unpacker) -> Self {
@@ -97,12 +95,9 @@ pub struct LeAdvertisingSetTerminated {
 }
 
 impl FromEvent for LeAdvertisingSetTerminated {
-    #[inline]
-    fn matches(e: &Event) -> bool {
-        matches!(
-            e.typ(),
-            EventType::Le(SubeventCode::AdvertisingSetTerminated)
-        )
+    #[inline(always)]
+    fn matches(c: EventCode) -> bool {
+        matches!(c, EventCode::LeAdvertisingSetTerminated)
     }
 
     fn unpack(e: &Event, p: &mut Unpacker) -> Self {

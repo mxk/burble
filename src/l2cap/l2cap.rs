@@ -110,15 +110,15 @@ impl ChanManager {
 
     /// Handles HCI control events.
     fn handle_event(&mut self, evt: &hci::Event) -> Option<LeU> {
-        use hci::{EventCode, EventType::*, SubeventCode};
-        match evt.typ() {
-            Le(SubeventCode::ConnectionComplete | SubeventCode::EnhancedConnectionComplete) => {
+        use hci::EventCode::*;
+        match evt.code() {
+            LeConnectionComplete | LeEnhancedConnectionComplete => {
                 return self.on_connect(&evt.get());
             }
-            Hci(EventCode::DisconnectionComplete) => {
+            DisconnectionComplete => {
                 self.on_disconnect(evt.get());
             }
-            Hci(EventCode::NumberOfCompletedPackets) => {
+            NumberOfCompletedPackets => {
                 self.rm.tx.on_num_completed(&evt.get());
             }
             _ => {}

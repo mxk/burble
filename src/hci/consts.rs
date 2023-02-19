@@ -114,9 +114,11 @@ impl OpcodeGroup {
 }
 
 /// HCI event codes ([Vol 4] Part E, Section 7.7).
-#[derive(Clone, Copy, Debug, Eq, PartialEq, num_enum::TryFromPrimitive, strum::EnumIter)]
+#[derive(
+    Clone, Copy, Debug, Eq, PartialEq, num_enum::TryFromPrimitive, strum::Display, strum::EnumIter,
+)]
 #[non_exhaustive]
-#[repr(u8)]
+#[repr(u16)]
 pub enum EventCode {
     InquiryComplete = 0x01,
     InquiryResult = 0x02,
@@ -170,7 +172,45 @@ pub enum EventCode {
     KeypressNotification = 0x3C,
     RemoteHostSupportedFeaturesNotification = 0x3D,
     NumberOfCompletedDataBlocks = 0x48,
+
+    // HCI LE subevent codes ([Vol 4] Part E, Section 7.7.65).
     LeMetaEvent = 0x3E,
+    LeConnectionComplete = le(0x01),
+    LeAdvertisingReport = le(0x02),
+    LeConnectionUpdateComplete = le(0x03),
+    LeReadRemoteFeaturesComplete = le(0x04),
+    LeLongTermKeyRequest = le(0x05),
+    LeRemoteConnectionParameterRequest = le(0x06),
+    LeDataLengthChange = le(0x07),
+    LeReadLocalP256PublicKeyComplete = le(0x08),
+    LeGenerateDhKeyComplete = le(0x09),
+    LeEnhancedConnectionComplete = le(0x0A),
+    LeDirectedAdvertisingReport = le(0x0B),
+    LePhyUpdateComplete = le(0x0C),
+    LeExtendedAdvertisingReport = le(0x0D),
+    LePeriodicAdvertisingSyncEstablished = le(0x0E),
+    LePeriodicAdvertisingReport = le(0x0F),
+    LePeriodicAdvertisingSyncLost = le(0x10),
+    LeScanTimeout = le(0x11),
+    LeAdvertisingSetTerminated = le(0x12),
+    LeScanRequestReceived = le(0x13),
+    LeChannelSelectionAlgorithm = le(0x14),
+    LeConnectionlessIqReport = le(0x15),
+    LeConnectionIqReport = le(0x16),
+    LeCteRequestFailed = le(0x17),
+    LePeriodicAdvertisingSyncTransferReceived = le(0x18),
+    LeCisEstablished = le(0x19),
+    LeCisRequest = le(0x1A),
+    LeCreateBigComplete = le(0x1B),
+    LeTerminateBigComplete = le(0x1C),
+    LeBigSyncEstablished = le(0x1D),
+    LeBigSyncLost = le(0x1E),
+    LeRequestPeerScaComplete = le(0x1F),
+    LePathLossThreshold = le(0x20),
+    LeTransmitPowerReporting = le(0x21),
+    LeBigInfoAdvertisingReport = le(0x22),
+    LeSubrateChange = le(0x23),
+
     TriggeredClockCapture = 0x4E,
     SynchronizationTrainComplete = 0x4F,
     SynchronizationTrainReceived = 0x50,
@@ -185,14 +225,31 @@ pub enum EventCode {
     Vendor = 0xFF, // [Vol 4] Part E, Section 5.4.4
 }
 
+/// Returns an [`EventCode`] from LE subevent code.
+const fn le(subevent: u8) -> u16 {
+    (subevent as u16) << 8 | EventCode::LeMetaEvent as u16
+}
+
 impl EventCode {
-    /// Returns the format of the associated event parameters.
+    /// Returns whether the event code is either `CommandComplete` or
+    /// `CommandStatus`.
+    #[inline(always)]
     #[must_use]
-    pub const fn param_fmt(self) -> EventFmt {
+    pub const fn is_cmd(self) -> bool {
+        const CMD: u16 = EventCode::CommandComplete as _;
+        (self as u16) & CMD == CMD
+    }
+
+    /// Returns the format of the associated event parameters.
+    #[allow(clippy::too_many_lines)]
+    pub(super) const fn param_fmt(self) -> EventFmt {
         use EventCode::*;
         const OTHER: EventFmt = EventFmt::empty();
         const STATUS: EventFmt = EventFmt::STATUS;
         const CONN_HANDLE: EventFmt = EventFmt::CONN_HANDLE;
+        const SYNC_HANDLE: EventFmt = EventFmt::SYNC_HANDLE;
+        const ADV_HANDLE: EventFmt = EventFmt::ADV_HANDLE;
+        const BIG_HANDLE: EventFmt = EventFmt::BIG_HANDLE;
         #[allow(clippy::match_same_arms)]
         match self {
             InquiryComplete => STATUS,
@@ -247,7 +304,44 @@ impl EventCode {
             KeypressNotification => OTHER,
             RemoteHostSupportedFeaturesNotification => OTHER,
             NumberOfCompletedDataBlocks => OTHER,
+
             LeMetaEvent => OTHER,
+            LeConnectionComplete => STATUS.union(CONN_HANDLE),
+            LeAdvertisingReport => OTHER,
+            LeConnectionUpdateComplete => STATUS.union(CONN_HANDLE),
+            LeReadRemoteFeaturesComplete => STATUS.union(CONN_HANDLE),
+            LeLongTermKeyRequest => CONN_HANDLE,
+            LeRemoteConnectionParameterRequest => CONN_HANDLE,
+            LeDataLengthChange => CONN_HANDLE,
+            LeReadLocalP256PublicKeyComplete => STATUS,
+            LeGenerateDhKeyComplete => STATUS,
+            LeEnhancedConnectionComplete => STATUS.union(CONN_HANDLE),
+            LeDirectedAdvertisingReport => OTHER,
+            LePhyUpdateComplete => STATUS.union(CONN_HANDLE),
+            LeExtendedAdvertisingReport => OTHER,
+            LePeriodicAdvertisingSyncEstablished => STATUS.union(SYNC_HANDLE),
+            LePeriodicAdvertisingReport => SYNC_HANDLE,
+            LePeriodicAdvertisingSyncLost => SYNC_HANDLE,
+            LeScanTimeout => OTHER,
+            LeAdvertisingSetTerminated => STATUS.union(ADV_HANDLE),
+            LeScanRequestReceived => ADV_HANDLE,
+            LeChannelSelectionAlgorithm => CONN_HANDLE,
+            LeConnectionlessIqReport => SYNC_HANDLE,
+            LeConnectionIqReport => CONN_HANDLE,
+            LeCteRequestFailed => STATUS.union(CONN_HANDLE),
+            LePeriodicAdvertisingSyncTransferReceived => STATUS.union(CONN_HANDLE),
+            LeCisEstablished => STATUS.union(CONN_HANDLE),
+            LeCisRequest => CONN_HANDLE,
+            LeCreateBigComplete => STATUS.union(BIG_HANDLE),
+            LeTerminateBigComplete => BIG_HANDLE,
+            LeBigSyncEstablished => STATUS.union(BIG_HANDLE),
+            LeBigSyncLost => BIG_HANDLE,
+            LeRequestPeerScaComplete => STATUS.union(CONN_HANDLE),
+            LePathLossThreshold => CONN_HANDLE,
+            LeTransmitPowerReporting => STATUS.union(CONN_HANDLE),
+            LeBigInfoAdvertisingReport => SYNC_HANDLE,
+            LeSubrateChange => STATUS.union(CONN_HANDLE),
+
             TriggeredClockCapture => CONN_HANDLE,
             SynchronizationTrainComplete => STATUS,
             SynchronizationTrainReceived => STATUS,
@@ -263,227 +357,126 @@ impl EventCode {
         }
     }
 
-    /// Returns the event mask for `HCI_Set_Event_Mask` and
-    /// `HCI_Set_Event_Mask_Page_2` commands, or 0 if the event is not valid for
-    /// the specified 1-based `page`.
-    #[must_use]
-    pub(super) const fn mask(self, page: u8) -> u64 {
+    /// Sets or clears the associated event mask bit.
+    #[allow(clippy::too_many_lines)]
+    pub(super) fn set(self, m: &mut super::EventMask, enable: bool) {
         use EventCode::*;
-        let (pg, bit) = match self {
+        let (p1, p2, le) = (&mut m.p1, &mut m.p2, &mut m.le);
+        let (pg, bit): (&mut u64, u8) = match self {
             // Page 1 ([Vol 4] Part E, Section 7.3.1)
-            InquiryComplete => (1, 0),
-            InquiryResult => (1, 1),
-            ConnectionComplete => (1, 2),
-            ConnectionRequest => (1, 3),
-            DisconnectionComplete => (1, 4),
-            AuthenticationComplete => (1, 5),
-            RemoteNameRequestComplete => (1, 6),
-            EncryptionChangeV1 => (1, 7),
-            ChangeConnectionLinkKeyComplete => (1, 8),
-            LinkKeyTypeChanged => (1, 9),
-            ReadRemoteSupportedFeaturesComplete => (1, 10),
-            ReadRemoteVersionInformationComplete => (1, 11),
-            QosSetupComplete => (1, 12),
-            HardwareError => (1, 15),
-            FlushOccurred => (1, 16),
-            RoleChange => (1, 17),
-            ModeChange => (1, 19),
-            ReturnLinkKeys => (1, 20),
-            PinCodeRequest => (1, 21),
-            LinkKeyRequest => (1, 22),
-            LinkKeyNotification => (1, 23),
-            LoopbackCommand => (1, 24),
-            DataBufferOverflow => (1, 25),
-            MaxSlotsChange => (1, 26),
-            ReadClockOffsetComplete => (1, 27),
-            ConnectionPacketTypeChanged => (1, 28),
-            QosViolation => (1, 29),
-            PageScanRepetitionModeChange => (1, 31),
-            FlowSpecificationComplete => (1, 32),
-            InquiryResultWithRssi => (1, 33),
-            ReadRemoteExtendedFeaturesComplete => (1, 34),
-            SynchronousConnectionComplete => (1, 43),
-            SynchronousConnectionChanged => (1, 44),
-            SniffSubrating => (1, 45),
-            ExtendedInquiryResult => (1, 46),
-            EncryptionKeyRefreshComplete => (1, 47),
-            IoCapabilityRequest => (1, 48),
-            IoCapabilityResponse => (1, 49),
-            UserConfirmationRequest => (1, 50),
-            UserPasskeyRequest => (1, 51),
-            RemoteOobDataRequest => (1, 52),
-            SimplePairingComplete => (1, 53),
-            LinkSupervisionTimeoutChanged => (1, 55),
-            EnhancedFlushComplete => (1, 56),
-            UserPasskeyNotification => (1, 58),
-            KeypressNotification => (1, 59),
-            RemoteHostSupportedFeaturesNotification => (1, 60),
-            LeMetaEvent => (1, 61),
+            InquiryComplete => (p1, 0),
+            InquiryResult => (p1, 1),
+            ConnectionComplete => (p1, 2),
+            ConnectionRequest => (p1, 3),
+            DisconnectionComplete => (p1, 4),
+            AuthenticationComplete => (p1, 5),
+            RemoteNameRequestComplete => (p1, 6),
+            EncryptionChangeV1 => (p1, 7),
+            ChangeConnectionLinkKeyComplete => (p1, 8),
+            LinkKeyTypeChanged => (p1, 9),
+            ReadRemoteSupportedFeaturesComplete => (p1, 10),
+            ReadRemoteVersionInformationComplete => (p1, 11),
+            QosSetupComplete => (p1, 12),
+            HardwareError => (p1, 15),
+            FlushOccurred => (p1, 16),
+            RoleChange => (p1, 17),
+            ModeChange => (p1, 19),
+            ReturnLinkKeys => (p1, 20),
+            PinCodeRequest => (p1, 21),
+            LinkKeyRequest => (p1, 22),
+            LinkKeyNotification => (p1, 23),
+            LoopbackCommand => (p1, 24),
+            DataBufferOverflow => (p1, 25),
+            MaxSlotsChange => (p1, 26),
+            ReadClockOffsetComplete => (p1, 27),
+            ConnectionPacketTypeChanged => (p1, 28),
+            QosViolation => (p1, 29),
+            PageScanRepetitionModeChange => (p1, 31),
+            FlowSpecificationComplete => (p1, 32),
+            InquiryResultWithRssi => (p1, 33),
+            ReadRemoteExtendedFeaturesComplete => (p1, 34),
+            SynchronousConnectionComplete => (p1, 43),
+            SynchronousConnectionChanged => (p1, 44),
+            SniffSubrating => (p1, 45),
+            ExtendedInquiryResult => (p1, 46),
+            EncryptionKeyRefreshComplete => (p1, 47),
+            IoCapabilityRequest => (p1, 48),
+            IoCapabilityResponse => (p1, 49),
+            UserConfirmationRequest => (p1, 50),
+            UserPasskeyRequest => (p1, 51),
+            RemoteOobDataRequest => (p1, 52),
+            SimplePairingComplete => (p1, 53),
+            LinkSupervisionTimeoutChanged => (p1, 55),
+            EnhancedFlushComplete => (p1, 56),
+            UserPasskeyNotification => (p1, 58),
+            KeypressNotification => (p1, 59),
+            RemoteHostSupportedFeaturesNotification => (p1, 60),
+            LeMetaEvent => (p1, 61),
+
+            // LE ([Vol 4] Part E, Section 7.8.1)
+            LeConnectionComplete => (le, 0),
+            LeAdvertisingReport => (le, 1),
+            LeConnectionUpdateComplete => (le, 2),
+            LeReadRemoteFeaturesComplete => (le, 3),
+            LeLongTermKeyRequest => (le, 4),
+            LeRemoteConnectionParameterRequest => (le, 5),
+            LeDataLengthChange => (le, 6),
+            LeReadLocalP256PublicKeyComplete => (le, 7),
+            LeGenerateDhKeyComplete => (le, 8),
+            LeEnhancedConnectionComplete => (le, 9),
+            LeDirectedAdvertisingReport => (le, 10),
+            LePhyUpdateComplete => (le, 11),
+            LeExtendedAdvertisingReport => (le, 12),
+            LePeriodicAdvertisingSyncEstablished => (le, 13),
+            LePeriodicAdvertisingReport => (le, 14),
+            LePeriodicAdvertisingSyncLost => (le, 15),
+            LeScanTimeout => (le, 16),
+            LeAdvertisingSetTerminated => (le, 17),
+            LeScanRequestReceived => (le, 18),
+            LeChannelSelectionAlgorithm => (le, 19),
+            LeConnectionlessIqReport => (le, 20),
+            LeConnectionIqReport => (le, 21),
+            LeCteRequestFailed => (le, 22),
+            LePeriodicAdvertisingSyncTransferReceived => (le, 23),
+            LeCisEstablished => (le, 24),
+            LeCisRequest => (le, 25),
+            LeCreateBigComplete => (le, 26),
+            LeTerminateBigComplete => (le, 27),
+            LeBigSyncEstablished => (le, 28),
+            LeBigSyncLost => (le, 29),
+            LeRequestPeerScaComplete => (le, 30),
+            LePathLossThreshold => (le, 31),
+            LeTransmitPowerReporting => (le, 32),
+            LeBigInfoAdvertisingReport => (le, 33),
+            LeSubrateChange => (le, 34),
 
             // Page 2 ([Vol 4] Part E, Section 7.3.69)
-            NumberOfCompletedDataBlocks => (2, 8),
-            TriggeredClockCapture => (2, 14),
-            SynchronizationTrainComplete => (2, 15),
-            SynchronizationTrainReceived => (2, 16),
-            ConnectionlessPeripheralBroadcastReceive => (2, 17),
-            ConnectionlessPeripheralBroadcastTimeout => (2, 18),
-            TruncatedPageComplete => (2, 19),
-            PeripheralPageResponseTimeout => (2, 20),
-            ConnectionlessPeripheralBroadcastChannelMapChange => (2, 21),
-            InquiryResponseNotification => (2, 22),
-            AuthenticatedPayloadTimeoutExpired => (2, 23),
-            SamStatusChange => (2, 24),
-            EncryptionChangeV2 => (2, 25),
+            NumberOfCompletedDataBlocks => (p2, 8),
+            TriggeredClockCapture => (p2, 14),
+            SynchronizationTrainComplete => (p2, 15),
+            SynchronizationTrainReceived => (p2, 16),
+            ConnectionlessPeripheralBroadcastReceive => (p2, 17),
+            ConnectionlessPeripheralBroadcastTimeout => (p2, 18),
+            TruncatedPageComplete => (p2, 19),
+            PeripheralPageResponseTimeout => (p2, 20),
+            ConnectionlessPeripheralBroadcastChannelMapChange => (p2, 21),
+            InquiryResponseNotification => (p2, 22),
+            AuthenticatedPayloadTimeoutExpired => (p2, 23),
+            SamStatusChange => (p2, 24),
+            EncryptionChangeV2 => (p2, 25),
 
             // Unmaskable events
-            CommandComplete | CommandStatus | NumberOfCompletedPackets | Vendor => (0, 0),
+            CommandComplete | CommandStatus | NumberOfCompletedPackets | Vendor => return,
         };
-        ((page == pg) as u64) << bit
-    }
-}
-
-/// HCI LE subevent codes ([Vol 4] Part E, Section 7.7.65).
-#[derive(Clone, Copy, Debug, Eq, PartialEq, num_enum::TryFromPrimitive, strum::EnumIter)]
-#[non_exhaustive]
-#[repr(u8)]
-pub enum SubeventCode {
-    ConnectionComplete = 0x01,
-    AdvertisingReport = 0x02,
-    ConnectionUpdateComplete = 0x03,
-    ReadRemoteFeaturesComplete = 0x04,
-    LongTermKeyRequest = 0x05,
-    RemoteConnectionParameterRequest = 0x06,
-    DataLengthChange = 0x07,
-    ReadLocalP256PublicKeyComplete = 0x08,
-    GenerateDhKeyComplete = 0x09,
-    EnhancedConnectionComplete = 0x0A,
-    DirectedAdvertisingReport = 0x0B,
-    PhyUpdateComplete = 0x0C,
-    ExtendedAdvertisingReport = 0x0D,
-    PeriodicAdvertisingSyncEstablished = 0x0E,
-    PeriodicAdvertisingReport = 0x0F,
-    PeriodicAdvertisingSyncLost = 0x10,
-    ScanTimeout = 0x11,
-    AdvertisingSetTerminated = 0x12,
-    ScanRequestReceived = 0x13,
-    ChannelSelectionAlgorithm = 0x14,
-    ConnectionlessIqReport = 0x15,
-    ConnectionIqReport = 0x16,
-    CteRequestFailed = 0x17,
-    PeriodicAdvertisingSyncTransferReceived = 0x18,
-    CisEstablished = 0x19,
-    CisRequest = 0x1A,
-    CreateBigComplete = 0x1B,
-    TerminateBigComplete = 0x1C,
-    BigSyncEstablished = 0x1D,
-    BigSyncLost = 0x1E,
-    RequestPeerScaComplete = 0x1F,
-    PathLossThreshold = 0x20,
-    TransmitPowerReporting = 0x21,
-    BigInfoAdvertisingReport = 0x22,
-    SubrateChange = 0x23,
-}
-
-impl SubeventCode {
-    /// Returns the format of the associated event parameters.
-    #[must_use]
-    pub const fn param_fmt(self) -> EventFmt {
-        use SubeventCode::*;
-        const OTHER: EventFmt = EventFmt::empty();
-        const STATUS: EventFmt = EventFmt::STATUS;
-        const CONN_HANDLE: EventFmt = EventFmt::CONN_HANDLE;
-        const SYNC_HANDLE: EventFmt = EventFmt::SYNC_HANDLE;
-        const ADV_HANDLE: EventFmt = EventFmt::ADV_HANDLE;
-        const BIG_HANDLE: EventFmt = EventFmt::BIG_HANDLE;
-        #[allow(clippy::match_same_arms)]
-        match self {
-            ConnectionComplete => STATUS.union(CONN_HANDLE),
-            AdvertisingReport => OTHER,
-            ConnectionUpdateComplete => STATUS.union(CONN_HANDLE),
-            ReadRemoteFeaturesComplete => STATUS.union(CONN_HANDLE),
-            LongTermKeyRequest => CONN_HANDLE,
-            RemoteConnectionParameterRequest => CONN_HANDLE,
-            DataLengthChange => CONN_HANDLE,
-            ReadLocalP256PublicKeyComplete => STATUS,
-            GenerateDhKeyComplete => STATUS,
-            EnhancedConnectionComplete => STATUS.union(CONN_HANDLE),
-            DirectedAdvertisingReport => OTHER,
-            PhyUpdateComplete => STATUS.union(CONN_HANDLE),
-            ExtendedAdvertisingReport => OTHER,
-            PeriodicAdvertisingSyncEstablished => STATUS.union(SYNC_HANDLE),
-            PeriodicAdvertisingReport => SYNC_HANDLE,
-            PeriodicAdvertisingSyncLost => SYNC_HANDLE,
-            ScanTimeout => OTHER,
-            AdvertisingSetTerminated => STATUS.union(ADV_HANDLE),
-            ScanRequestReceived => ADV_HANDLE,
-            ChannelSelectionAlgorithm => CONN_HANDLE,
-            ConnectionlessIqReport => SYNC_HANDLE,
-            ConnectionIqReport => CONN_HANDLE,
-            CteRequestFailed => STATUS.union(CONN_HANDLE),
-            PeriodicAdvertisingSyncTransferReceived => STATUS.union(CONN_HANDLE),
-            CisEstablished => STATUS.union(CONN_HANDLE),
-            CisRequest => CONN_HANDLE,
-            CreateBigComplete => STATUS.union(BIG_HANDLE),
-            TerminateBigComplete => BIG_HANDLE,
-            BigSyncEstablished => STATUS.union(BIG_HANDLE),
-            BigSyncLost => BIG_HANDLE,
-            RequestPeerScaComplete => STATUS.union(CONN_HANDLE),
-            PathLossThreshold => CONN_HANDLE,
-            TransmitPowerReporting => STATUS.union(CONN_HANDLE),
-            BigInfoAdvertisingReport => SYNC_HANDLE,
-            SubrateChange => STATUS.union(CONN_HANDLE),
-        }
-    }
-
-    /// Returns the event mask for the `HCI_LE_Set_Event_Mask` command.
-    #[must_use]
-    pub(super) const fn mask(self) -> u64 {
-        use SubeventCode::*;
-        1 << match self {
-            // Page 1 ([Vol 4] Part E, Section 7.8.1)
-            ConnectionComplete => 0,
-            AdvertisingReport => 1,
-            ConnectionUpdateComplete => 2,
-            ReadRemoteFeaturesComplete => 3,
-            LongTermKeyRequest => 4,
-            RemoteConnectionParameterRequest => 5,
-            DataLengthChange => 6,
-            ReadLocalP256PublicKeyComplete => 7,
-            GenerateDhKeyComplete => 8,
-            EnhancedConnectionComplete => 9,
-            DirectedAdvertisingReport => 10,
-            PhyUpdateComplete => 11,
-            ExtendedAdvertisingReport => 12,
-            PeriodicAdvertisingSyncEstablished => 13,
-            PeriodicAdvertisingReport => 14,
-            PeriodicAdvertisingSyncLost => 15,
-            ScanTimeout => 16,
-            AdvertisingSetTerminated => 17,
-            ScanRequestReceived => 18,
-            ChannelSelectionAlgorithm => 19,
-            ConnectionlessIqReport => 20,
-            ConnectionIqReport => 21,
-            CteRequestFailed => 22,
-            PeriodicAdvertisingSyncTransferReceived => 23,
-            CisEstablished => 24,
-            CisRequest => 25,
-            CreateBigComplete => 26,
-            TerminateBigComplete => 27,
-            BigSyncEstablished => 28,
-            BigSyncLost => 29,
-            RequestPeerScaComplete => 30,
-            PathLossThreshold => 31,
-            TransmitPowerReporting => 32,
-            BigInfoAdvertisingReport => 33,
-            SubrateChange => 34,
-        }
+        *pg = *pg & !(1 << bit) | u64::from(enable) << bit;
     }
 }
 
 bitflags! {
     /// Event parameter format.
     #[repr(transparent)]
-    pub struct EventFmt: u8 {
+    #[must_use]
+    pub(super) struct EventFmt: u8 {
         /// Event contains a status parameter.
         const STATUS = 1 << 0;
         /// Event contains a connection handle.
@@ -582,13 +575,6 @@ impl Status {
     #[must_use]
     pub const fn is_ok(self) -> bool {
         matches!(self, Status::Success)
-    }
-}
-
-impl Default for Status {
-    #[inline]
-    fn default() -> Self {
-        Self::Success
     }
 }
 

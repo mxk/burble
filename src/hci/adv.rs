@@ -151,17 +151,16 @@ impl AdvMonitor {
 
     /// Returns the next event for enabled advertising sets.
     pub async fn event(&mut self) -> Result<AdvEvent> {
-        use SubeventCode::*;
         let term: LeAdvertisingSetTerminated = loop {
             let evt = self.ctl.next().await?;
-            match evt.typ() {
-                EventType::Le(ConnectionComplete | EnhancedConnectionComplete) => {
+            match evt.code() {
+                EventCode::LeConnectionComplete | EventCode::LeEnhancedConnectionComplete => {
                     // TODO: High duty cycle connectable directed advertisements
                     // may terminate without an AdvertisingSetTerminated event.
                     let conn: LeConnectionComplete = evt.get();
                     self.conn.insert(conn.handle, conn);
                 }
-                EventType::Le(AdvertisingSetTerminated) => {
+                EventCode::LeAdvertisingSetTerminated => {
                     break evt.get();
                 }
                 _ => continue,
@@ -184,7 +183,9 @@ impl AdvMonitor {
         // normally comes within 5ms.
         if let Ok(Ok(evt)) = tokio::time::timeout(Duration::from_millis(100), self.ctl.next()).await
         {
-            if let EventType::Le(ConnectionComplete | EnhancedConnectionComplete) = evt.typ() {
+            if let EventCode::LeConnectionComplete | EventCode::LeEnhancedConnectionComplete =
+                evt.code()
+            {
                 let conn: LeConnectionComplete = evt.get();
                 if conn.handle == cn {
                     return Ok(AdvEvent::Conn { conn, term });
