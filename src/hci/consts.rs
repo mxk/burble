@@ -173,7 +173,7 @@ pub enum EventCode {
     RemoteHostSupportedFeaturesNotification = 0x3D,
     NumberOfCompletedDataBlocks = 0x48,
 
-    // HCI LE subevent codes ([Vol 4] Part E, Section 7.7.65).
+    // LE subevent codes ([Vol 4] Part E, Section 7.7.65).
     LeMetaEvent = 0x3E,
     LeConnectionComplete = le(0x01),
     LeAdvertisingReport = le(0x02),
@@ -225,7 +225,7 @@ pub enum EventCode {
     Vendor = 0xFF, // [Vol 4] Part E, Section 5.4.4
 }
 
-/// Returns an [`EventCode`] from LE subevent code.
+/// Creates a full [`EventCode`] representation from LE subevent code.
 const fn le(subevent: u8) -> u16 {
     (subevent as u16) << 8 | EventCode::LeMetaEvent as u16
 }
@@ -235,7 +235,7 @@ impl EventCode {
     /// `CommandStatus`.
     #[inline(always)]
     #[must_use]
-    pub const fn is_cmd(self) -> bool {
+    pub(super) const fn is_cmd(self) -> bool {
         const CMD: u16 = EventCode::CommandComplete as _;
         (self as u16) & CMD == CMD
     }
@@ -266,7 +266,7 @@ impl EventCode {
             ReadRemoteSupportedFeaturesComplete => STATUS.union(CONN_HANDLE),
             ReadRemoteVersionInformationComplete => STATUS.union(CONN_HANDLE),
             QosSetupComplete => STATUS.union(CONN_HANDLE),
-            CommandComplete => STATUS, // Other format, but want has_status() == true
+            CommandComplete => STATUS, // Other format, but contains status
             CommandStatus => STATUS,
             HardwareError => OTHER,
             FlushOccurred => CONN_HANDLE,
