@@ -2,7 +2,8 @@ use smallvec::SmallVec;
 
 use super::*;
 
-/// `HCI_Disconnection_Complete` event parameters.
+/// `HCI_Disconnection_Complete` event parameters
+/// ([Vol 4] Part E, Section 7.7.5).
 #[derive(Clone, Copy, Debug)]
 pub struct DisconnectionComplete {
     pub status: Status,
@@ -25,7 +26,8 @@ impl FromEvent for DisconnectionComplete {
     }
 }
 
-/// `HCI_Number_Of_Completed_Packets` event parameters.
+/// `HCI_Number_Of_Completed_Packets` event parameters
+/// ([Vol 4] Part E, Section 7.7.19).
 #[derive(Clone, Debug)]
 #[repr(transparent)]
 pub struct NumberOfCompletedPackets(SmallVec<[(ConnHandle, u16); 4]>);

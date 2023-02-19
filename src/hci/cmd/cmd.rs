@@ -1,12 +1,11 @@
 use structbuf::Pack;
 use tracing::trace;
 
-pub use {hci_control::*, info_params::*, le::*};
+pub use {hci::*, le::*};
 
 use super::*;
 
-mod hci_control;
-mod info_params;
+mod hci;
 mod le;
 
 /// HCI command encoder.
