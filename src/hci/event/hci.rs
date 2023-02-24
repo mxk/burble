@@ -26,6 +26,38 @@ impl FromEvent for DisconnectionComplete {
     }
 }
 
+/// `HCI_Encryption_Change` event parameters ([Vol 4] Part E, Section 7.7.8).
+#[derive(Clone, Copy, Debug)]
+pub struct EncryptionChange {
+    pub status: Status,
+    pub handle: ConnHandle,
+    pub enabled: bool,
+}
+
+impl FromEvent for EncryptionChange {
+    #[inline(always)]
+    fn matches(c: EventCode) -> bool {
+        matches!(
+            c,
+            EventCode::EncryptionChangeV1 | EventCode::EncryptionChangeV2
+        )
+    }
+
+    fn unpack(e: &Event, p: &mut Unpacker) -> Self {
+        let enabled = p.bool();
+        if matches!(e.code(), EventCode::EncryptionChangeV2) {
+            // Encryption_Key_Size parameter must be consumed, but is ignored
+            // for LE connections.
+            let _ = p.u8();
+        }
+        Self {
+            status: e.status(),
+            handle: e.conn_handle().unwrap(),
+            enabled,
+        }
+    }
+}
+
 /// `HCI_Number_Of_Completed_Packets` event parameters
 /// ([Vol 4] Part E, Section 7.7.19).
 #[derive(Clone, Debug)]
