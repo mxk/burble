@@ -32,6 +32,12 @@ pub mod sdp {
     pub use burble_const::ServiceClass;
 }
 
+type SyncMutex<T> = parking_lot::Mutex<T>;
+type SyncMutexGuard<'a, T> = parking_lot::MutexGuard<'a, T>;
+type SyncArcMutexGuard<T> = lock_api::ArcMutexGuard<parking_lot::RawMutex, T>;
+type AsyncMutex<T> = tokio::sync::Mutex<T>;
+type AsyncRwLock<T> = tokio::sync::RwLock<T>;
+
 /// Interface to persistent peer data storage.
 pub trait PeerStore: std::fmt::Debug + Send + Sync {
     /// Type of stored data.
@@ -39,8 +45,12 @@ pub trait PeerStore: std::fmt::Debug + Send + Sync {
 
     /// Saves peer data and returns `true` if the operation was successful.
     fn save(&self, peer: le::Addr, v: &Self::Value) -> bool;
+
     /// Loads peer data.
     fn load(&self, peer: le::Addr) -> Option<Self::Value>;
+
+    /// Removes peer data.
+    fn remove(&self, peer: le::Addr);
 }
 
 /// Returns a string representation of the specified type.

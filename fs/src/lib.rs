@@ -46,6 +46,11 @@ impl burble::PeerStore for KeyStore {
     fn load(&self, peer: Addr) -> Option<Self::Value> {
         self.0.load(peer)
     }
+
+    #[inline(always)]
+    fn remove(&self, peer: Addr) {
+        self.0.remove(peer);
+    }
 }
 
 /// GATT server database stored in a file system directory.
@@ -84,6 +89,11 @@ impl burble::PeerStore for GattServerStore {
     #[inline(always)]
     fn load(&self, peer: Addr) -> Option<Self::Value> {
         self.0.load(peer)
+    }
+
+    #[inline(always)]
+    fn remove(&self, peer: Addr) {
+        self.0.remove(peer);
     }
 }
 
@@ -137,7 +147,7 @@ impl Dir {
         let path = self.path(peer);
         let s = match fs::read_to_string(&path) {
             Ok(s) => s,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return None,
+            Err(e) if matches!(e.kind(), io::ErrorKind::NotFound) => return None,
             Err(e) => {
                 error!("Failed to read: {} ({e})", path.display());
                 return None;
@@ -149,6 +159,16 @@ impl Dir {
                 Err::<T, ()>(())
             })
             .ok()
+    }
+
+    /// Removes peer data from the file system.
+    fn remove(&self, peer: Addr) {
+        let path = self.path(peer);
+        match fs::remove_file(&path) {
+            Ok(_) => {}
+            Err(e) if matches!(e.kind(), io::ErrorKind::NotFound) => {}
+            Err(e) => error!("Failed to remove: {} ({e})", path.display()),
+        }
     }
 
     /// Returns the key file path for the specified peer address.
