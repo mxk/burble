@@ -1,4 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::BTreeSet;
+
+use futures_core::FusedFuture;
+use pin_project::pin_project;
 
 use crate::le::TxPower;
 
@@ -8,22 +11,20 @@ use super::*;
 #[derive(Debug)]
 pub struct Advertiser {
     host: Host,
-    handles: HashSet<AdvHandle>,
+    handles: BTreeSet<AdvHandle>,
     max_data_len: usize,
+    local_addr: le::Addr,
 }
 
 impl Advertiser {
     /// Creates a new advertisement manager.
-    pub async fn new(host: Host) -> Result<Self> {
+    pub async fn new(host: &Host) -> Result<Self> {
         host.le_clear_advertising_sets().await?;
-        let handles = HashSet::with_capacity(usize::from(
-            host.le_read_number_of_supported_advertising_sets().await?,
-        ));
-        let max_data_len = host.le_read_maximum_advertising_data_length().await?;
         Ok(Self {
-            host,
-            handles,
-            max_data_len,
+            host: host.clone(),
+            handles: BTreeSet::new(),
+            max_data_len: host.le_read_maximum_advertising_data_length().await?,
+            local_addr: host.read_bd_addr().await?,
         })
     }
 
@@ -60,15 +61,15 @@ impl Advertiser {
     }
 
     /// Enable advertising.
-    pub async fn enable(&mut self, p: AdvEnableParams) -> Result<AdvMonitor> {
-        let ctl = self.host.events()?;
+    pub async fn enable(&mut self, p: impl Into<AdvEnableParams> + Send) -> Result<AdvFuture> {
+        let p = p.into();
+        let ctl = self.host.events();
         (self.host.le_set_extended_advertising_enable(true, &[p])).await?;
-        Ok(AdvMonitor::new(ctl))
+        Ok(AdvFuture::new(p.handle, ctl, self.local_addr))
     }
 
     // Disable advertising.
     pub async fn disable(&mut self, h: AdvHandle) -> Result<()> {
-        // TODO: Wake monitor(s).
         self.host
             .le_set_extended_advertising_enable(false, &[h.into()])
             .await
@@ -76,7 +77,6 @@ impl Advertiser {
 
     // Disable advertising.
     pub async fn disable_all(&mut self) -> Result<()> {
-        // TODO: Wake monitor(s).
         (self.host.le_set_extended_advertising_enable(false, &[])).await
     }
 
@@ -92,7 +92,7 @@ impl Advertiser {
 
     /// Allocates an unused advertising handle.
     fn alloc_handle(&self) -> Result<AdvHandle> {
-        for i in 0..=AdvHandle::MAX {
+        for i in AdvHandle::MIN..=AdvHandle::MAX {
             // SAFETY: `i` is always valid
             let h = unsafe { AdvHandle::new(i).unwrap_unchecked() };
             if !self.handles.contains(&h) {
@@ -120,7 +120,7 @@ impl Advertiser {
     }
 }
 
-/// Result of enabling an advertising set.
+/// Advertising set completion result.
 #[allow(variant_size_differences)]
 #[derive(Clone, Debug)]
 #[non_exhaustive]
@@ -132,67 +132,134 @@ pub enum AdvEvent {
     Term(LeAdvertisingSetTerminated),
 }
 
+/// Advertising set future.
+#[pin_project(project = AdvFutureProj)]
 #[derive(Debug)]
-pub struct AdvMonitor {
+pub struct AdvFuture {
+    hdl: Option<AdvHandle>,
     ctl: EventStream,
-    conn: HashMap<ConnHandle, LeConnectionComplete>,
+    local_addr: le::Addr,
+    conn: BTreeMap<ConnHandle, LeConnectionComplete>,
+    term: Option<LeAdvertisingSetTerminated>,
+    #[pin]
+    timeout: Option<tokio::time::Sleep>,
 }
 
-impl AdvMonitor {
-    /// Creates a new advertising monitor.
+impl AdvFuture {
+    /// Creates a new advertising set future.
     #[inline]
     #[must_use]
-    fn new(ctl: EventStream) -> Self {
+    fn new(hdl: AdvHandle, ctl: EventStream, local_addr: le::Addr) -> Self {
         Self {
+            hdl: Some(hdl),
             ctl,
-            conn: HashMap::with_capacity(1),
+            local_addr,
+            conn: BTreeMap::new(),
+            term: None,
+            timeout: None,
+        }
+    }
+}
+
+impl AdvFutureProj<'_> {
+    /// Polls the timeout after [`LeAdvertisingSetTerminated`] event is
+    /// received.
+    #[inline]
+    fn poll_timeout(&mut self, cx: &mut Context<'_>) -> Poll<<AdvFuture as Future>::Output> {
+        match self.timeout.as_mut().as_pin_mut().map(|s| s.poll(cx)) {
+            Some(Poll::Ready(_)) => {
+                let term = self.term.take().unwrap();
+                self.ready(Ok(AdvEvent::Term(term)))
+            }
+            _ => Poll::Pending,
         }
     }
 
-    /// Returns the next event for enabled advertising sets.
-    pub async fn event(&mut self) -> Result<AdvEvent> {
-        let term: LeAdvertisingSetTerminated = loop {
-            let evt = self.ctl.next().await?;
-            match evt.code() {
-                EventCode::LeConnectionComplete | EventCode::LeEnhancedConnectionComplete => {
-                    // TODO: High duty cycle connectable directed advertisements
-                    // may terminate without an AdvertisingSetTerminated event.
-                    let conn: LeConnectionComplete = evt.get();
-                    self.conn.insert(conn.handle, conn);
-                }
-                EventCode::LeAdvertisingSetTerminated => {
-                    break evt.get();
-                }
-                _ => continue,
-            }
-        };
+    /// Resolves the future with the specified result.
+    #[inline(always)]
+    fn ready(&mut self, r: <AdvFuture as Future>::Output) -> Poll<<AdvFuture as Future>::Output> {
+        *self.hdl = None;
+        Poll::Ready(r)
+    }
 
-        // Handle AdvertisingSetTerminated event
+    /// Resolves the future with a successful connection.
+    #[inline]
+    fn ready_conn(
+        &mut self,
+        conn: LeConnectionComplete,
+        term: LeAdvertisingSetTerminated,
+    ) -> Poll<<AdvFuture as Future>::Output> {
+        if conn.status.is_ok() {
+            self.ctl.conn(conn.handle).unwrap().local_addr = Some(*self.local_addr);
+        }
+        self.ready(Ok(AdvEvent::Conn { conn, term }))
+    }
+}
+
+impl Future for AdvFuture {
+    type Output = Result<AdvEvent>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        use EventCode::*;
+        let mut this = self.project();
+        let hdl = this.hdl.expect("poll of a completed future");
+        let evt = match this.ctl.poll(cx) {
+            Poll::Ready(r) => match r {
+                Ok(evt) => {
+                    // Register a waker for the next event
+                    let p = this.ctl.poll(cx);
+                    debug_assert!(p.is_pending());
+                    evt
+                }
+                Err(e) => return this.ready(Err(e)),
+            },
+            Poll::Pending => return this.poll_timeout(cx),
+        };
+        // TODO: High duty cycle connectable directed advertisements may
+        // terminate without an LeAdvertisingSetTerminated event.
+        let term = match evt.code() {
+            LeConnectionComplete | LeEnhancedConnectionComplete => {
+                let conn: super::LeConnectionComplete = evt.get();
+                if let Some(term) = this.term.as_ref() {
+                    if conn.handle == term.conn_handle.unwrap() {
+                        return this.ready_conn(conn, term.clone());
+                    }
+                }
+                // Wait for LeAdvertisingSetTerminated event
+                this.conn.insert(conn.handle, conn);
+                return Poll::Pending;
+            }
+            LeAdvertisingSetTerminated => {
+                let term: super::LeAdvertisingSetTerminated = evt.get();
+                if term.adv_handle != hdl || this.term.is_some() {
+                    return Poll::Pending;
+                }
+                term
+            }
+            _ => return Poll::Pending,
+        };
         if !term.status.is_ok() || term.conn_handle.is_none() {
-            return Ok(AdvEvent::Term(term));
+            return this.ready(Ok(AdvEvent::Term(term)));
         }
-        let cn = term.conn_handle.unwrap();
-        if let Some(conn) = self.conn.remove(&cn) {
-            return Ok(AdvEvent::Conn { conn, term });
+        if let Some(conn) = this.conn.remove(&term.conn_handle.unwrap()) {
+            return this.ready_conn(conn, term);
         }
-        // The spec says that when a connection is created, the controller must
-        // generate a ConnectionComplete event followed immediately by an
-        // AdvertisingSetTerminated event ([Vol 4] Part E, Section 7.8.56). At
+        // The spec says that when a connection is created, the controller
+        // generates an LeConnectionComplete event followed immediately by an
+        // LeAdvertisingSetTerminated event ([Vol 4] Part E, Section 7.8.56). At
         // least one controller (RTL8761BUV) does the opposite, so we wait for a
         // short amount of time for a matching ConnectionComplete event, which
         // normally comes within 5ms.
-        if let Ok(Ok(evt)) = tokio::time::timeout(Duration::from_millis(100), self.ctl.next()).await
-        {
-            if let EventCode::LeConnectionComplete | EventCode::LeEnhancedConnectionComplete =
-                evt.code()
-            {
-                let conn: LeConnectionComplete = evt.get();
-                if conn.handle == cn {
-                    return Ok(AdvEvent::Conn { conn, term });
-                }
-                self.conn.insert(conn.handle, conn);
-            }
-        }
-        Ok(AdvEvent::Term(term))
+        *this.term = Some(term);
+        this.timeout
+            .set(Some(tokio::time::sleep(Duration::from_millis(100))));
+        this.poll_timeout(cx)
+    }
+}
+
+impl FusedFuture for AdvFuture {
+    #[inline(always)]
+    fn is_terminated(&self) -> bool {
+        self.hdl.is_none()
     }
 }

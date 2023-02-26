@@ -2,6 +2,8 @@
 
 use std::fmt::Debug;
 
+use crate::hci;
+
 use super::*;
 
 /// Maximum attribute value length ([Vol 3] Part F, Section 3.2.9).
@@ -58,12 +60,14 @@ pub enum Opcode {
 impl Opcode {
     /// Returns whether the raw opcode has the Command Flag set.
     #[inline]
+    #[must_use]
     pub const fn is_cmd(op: u8) -> bool {
         op & (1 << 6) != 0
     }
 
     /// Returns whether the Authentication Signature Flag is set.
     #[inline]
+    #[must_use]
     pub const fn is_signed(self) -> bool {
         self as u8 & (1 << 7) != 0
     }
@@ -74,11 +78,9 @@ impl Opcode {
     ///
     /// Panics if the opcode is not a read/write request.
     #[inline]
-    pub fn request(self) -> Request {
-        Request {
-            op: self,
-            ac: self.access_type().expect("not a read/write request"),
-        }
+    pub(crate) fn request(self, cn: &hci::Conn) -> Request {
+        let ac = (self.access_type().expect("not a read/write request")).copy_from_conn(cn);
+        Request { op: self, ac }
     }
 
     /// Returns a non-handle error response.

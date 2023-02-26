@@ -85,38 +85,38 @@ impl DeviceInfoService {
 
     /// Defines the service schema.
     pub fn define(&self, b: &mut Builder<Schema>, perms: impl Into<Perms>) {
-        fn chr(b: &mut Builder<ServiceDef>, c: Characteristic, v: impl AsRef<[u8]>, p: Perms) {
-            b.ro_characteristic(c, v, p, |_| {});
+        fn chr(b: &mut Builder<ServiceDef>, c: Characteristic, p: Perms, v: impl AsRef<[u8]>) {
+            b.ro_characteristic(c, p, v, |_| {});
         }
         let p = perms.into();
         b.primary_service(Service::DeviceInformation, [], |b| {
             use Characteristic::*;
             if let Some(v) = self.manufacturer_name.as_ref() {
-                chr(b, ManufacturerNameString, v, p);
+                chr(b, ManufacturerNameString, p, v);
             }
             if let Some(v) = self.model_num.as_ref() {
-                chr(b, ModelNumberString, v, p);
+                chr(b, ModelNumberString, p, v);
             }
             if let Some(v) = self.serial_num.as_ref() {
-                chr(b, SerialNumberString, v, p);
+                chr(b, SerialNumberString, p, v);
             }
             if let Some(v) = self.hardware_rev.as_ref() {
-                chr(b, HardwareRevisionString, v, p);
+                chr(b, HardwareRevisionString, p, v);
             }
             if let Some(v) = self.firmware_rev.as_ref() {
-                chr(b, FirmwareRevisionString, v, p);
+                chr(b, FirmwareRevisionString, p, v);
             }
             if let Some(v) = self.software_rev.as_ref() {
-                chr(b, SoftwareRevisionString, v, p);
+                chr(b, SoftwareRevisionString, p, v);
             }
             if let Some(v) = self.system_id.as_ref() {
-                chr(b, SystemId, v.0.to_le_bytes(), p);
+                chr(b, SystemId, p, v.0.to_le_bytes());
             }
             if let Some(v) = self.regulatory_data.as_ref() {
-                chr(b, IeeeRegulatoryCertificationDataList, &v.0, p);
+                chr(b, IeeeRegulatoryCertificationDataList, p, &v.0);
             }
             if let Some(v) = self.pnp_id.as_ref() {
-                chr(b, PnpId, v.to_bytes(), p);
+                chr(b, PnpId, p, v.to_bytes());
             }
         });
     }

@@ -14,9 +14,8 @@ use tracing::debug;
 pub(crate) use chan::*;
 pub use {consts::*, handle::*};
 
-use crate::hci::{Role, ACL_HDR};
-use crate::le::Addr;
-use crate::{att, hci, host, smp};
+use crate::hci::ACL_HDR;
+use crate::{att, hci, host, smp, SyncArcMutexGuard, SyncMutex};
 
 mod chan;
 mod consts;
@@ -62,22 +61,15 @@ pub struct ChanManager {
     ctl: hci::EventStream,
     conns: HashMap<LeU, Conn>,
     rm: ResManager,
-    local_addr: Addr,
 }
 
 impl ChanManager {
-    /// Creates a new Channel Manager. `local_addr` is the address used to
-    /// establish new connections, which is then used by the Security Manager.
-    pub async fn new(host: &hci::Host, local_addr: Addr) -> Result<Self> {
-        let ctl = host.events()?;
-        let rm = ResManager::new(host).await?;
-        // TODO: Figure out how to get the local address on a per-connection
-        // basis.
+    /// Creates a new Channel Manager.
+    pub async fn new(host: &hci::Host) -> Result<Self> {
         Ok(Self {
-            ctl,
+            ctl: host.events(),
             conns: HashMap::new(),
-            rm,
-            local_addr,
+            rm: ResManager::new(host).await?,
         })
     }
 
@@ -92,7 +84,7 @@ impl ChanManager {
                     }
                 }
                 _ = self.rm.rx.recv() => {} //self.handle_signal(r?),
-            };
+            }
         }
     }
 
@@ -102,9 +94,9 @@ impl ChanManager {
         (self.conns.get_mut(&link)).and_then(|cn| cn.att_opt.take().map(att::Bearer::new))
     }
 
-    /// Returns the Security Manager (SM) fixed channel for the specified LE-U
-    /// logical link.
-    pub fn sm_chan(&mut self, link: LeU) -> Option<smp::Peripheral> {
+    /// Returns the Security Manager Protocol (SMP) fixed channel for the
+    /// specified LE-U logical link.
+    pub fn smp_chan(&mut self, link: LeU) -> Option<smp::Peripheral> {
         (self.conns.get_mut(&link).and_then(|cn| cn.smp_opt.take())).map(smp::Peripheral::new)
     }
 
@@ -113,13 +105,13 @@ impl ChanManager {
         use hci::EventCode::*;
         match evt.code() {
             LeConnectionComplete | LeEnhancedConnectionComplete => {
-                return self.on_connect(&evt.get());
+                return self.handle_connect(&evt.get());
             }
             DisconnectionComplete => {
-                self.on_disconnect(evt.get());
+                self.handle_disconnect(evt.get());
             }
             NumberOfCompletedPackets => {
-                self.rm.tx.on_num_completed(&evt.get());
+                self.rm.tx.handle_num_completed(&evt.get());
             }
             _ => {}
         }
@@ -138,24 +130,20 @@ impl ChanManager {
     }
 
     /// Handles the creation of a new LE-U logical link.
-    fn on_connect(&mut self, evt: &hci::LeConnectionComplete) -> Option<LeU> {
+    fn handle_connect(&mut self, evt: &hci::LeConnectionComplete) -> Option<LeU> {
         if !evt.status.is_ok() {
             return None;
         }
         let link = LeU::new(evt.handle);
-        let ci = Arc::new(ConnInfo {
-            role: evt.role,
-            local_addr: self.local_addr,
-            peer_addr: evt.peer_addr, // TODO: Handle peer_rpa
-        });
+        let cn = SyncArcMutexGuard::into_arc(self.ctl.conn(evt.handle).expect("invalid {link}"));
 
         // [Vol 3] Part A, Section 4
-        let sig = BasicChan::new(link.chan(Cid::SIG), &ci, &self.rm.tx, 23);
+        let sig = BasicChan::new(link.chan(Cid::SIG), &cn, &self.rm.tx, 23);
         // [Vol 3] Part G, Section 5.2
-        let att = BasicChan::new(link.chan(Cid::ATT), &ci, &self.rm.tx, 23);
+        let att = BasicChan::new(link.chan(Cid::ATT), &cn, &self.rm.tx, 23);
         // [Vol 3] Part H, Section 3.2
         // TODO: MTU is 23 when LE Secure Connections is not supported
-        let sm = BasicChan::new(link.chan(Cid::SMP), &ci, &self.rm.tx, 65);
+        let sm = BasicChan::new(link.chan(Cid::SMP), &cn, &self.rm.tx, 65);
 
         // [Vol 3] Part A, Section 2.2
         self.rm.tx.register_link(LeU::new(evt.handle));
@@ -173,7 +161,7 @@ impl ChanManager {
         Some(link)
     }
 
-    fn on_disconnect(&mut self, evt: hci::DisconnectionComplete) {
+    fn handle_disconnect(&mut self, evt: hci::DisconnectionComplete) {
         if !evt.status.is_ok() {
             return;
         }
@@ -181,7 +169,7 @@ impl ChanManager {
         self.rm.rx.remove_chan(cn.sig.raw.cid);
         self.rm.rx.remove_chan(cn.att.cid);
         self.rm.rx.remove_chan(cn.smp.cid);
-        self.rm.tx.on_disconnect(evt);
+        self.rm.tx.handle_disconnect(evt);
         cn.set_closed();
     }
 }
@@ -224,17 +212,6 @@ impl ResManager {
             tx: tx::State::new(host.transport(), acl_num_pkts, cbuf.acl_data_len),
         })
     }
-}
-
-/// Information about an established LE-U connection.
-#[derive(Debug)]
-pub(crate) struct ConnInfo {
-    /// Local role.
-    pub role: Role,
-    /// Local public or random address.
-    pub local_addr: Addr,
-    /// Remote public or random address.
-    pub peer_addr: Addr,
 }
 
 /// Established connection over an LE-U logical link.
@@ -385,7 +362,7 @@ struct Alloc {
     /// Host transport.
     transport: Arc<dyn host::Transport>,
     /// Transfers that can be reused.
-    free: parking_lot::Mutex<Vec<Box<dyn host::Transfer>>>,
+    free: SyncMutex<Vec<Box<dyn host::Transfer>>>,
     /// Maximum size of a PDU fragment in an ACL data packet.
     acl_data_len: u16,
     /// Transfer direction.
@@ -404,7 +381,7 @@ impl Alloc {
         assert!(acl_data_len >= hci::ACL_LE_MIN_DATA_LEN);
         Arc::new(Self {
             transport,
-            free: parking_lot::Mutex::new(Vec::with_capacity(8)), // TODO: Tune
+            free: SyncMutex::new(Vec::with_capacity(8)), // TODO: Tune
             acl_data_len,
             dir,
         })

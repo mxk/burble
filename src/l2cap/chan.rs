@@ -9,6 +9,7 @@ use structbuf::{Unpack, Unpacker};
 use tracing::{error, trace};
 
 use crate::hci::ACL_LE_MIN_DATA_LEN;
+use crate::SyncMutexGuard;
 
 use super::*;
 
@@ -25,7 +26,7 @@ pub(crate) struct BasicChan {
 impl BasicChan {
     /// Creates a new channel.
     #[inline]
-    pub(super) fn new(cid: LeCid, cn: &Arc<ConnInfo>, tx: &Arc<tx::State>, mtu: u16) -> Self {
+    pub(super) fn new(cid: LeCid, cn: &hci::ArcConnInfo, tx: &Arc<tx::State>, mtu: u16) -> Self {
         assert!(mtu >= L2CAP_LE_MIN_MTU);
         Self {
             raw: RawChan::new(cid, cn, L2CAP_HDR + mtu as usize),
@@ -42,8 +43,8 @@ impl BasicChan {
 
     /// Returns connection information.
     #[inline(always)]
-    pub(crate) fn conn_info(&self) -> &ConnInfo {
-        &self.raw.conn
+    pub(crate) fn conn(&self) -> SyncMutexGuard<hci::Conn> {
+        self.raw.cn.lock()
     }
 
     /// Returns the current MTU.
@@ -146,18 +147,18 @@ impl<F: Fn(Unpacker) -> bool + Send> Future for RecvFilter<F> {
 #[derive(Debug)]
 pub(super) struct RawChan {
     pub cid: LeCid,
-    pub conn: Arc<ConnInfo>,
-    pub state: parking_lot::Mutex<State>,
+    pub cn: hci::ArcConnInfo,
+    pub state: SyncMutex<State>,
 }
 
 impl RawChan {
     /// Creates new channel state.
     #[inline]
-    fn new(cid: LeCid, cn: &Arc<ConnInfo>, max_frame_len: usize) -> Arc<Self> {
+    fn new(cid: LeCid, cn: &hci::ArcConnInfo, max_frame_len: usize) -> Arc<Self> {
         Arc::new(Self {
             cid,
-            conn: Arc::clone(cn),
-            state: parking_lot::Mutex::new(State::new(max_frame_len)),
+            cn: Arc::clone(cn),
+            state: SyncMutex::new(State::new(max_frame_len)),
         })
     }
 

@@ -9,7 +9,7 @@ use super::*;
 #[derive(Debug)]
 pub(super) struct State {
     alloc: Arc<Alloc>,
-    sched: parking_lot::Mutex<Scheduler>,
+    sched: SyncMutex<Scheduler>,
 }
 
 impl State {
@@ -19,7 +19,7 @@ impl State {
     pub fn new(t: &Arc<dyn host::Transport>, max_pkts: u16, acl_data_len: u16) -> Arc<Self> {
         Arc::new(Self {
             alloc: Alloc::new(Arc::clone(t), host::Direction::Out, acl_data_len),
-            sched: parking_lot::Mutex::new(Scheduler::new(max_pkts)),
+            sched: SyncMutex::new(Scheduler::new(max_pkts)),
         })
     }
 
@@ -50,12 +50,12 @@ impl State {
     }
 
     /// Removes LE-U logical link registration.
-    pub fn on_disconnect(&self, evt: hci::DisconnectionComplete) {
+    pub fn handle_disconnect(&self, evt: hci::DisconnectionComplete) {
         self.sched.lock().disconnect_link(LeU::new(evt.handle));
     }
 
     /// Updates controller's buffer status.
-    pub fn on_num_completed(&self, evt: &hci::NumberOfCompletedPackets) {
+    pub fn handle_num_completed(&self, evt: &hci::NumberOfCompletedPackets) {
         let pkts = (evt.as_ref().iter()).map(|&(cn, complete)| (LeU::new(cn), complete));
         self.sched.lock().ack(pkts);
     }

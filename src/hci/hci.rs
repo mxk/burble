@@ -1,12 +1,14 @@
 //! Host Controller Interface ([Vol 4] Part E).
 
-use std::fmt::Debug;
+use std::collections::BTreeMap;
+use std::fmt::{Debug, Display, Formatter};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{ready, Context, Poll};
 use std::time::Duration;
 
+use bitflags::bitflags;
 use structbuf::{Pack, Packer};
 use strum::IntoEnumIterator;
 use tokio_util::sync::CancellationToken;
@@ -14,7 +16,7 @@ use tracing::{debug, error};
 
 pub use {adv::*, cmd::*, consts::*, event::*, handle::*};
 
-use crate::host;
+use crate::{host, le, SyncArcMutexGuard, SyncMutex};
 
 mod adv;
 #[path = "cmd/cmd.rs"]
@@ -76,7 +78,7 @@ impl Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Reusable HCI command transfer.
-type CommandTransfer = parking_lot::Mutex<Option<Box<dyn host::Transfer>>>;
+type CommandTransfer = SyncMutex<Option<Box<dyn host::Transfer>>>;
 
 /// Host-side of a Host Controller Interface.
 #[derive(Clone, Debug)]
@@ -107,8 +109,15 @@ impl Host {
 
     /// Returns an event receiver.
     #[inline]
-    pub(crate) fn events(&self) -> Result<EventStream> {
-        self.router.events(Opcode::None)
+    pub(crate) fn events(&self) -> EventStream {
+        self.router.events(Opcode::None).unwrap() // Never returns an error
+    }
+
+    /// Returns connection information for the specified handle or [`None`] if
+    /// the handle is invalid.
+    #[inline(always)]
+    pub(crate) fn conn(&self, hdl: ConnHandle) -> Option<SyncArcMutexGuard<Conn>> {
+        self.router.conn(hdl)
     }
 
     /// Performs a reset and basic controller initialization
@@ -238,6 +247,110 @@ impl Future for EventLoop {
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         Poll::Ready(ready!(Pin::new(&mut self.h).poll(cx)).unwrap())
+    }
+}
+
+/// Shared connection information.
+pub(crate) type ArcConnInfo = Arc<SyncMutex<Conn>>;
+
+/// Information about an established connection.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Conn {
+    /// Local role.
+    pub role: Role,
+    /// Local public or random address. This is needed by the security manager
+    /// during pairing. [`LeConnectionComplete`] event does not provide this
+    /// information, so it must be set by the component that created the
+    /// connection.
+    pub local_addr: Option<le::Addr>,
+    /// Remote public or random address (identity address if IRK is used).
+    pub peer_addr: le::Addr,
+    /// Connection security properties.
+    pub sec: ConnSec,
+}
+
+impl Conn {
+    /// Creates new connection info.
+    #[inline(always)]
+    const fn new(e: &LeConnectionComplete) -> Self {
+        Self {
+            role: e.role,
+            local_addr: None,
+            peer_addr: e.peer_addr,
+            sec: ConnSec::empty(),
+        }
+    }
+
+    /// Returns whether the connection is authenticated (has MITM protection).
+    #[inline(always)]
+    pub const fn authn(&self) -> bool {
+        self.sec.contains(ConnSec::AUTHN)
+    }
+
+    /// Returns whether the remote device is authorized.
+    #[inline(always)]
+    pub const fn authz(&self) -> bool {
+        self.sec.contains(ConnSec::AUTHZ)
+    }
+
+    /// Returns whether a trusted relationship exists between the devices.
+    #[inline(always)]
+    pub const fn bond(&self) -> bool {
+        self.sec.contains(ConnSec::BOND)
+    }
+
+    /// Returns the encryption key length.
+    #[inline(always)]
+    pub const fn key_len(&self) -> u8 {
+        self.sec.intersection(ConnSec::KEY_LEN).bits
+    }
+}
+
+bitflags! {
+    /// Connection security properties.
+    #[allow(clippy::unsafe_derive_deserialize)]
+    #[derive(Default, serde::Deserialize, serde::Serialize)]
+    #[repr(transparent)]
+    pub(crate) struct ConnSec: u8 {
+        /// Authentication flag.
+        const AUTHN = 1 << 0;
+        /// Authorization flag.
+        const AUTHZ = 1 << 1;
+        /// Trusted relationship flag ([Vol 3] Part C, Section 9.4).
+        const BOND = 1 << 2;
+        /// Encryption key length mask.
+        const KEY_LEN = 0x1F << 3;
+    }
+}
+
+impl ConnSec {
+    /// Creates a key length property.
+    #[inline(always)]
+    pub const fn key_len(n: u8) -> Self {
+        assert!(56 <= n && n <= 128 && n % 8 == 0);
+        // SAFETY: All bits are valid
+        unsafe { Self::from_bits_unchecked(n) }
+    }
+}
+
+impl Display for ConnSec {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let k = self.intersection(Self::KEY_LEN).bits;
+        if k == 0 {
+            return f.write_str("Unencrypted");
+        }
+        let mut t = f.debug_tuple("Encrypted");
+        t.field(&format_args!("{k}-bit"));
+        if self.contains(Self::AUTHN) {
+            t.field(&"AUTHN");
+        }
+        if self.contains(Self::AUTHZ) {
+            t.field(&"AUTHZ");
+        }
+        if self.contains(Self::BOND) {
+            t.field(&"BOND");
+        }
+        t.finish()
     }
 }
 

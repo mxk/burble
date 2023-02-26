@@ -60,11 +60,11 @@ pub struct Cid(NonZeroU16);
 
 impl Cid {
     /// Attribute protocol channel.
-    pub(super) const ATT: Self = Self::fixed(0x0004);
+    pub(crate) const ATT: Self = Self::fixed(0x0004);
     /// LE signaling channel.
-    pub(super) const SIG: Self = Self::fixed(0x0005);
+    pub(crate) const SIG: Self = Self::fixed(0x0005);
     /// Security Manager protocol channel.
-    pub(super) const SMP: Self = Self::fixed(0x0006);
+    pub(crate) const SMP: Self = Self::fixed(0x0006);
 
     /// Wraps a fixed CID.
     #[inline]
@@ -136,8 +136,8 @@ impl Display for Cid {
 /// Channel identifier for an established LE-U logical link.
 #[derive(Clone, Copy, Eq, Hash, PartialEq)]
 pub struct LeCid {
-    pub(super) link: LeU,
-    pub(super) chan: Cid,
+    pub(crate) link: LeU,
+    pub(crate) chan: Cid,
 }
 
 impl Debug for LeCid {

@@ -4,7 +4,7 @@ use std::num::{NonZeroU16, NonZeroU8};
 use crate::name_of;
 
 /// Connection handle ([Vol 4] Part E, Section 5.4.2).
-#[derive(Clone, Copy, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[repr(transparent)]
 pub struct ConnHandle(NonZeroU16);
 
@@ -46,11 +46,13 @@ impl Display for ConnHandle {
 }
 
 /// Advertising set handle ([Vol 4] Part E, Section 7.8.53).
-#[derive(Clone, Copy, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[repr(transparent)]
 pub struct AdvHandle(NonZeroU8);
 
 impl AdvHandle {
+    /// Minimum valid advertising handle.
+    pub(super) const MIN: u8 = 0x00;
     /// Maximum valid advertising handle.
     pub(super) const MAX: u8 = 0xEF;
 

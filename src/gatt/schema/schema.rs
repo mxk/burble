@@ -62,6 +62,15 @@ impl Schema {
         (self.try_get(hdl).ok()).map(|at| (self.typ(at), self.value(at)))
     }
 
+    /// Returns characteristic information for any handle within the
+    /// characteristic definition. Returns [`None`] if the handle is not part of
+    /// any characteristic.
+    #[inline]
+    #[must_use]
+    pub(super) fn get_characteristic(&self, hdl: Handle) -> Option<CharInfo> {
+        (self.try_get(hdl).ok()).and_then(|at| self.characteristic_for_attr(at))
+    }
+
     /// Returns an iterator over primary services with optional UUID matching
     /// ([Vol 3] Part G, Section 4.4).
     #[inline]
@@ -158,7 +167,7 @@ impl Schema {
                 r?;
             }
         }
-        Ok(it.map_while(std::result::Result::ok).collect())
+        Ok(it.map_while(RspResult::ok).collect())
     }
 
     /// Logs schema contents.
@@ -186,7 +195,7 @@ impl Schema {
                             let sec = ((!at.is_primary_service()).then_some("(Secondary) "))
                                 .unwrap_or_default();
                             let uuid = Uuid::try_from(v.as_ref()).unwrap();
-                            if let Some(UuidType::Service(s)) = uuid.as_uuid16().map(Uuid16::typ) {
+                            if let UuidType::Service(s) = uuid.typ() {
                                 log!(at, "{sec}{s} <{uuid}>");
                             } else {
                                 log!(at, "{sec}Service <{uuid}>");
@@ -198,9 +207,7 @@ impl Schema {
                             let _prop = Prop::from_bits(v.u8()).unwrap();
                             vhdl = Handle::new(v.u16()).unwrap();
                             let uuid = Uuid::try_from(v.as_ref()).unwrap();
-                            if let Some(UuidType::Characteristic(c)) =
-                                uuid.as_uuid16().map(Uuid16::typ)
-                            {
+                            if let UuidType::Characteristic(c) = uuid.typ() {
                                 log!(at, "|__ {c} <{uuid}>");
                             } else {
                                 log!(at, "|__ Characteristic <{uuid}>");
@@ -291,8 +298,7 @@ impl Schema {
         Ok(hdl) // Characteristic value access
     }
 
-    /// Returns the attribute and characteristic information for the specified
-    /// handle.
+    /// Returns characteristic information for the specified attribute.
     fn characteristic_for_attr(&self, at: &Attr) -> Option<CharInfo> {
         use private::Group;
         let i = self.index(at);
@@ -534,11 +540,19 @@ impl<'a, T> AsRef<[u8]> for SchemaEntry<'a, T> {
 /// Information about a single characteristic.
 #[allow(dead_code)] // TODO: Remove
 #[derive(Clone, Copy, Debug)]
-struct CharInfo<'a> {
+pub(super) struct CharInfo<'a> {
     props: Prop,
     ext_props: Option<ExtProp>,
     val: &'a Attr,
     desc: &'a [Attr],
+}
+
+impl CharInfo<'_> {
+    /// Returns the value attribute handle.
+    #[inline(always)]
+    pub const fn value_handle(&self) -> Handle {
+        self.val.hdl
+    }
 }
 
 /// Attribute entry. `val` contains start and end indices of the attribute value

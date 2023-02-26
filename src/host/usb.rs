@@ -342,6 +342,7 @@ mod libusb {
     use std::task::{Poll, Waker};
     use std::time::Duration;
 
+    use crate::{SyncMutex, SyncMutexGuard};
     use rusb::{constants::*, ffi::*, *};
     use structbuf::{Pack, Packer, StructBuf};
     use tracing::{debug, error, info, trace, warn};
@@ -367,7 +368,7 @@ mod libusb {
 
         // The waker mutex is used to synchronize TransferFuture with the event
         // thread.
-        waker: parking_lot::Mutex<Option<Waker>>,
+        waker: SyncMutex<Option<Waker>>,
         result: Option<Result<()>>,
 
         // The DeviceHandle must stay open while the transfer is in flight to
@@ -429,7 +430,7 @@ mod libusb {
                 } else {
                     StructBuf::with_capacity(buf_cap)
                 },
-                waker: parking_lot::Mutex::new(None),
+                waker: SyncMutex::new(None),
                 result: None,
                 dev: Arc::clone(dev),
             });
@@ -553,9 +554,7 @@ mod libusb {
         /// Ensures mutual exclusion between the callback and
         /// [`TransferFuture`]. Returns [`None`] if `raw` is null.
         #[inline]
-        fn lock<'a>(
-            raw: *mut Self,
-        ) -> Option<(parking_lot::MutexGuard<'a, Option<Waker>>, &'a mut Self)> {
+        fn lock<'a>(raw: *mut Self) -> Option<(SyncMutexGuard<'a, Option<Waker>>, &'a mut Self)> {
             // SAFETY: raw is either null or a valid shared reference
             let waker = unsafe { raw.as_ref() }?.waker.lock();
             // SAFETY: raw is a valid reference, and we have exclusive access

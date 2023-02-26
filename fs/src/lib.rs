@@ -79,7 +79,7 @@ impl Default for GattServerStore {
 }
 
 impl burble::PeerStore for GattServerStore {
-    type Value = gatt::BondedClient;
+    type Value = gatt::Cache;
 
     #[inline(always)]
     fn save(&self, peer: Addr, v: &Self::Value) -> bool {
@@ -202,9 +202,7 @@ mod tests {
     fn save_load() {
         const PEER: Addr =
             Addr::Public(RawAddr::from_le_bytes([0x55, 0x44, 0x33, 0x22, 0x11, 0x00]));
-        const KEYS: smp::Keys = smp::Keys {
-            ltk: burble_crypto::LTK::new(u128::MAX),
-        };
+        const KEYS: smp::Keys = smp::Keys::test();
         let tmp = (Builder::new().prefix(concat!("burble-test-")).tempdir()).unwrap();
         let db = KeyStore(Dir(tmp.path().to_path_buf()));
         assert!(db.save(PEER, &KEYS));

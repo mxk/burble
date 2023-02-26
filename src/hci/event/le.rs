@@ -64,7 +64,7 @@ impl FromEvent for LeConnectionComplete {
 /// ([Vol 4] Part E, Section 7.7.65.5).
 #[derive(Clone, Debug)]
 pub struct LeLongTermKeyRequest {
-    pub conn_handle: ConnHandle,
+    pub handle: ConnHandle,
     pub rand: u64,
     pub ediv: u16,
 }
@@ -77,7 +77,7 @@ impl FromEvent for LeLongTermKeyRequest {
 
     fn unpack(e: &Event, p: &mut Unpacker) -> Self {
         Self {
-            conn_handle: e.conn_handle().unwrap(),
+            handle: e.conn_handle().unwrap(),
             rand: p.u64(),
             ediv: p.u16(),
         }

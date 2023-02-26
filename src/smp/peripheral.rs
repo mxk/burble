@@ -6,7 +6,7 @@ use burble_crypto::{Nonce, PublicKeyX, SecretKey, LTK};
 
 use crate::hci::Role;
 use crate::l2cap::BasicChan;
-use crate::le;
+use crate::{hci, le};
 
 use super::*;
 
@@ -22,7 +22,7 @@ impl Peripheral {
     /// Creates a new peripheral security manager.
     #[inline(always)]
     pub(crate) fn new(ch: BasicChan) -> Self {
-        assert_eq!(ch.conn_info().role, Role::Peripheral);
+        assert_eq!(ch.conn().role, Role::Peripheral);
         Self { ch }
     }
 
@@ -41,10 +41,11 @@ impl Peripheral {
             }
             Err(reason) => return self.fail(reason).await,
         };
-        let Phase1 { a, b, method } = self.phase1(dev, init).await?;
+        let Phase1 { a, b, method, sec } = self.phase1(dev, init).await?;
         let (peer, ltk) = self.phase2(dev, method, a.into(), b.into()).await?;
-        let mut keys = Keys { ltk };
+        let mut keys = Keys { sec, ltk };
         (self.phase3(b.initiator_keys, b.responder_keys, &mut keys)).await?;
+        // TODO: Don't save if not bonding, provide to SecDb directly
         if !store.save(peer, &keys) {
             return Err(Error::Io(io::Error::new(
                 io::ErrorKind::Other,
@@ -71,8 +72,14 @@ impl Peripheral {
             );
             return self.fail(Reason::EncryptionKeySize).await;
         }
+        // TODO: Allow pairing without bonding
+        if !a.auth_req.contains(AuthReq::BONDING) {
+            error!("Peer did not request bonding");
+            return self.fail(Reason::UnspecifiedReason).await;
+        }
         let mut b = PairingParams {
             io_cap: dev.io_cap(),
+            auth_req: AuthReq::BONDING.union(AuthReq::SC),
             ..PairingParams::default()
         };
         if !matches!(b.io_cap, IoCap::NoInputNoOutput) {
@@ -89,13 +96,24 @@ impl Peripheral {
         } else {
             KeyGenMethod::JustWorks
         };
+        // TODO: Out-of-band may be unauthenticated
+        // ([Vol 3] Part H, Section 2.3.5.1)
+        let authn = !matches!(method, KeyGenMethod::JustWorks);
         // TODO: Compile-time option to allow Just Works?
-        if b.auth_req.contains(AuthReq::MITM) && matches!(method, KeyGenMethod::JustWorks) {
+        if b.auth_req.contains(AuthReq::MITM) && !authn {
             error!("Just Works association model selected, but MITM protection is required");
             return self.fail(Reason::AuthenticationRequirements).await;
         }
         self.send(Command::PairingResponse(b)).await?;
-        Ok(Phase1 { a, b, method })
+        // [Vol 3] Part H, Section 2.3.4
+        let mut sec = hci::ConnSec::key_len(a.max_key_len.min(b.max_key_len));
+        if authn {
+            sec.insert(hci::ConnSec::AUTHN);
+        }
+        if b.auth_req.contains(AuthReq::BONDING) {
+            sec.insert(hci::ConnSec::BOND);
+        }
+        Ok(Phase1 { a, b, method, sec })
     }
 
     /// Performs LE Secure Connections Long Term Key (LTK) Generation phase
@@ -134,8 +152,15 @@ impl Peripheral {
         // Authentication stage 2 and long term key calculation
         // ([Vol 3] Part H, Section 2.3.5.6.5 and C.2.2.4).
         let (peer, a, b) = {
-            let cn = self.ch.conn_info();
-            (cn.peer_addr, cn.peer_addr.into(), cn.local_addr.into())
+            let (peer_addr, local_addr) = {
+                let cn = self.ch.conn();
+                (cn.peer_addr, cn.local_addr)
+            };
+            let Some(local_addr) = local_addr else {
+                error!("Pairing failed because local address is unknown");
+                return self.fail(Reason::UnspecifiedReason).await;
+            };
+            (peer_addr, peer_addr.into(), local_addr.into())
         };
         let (mac_key, ltk) = dh_key.f5(na, nb, a, b);
         let eb = mac_key.f6(nb, na, ra, iob, b, a);
@@ -146,7 +171,7 @@ impl Peripheral {
             return self.fail(Reason::DhKeyCheckFailed).await;
         }
         self.send(Command::PairingDhKeyCheck(eb)).await?;
-        Ok((peer, ltk)) // TODO: Set authentication status
+        Ok((peer, ltk))
     }
 
     /// Implements Authentication stage 1 – Just Works or Numeric Comparison
@@ -250,6 +275,7 @@ struct Phase1 {
     a: PairingParams,
     b: PairingParams,
     method: KeyGenMethod,
+    sec: hci::ConnSec,
 }
 
 /// Output of phase 2, authentication stage 1.

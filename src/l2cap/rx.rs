@@ -9,7 +9,7 @@ use super::*;
 #[derive(Debug)]
 pub(super) struct State {
     xfer: tokio::sync::mpsc::Receiver<host::Result<AclTransfer>>,
-    recv: parking_lot::Mutex<Receiver>, // TODO: Get rid of Mutex
+    recv: SyncMutex<Receiver>, // TODO: Get rid of Mutex
 }
 
 impl State {
@@ -20,7 +20,7 @@ impl State {
         tokio::task::spawn(Self::recv_task(Arc::clone(t), acl_data_len, tx));
         Self {
             xfer: rx,
-            recv: parking_lot::Mutex::new(Receiver::new()),
+            recv: SyncMutex::new(Receiver::new()),
         }
     }
 

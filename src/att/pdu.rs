@@ -93,6 +93,7 @@ impl Bearer {
     pub(super) fn exchange_mtu_rsp(&self, mtu: u16) -> RspResult<Rsp> {
         self.rsp(ExchangeMtuRsp, |p| {
             p.u16(mtu);
+            Ok(())
         })
     }
 }
@@ -150,6 +151,7 @@ impl Bearer {
                     p.u16(h).u128(u);
                 }
             }
+            Ok(())
         })
     }
 
@@ -163,6 +165,7 @@ impl Bearer {
             for (hdl, group_end) in it.take(p.remaining() / (2 + 2)) {
                 p.u16(hdl).u16(group_end.unwrap_or(hdl));
             }
+            Ok(())
         })
     }
 }
@@ -241,13 +244,9 @@ impl Pdu {
 impl Bearer {
     /// Returns an `ATT_READ_BY_TYPE_RSP` PDU ([Vol 3] Part F, Section 3.4.4.2).
     #[allow(single_use_lifetimes)]
-    pub fn read_by_type_rsp<'a>(
-        &self,
-        start: Handle,
-        it: impl Iterator<Item = (Handle, &'a [u8])>,
-    ) -> RspResult<Rsp> {
-        self.read_by_type_op(ReadByTypeRsp, start, it, |p, hdl| {
-            p.u16(hdl);
+    pub fn read_by_type_rsp(&self, start: Handle, it: impl ValueIter<Handle>) -> RspResult<Rsp> {
+        self.read_by_type_op(ReadByTypeRsp, start, it, |p, hdl, val| {
+            p.u16(hdl).put(val);
         })
     }
 
@@ -264,79 +263,85 @@ impl Bearer {
     /// Returns an `ATT_READ_MULTIPLE_RSP` PDU
     /// ([Vol 3] Part F, Section 3.4.4.8).
     #[allow(single_use_lifetimes)]
-    pub fn read_multiple_rsp<'a>(&self, mut it: impl Iterator<Item = &'a [u8]>) -> RspResult<Rsp> {
+    pub fn read_multiple_rsp<T>(&self, mut it: impl ValueIter<T>) -> RspResult<Rsp> {
         self.rsp(ReadMultipleRsp, |p| {
-            while p.remaining() > 0 {
-                let Some(v) = it.next() else { break };
-                put_truncate(p, v);
+            while p.remaining() > 0 && it.more()? {
+                put_truncate(p, it.value());
             }
+            Ok(())
         })
     }
 
     /// Returns an `ATT_READ_BY_GROUP_TYPE_RSP` PDU
     /// ([Vol 3] Part F, Section 3.4.4.10).
     #[allow(single_use_lifetimes)]
-    pub fn read_by_group_type_rsp<'a>(
+    pub fn read_by_group_type_rsp(
         &self,
         start: Handle,
-        it: impl Iterator<Item = (HandleRange, &'a [u8])>,
+        it: impl ValueIter<HandleRange>,
     ) -> RspResult<Rsp> {
-        self.read_by_type_op(ReadByGroupTypeRsp, start, it, |p, hdls| {
-            p.u16(hdls.start()).u16(hdls.end());
+        self.read_by_type_op(ReadByGroupTypeRsp, start, it, |p, hdls, val| {
+            p.u16(hdls.start()).u16(hdls.end()).put(val);
         })
     }
 
     /// Returns an `ATT_READ_MULTIPLE_VARIABLE_RSP` PDU
     /// ([Vol 3] Part F, Section 3.4.4.12).
     #[allow(single_use_lifetimes)]
-    pub fn read_multiple_variable_rsp<'a>(
-        &self,
-        mut it: impl Iterator<Item = &'a [u8]>,
-    ) -> RspResult<Rsp> {
+    pub fn read_multiple_variable_rsp<T>(&self, mut it: impl ValueIter<T>) -> RspResult<Rsp> {
         self.rsp(ReadMultipleVariableRsp, |p| {
-            while p.remaining() >= 2 {
-                let Some(v) = it.next() else { break };
+            while p.remaining() >= 2 && it.more()? {
+                let v = it.value();
                 p.u16(u16::try_from(v.len()).expect("attribute value too long"));
                 put_truncate(p, v);
             }
+            Ok(())
         })
     }
 
     #[allow(single_use_lifetimes)]
     #[inline]
-    fn read_by_type_op<'a, H: Copy>(
+    fn read_by_type_op<H: Copy>(
         &self,
         op: Opcode,
         start: Handle,
-        it: impl Iterator<Item = (H, &'a [u8])>,
-        put_hdl: impl Fn(&mut Packer, H),
+        mut it: impl ValueIter<H>,
+        put: impl Fn(&mut Packer, H, &[u8]),
     ) -> RspResult<Rsp> {
-        let mut it = it.peekable();
-        let Some(&(_, v)) = it.peek() else {
-            return Err(super::ErrorRsp::new(u8::from(op) - 1, Some(start), AttributeNotFound))
-        };
-        let same_len = v.len();
-        let hdr = mem::size_of::<H>();
-        Ok(Rsp(self.pack(op, |p| {
+        self.rsp(op, |p| {
+            if !it.more()? {
+                return Err(super::ErrorRsp::new(
+                    u8::from(op) - 1,
+                    Some(start),
+                    AttributeNotFound,
+                ));
+            }
+            let same_len = it.value().len();
+            let hdr = mem::size_of::<H>();
             let n = same_len
                 .min(p.remaining() - (1 + hdr))
                 .min(u8::MAX as usize - hdr);
             #[allow(clippy::cast_possible_truncation)]
             p.u8((hdr + n) as u8);
-            for (h, v) in it
-                .take(p.remaining() / (hdr + n))
-                .take_while(|&(_, v)| v.len() == same_len)
+            // SAFETY: `n <= it.value().len()`
+            put(p, it.handle(), unsafe { it.value().get_unchecked(..n) });
+            while p.remaining() >= hdr + n
+                && it.more().unwrap_or(false)
+                && it.value().len() == same_len
             {
-                put_hdl(p, h);
-                // SAFETY: `n <= v.len()`
-                p.put(unsafe { v.get_unchecked(..n) });
+                // SAFETY: `n <= it.value().len()`
+                put(p, it.handle(), unsafe { it.value().get_unchecked(..n) });
             }
-        })))
+            Ok(())
+        })
     }
 
     #[inline]
     fn read_op(&self, op: Opcode, v: &[u8]) -> RspResult<Rsp> {
-        self.rsp(op, |p| put_truncate(p, v))
+        self.rsp(op, |p| {
+            put_truncate(p, v);
+            Ok(())
+        })
     }
 }
 
@@ -360,7 +365,7 @@ impl Pdu {
 impl Bearer {
     /// Returns an `ATT_WRITE_RSP` PDU ([Vol 3] Part F, Section 3.4.5.2).
     pub fn write_rsp(&self) -> RspResult<Rsp> {
-        self.rsp(WriteRsp, |_| ())
+        self.rsp(WriteRsp, |_| Ok(()))
     }
 }
 
@@ -390,13 +395,14 @@ impl Bearer {
     pub fn prepare_write_rsp(&self, hdl: Handle, off: u16, v: &[u8]) -> RspResult<Rsp> {
         self.rsp(PrepareWriteRsp, |p| {
             p.u16(hdl).u16(off).put(v);
+            Ok(())
         })
     }
 
     /// Returns an `ATT_EXECUTE_WRITE_RSP` PDU
     /// ([Vol 3] Part F, Section 3.4.6.4).
     pub fn execute_write_rsp(&self) -> RspResult<Rsp> {
-        self.rsp(ExecuteWriteRsp, |_| ())
+        self.rsp(ExecuteWriteRsp, |_| Ok(()))
     }
 }
 

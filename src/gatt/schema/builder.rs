@@ -71,10 +71,10 @@ impl Builder<Schema> {
         )
     }
 
-    /// Returns the final read-only schema.
+    /// Returns the final read-only schema and I/O map.
     #[inline]
     #[must_use]
-    pub fn freeze(mut self) -> Schema {
+    pub(in crate::gatt) fn freeze(mut self) -> (Schema, IoMap) {
         let hash = self.calc_hash().to_le_bytes();
         let hash = self.append_data(hash);
         for at in &mut self.0.attr {
@@ -83,10 +83,13 @@ impl Builder<Schema> {
                 break; // Only one instance is allowed
             }
         }
-        Schema {
-            attr: self.0.attr.into_boxed_slice(),
-            data: self.0.data.into_boxed_slice(),
-        }
+        (
+            Schema {
+                attr: self.0.attr.into_boxed_slice(),
+                data: self.0.data.into_boxed_slice(),
+            },
+            IoMap(self.0.io),
+        )
     }
 
     /// Defines a primary service ([Vol 3] Part G, Section 3.1).
@@ -120,6 +123,12 @@ impl Builder<Schema> {
     /// Declares a primary or secondary service and any included services
     /// ([Vol 3] Part G, Section 3.2).
     fn service(&mut self, typ: Declaration, uuid: Uuid, include: &[Handle]) -> Handle {
+        if let Some((UuidType::Service(s), uuid16)) = uuid.as_uuid16().map(|u| (u.typ(), u)) {
+            assert!(
+                s.multi_instance() || !self.attr.iter().any(|at| at.typ == Some(uuid16)),
+                "only one instance of the {s} service is allowed"
+            );
+        }
         let hdl = self.decl(typ, |v| v.uuid(uuid));
         for &inc in include {
             let s = self.service_group(inc).expect("invalid service handle");
@@ -171,28 +180,29 @@ impl Builder<ServiceDef> {
         uuid: impl Into<Uuid>,
         props: Prop,
         perms: impl Into<Perms>,
+        io: impl Into<Io>,
         descs: impl FnOnce(&mut Builder<CharacteristicDef>) -> T,
     ) -> (Handle, T) {
         let hdl = self.decl_value(uuid.into(), props, perms.into());
+        self.io.insert(hdl, io.into());
         let b = self.builder(props.contains(Prop::EXT_PROPS));
         let v = descs(b);
         b.finalize();
         (hdl, v)
     }
 
-    /// Defines a read-only characteristic with the value stored within the
-    /// schema ([Vol 3] Part G, Section 3.3).
+    /// Defines a read-only characteristic with a schema-stored value
+    /// ([Vol 3] Part G, Section 3.3).
     #[inline]
     pub fn ro_characteristic<T>(
         &mut self,
         uuid: impl Into<Uuid>,
-        val: impl AsRef<[u8]>,
         perms: impl Into<Perms>,
+        val: impl AsRef<[u8]>,
         descs: impl FnOnce(&mut Builder<CharacteristicDef>) -> T,
     ) -> T {
         self.decl_value(uuid.into(), Prop::READ, perms.into());
-        let val = self.append_data(val);
-        self.attr.last_mut().unwrap().val = val;
+        self.append_val(val);
         let b = self.builder(false);
         let v = descs(b);
         b.finalize();
@@ -225,9 +235,29 @@ impl Builder<CharacteristicDef> {
     /// Declares a non-GATT profile characteristic descriptor
     /// ([Vol 3] Part G, Section 3.3.3).
     #[inline]
-    pub fn descriptor(&mut self, uuid: impl Into<Uuid>, perms: impl Into<Perms>) -> Handle {
-        let uuid = uuid.into();
-        self.attr(uuid, perms.into())
+    pub fn descriptor(
+        &mut self,
+        uuid: impl Into<Uuid>,
+        io: impl Into<Io>,
+        perms: impl Into<Perms>,
+    ) -> Handle {
+        let perms = perms.into();
+        let hdl = self.attr(uuid.into(), perms);
+        self.io.insert(hdl, io.into());
+        hdl
+    }
+
+    /// Declares a read-only non-GATT profile characteristic descriptor with the
+    /// value stored in the schema ([Vol 3] Part G, Section 3.3.3).
+    #[inline]
+    pub fn ro_descriptor(
+        &mut self,
+        uuid: impl Into<Uuid>,
+        val: impl AsRef<[u8]>,
+        perms: impl Into<Perms>,
+    ) {
+        self.attr(uuid.into(), perms.into());
+        self.append_val(val);
     }
 
     /// Declares a Characteristic Extended Properties descriptor
@@ -307,6 +337,7 @@ impl Builder<CharacteristicDef> {
 pub struct SchemaBuilder {
     attr: Vec<Attr>,
     data: Vec<u8>,
+    io: BTreeMap<Handle, Io>,
     need_ext_props: bool,
     have_cccd: bool,
     have_aggregate_fmt: bool,
@@ -359,6 +390,12 @@ impl SchemaBuilder {
             perms,
         });
         hdl
+    }
+
+    /// Appends a read-only value for the last attribute entry.
+    #[inline]
+    fn append_val(&mut self, v: impl AsRef<[u8]>) {
+        self.attr.last_mut().expect("empty schema").val = self.append_data(v);
     }
 
     /// Appends `v` to schema data and returns the resulting index range.
@@ -514,27 +551,37 @@ mod tests {
                 Characteristic::DeviceName,
                 Prop::READ | Prop::WRITE,
                 Access::READ_WRITE,
+                Io::NONE,
                 |_| {},
             );
-            b.characteristic(Characteristic::Appearance, Prop::READ, Access::READ, |_| {})
+            b.characteristic(
+                Characteristic::Appearance,
+                Prop::READ,
+                Access::READ,
+                Io::NONE,
+                |_| {},
+            )
         });
         b.primary_service(Service::GenericAttribute, [], |b| {
             b.characteristic(
                 Characteristic::ServiceChanged,
                 Prop::INDICATE,
                 Access::NONE,
+                Io::NONE,
                 |b| b.client_cfg(Access::READ_WRITE),
             );
             b.characteristic(
                 Characteristic::ClientSupportedFeatures,
                 Prop::READ | Prop::WRITE,
                 Access::READ_WRITE,
+                Io::NONE,
                 |_| {},
             );
             b.characteristic(
                 Characteristic::DatabaseHash,
                 Prop::READ,
                 Access::READ,
+                Io::NONE,
                 |_| {},
             );
         });
@@ -547,6 +594,7 @@ mod tests {
                 Characteristic::GlucoseMeasurement,
                 Prop::READ | Prop::INDICATE | Prop::EXT_PROPS,
                 Access::READ,
+                Io::NONE,
                 |b| b.client_cfg(Access::READ_WRITE),
             );
         });
@@ -555,9 +603,11 @@ mod tests {
                 Characteristic::BatteryLevel,
                 Prop::READ,
                 Access::READ,
+                Io::NONE,
                 |_| {},
             );
         });
-        b.freeze()
+        let (s, _) = b.freeze();
+        s
     }
 }

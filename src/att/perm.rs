@@ -23,6 +23,15 @@ impl Access {
     /// Read/write access permission/request.
     pub const READ_WRITE: Self = Self(Perm::READ_WRITE);
 
+    /// Copies parameters from an HCI connection.
+    #[inline]
+    pub(crate) fn copy_from_conn(self, cn: &hci::Conn) -> Self {
+        let mut p = self.0;
+        p.set(Perm::AUTHN, cn.authn());
+        p.set(Perm::AUTHZ, cn.authz());
+        Self(p).key_len(cn.key_len())
+    }
+
     /// Sets the authentication flag.
     #[inline]
     pub const fn authn(self) -> Self {
@@ -105,6 +114,15 @@ impl Perms {
         ps.0[i] = a.0;
         ps.0[j] = b.0;
         ps
+    }
+
+    /// Returns whether read and/or write access is permitted, ignoring any
+    /// other requirements.
+    #[inline(always)]
+    #[must_use]
+    pub const fn contains(self, rw: Access) -> bool {
+        use ErrorCode::*;
+        !matches!(self.test(rw), Err(ReadNotPermitted | WriteNotPermitted))
     }
 
     /// Tests whether an access request should be allowed.

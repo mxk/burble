@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::fmt::Formatter;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::pin::Pin;
@@ -12,7 +13,7 @@ use tracing::{trace, warn};
 
 pub use {hci::*, le::*};
 
-use crate::{host, le::RawAddr};
+use crate::{host, le::RawAddr, AsyncMutex, AsyncRwLock, SyncArcMutexGuard, SyncMutex};
 
 use super::*;
 
@@ -113,7 +114,6 @@ impl Default for EventHeader {
 /// all existing handles are dropped.
 ///
 /// It is `!Send` to prevent it from being held across `await` points.
-#[derive(Debug)]
 #[must_use]
 #[repr(transparent)]
 pub struct Event(
@@ -251,6 +251,13 @@ impl Event {
     }
 }
 
+impl Debug for Event {
+    #[inline]
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?} {:02X?}", self.0.hdr, self.0.params().as_ref())
+    }
+}
+
 /// Trait for unpacking event parameters.
 pub(crate) trait FromEvent {
     /// Returns whether `unpack` supports event code `c`.
@@ -291,8 +298,8 @@ impl EventUnpacker for Unpacker<'_> {
 /// must process the event asynchronously before the next event can be received.
 #[derive(Debug)]
 pub(super) struct EventRouter {
-    recv: parking_lot::Mutex<Receivers>,
-    xfer: tokio::sync::Mutex<Arc<tokio::sync::RwLock<EventTransfer>>>,
+    recv: SyncMutex<Receivers>,
+    xfer: AsyncMutex<Arc<AsyncRwLock<EventTransfer>>>,
 }
 
 impl EventRouter {
@@ -300,8 +307,8 @@ impl EventRouter {
     #[inline]
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
-            recv: parking_lot::Mutex::default(),
-            xfer: tokio::sync::Mutex::new(Arc::new(tokio::sync::RwLock::with_max_readers(
+            recv: SyncMutex::default(),
+            xfer: AsyncMutex::new(Arc::new(AsyncRwLock::with_max_readers(
                 EventTransfer::default(),
                 64,
             ))),
@@ -342,6 +349,13 @@ impl EventRouter {
         })
     }
 
+    /// Returns connection information for the specified handle or [`None`] if
+    /// the handle is invalid.
+    #[inline]
+    pub fn conn(&self, hdl: ConnHandle) -> Option<SyncArcMutexGuard<Conn>> {
+        self.recv.lock().conns.get(&hdl).map(SyncMutex::lock_arc)
+    }
+
     /// Receives the next event, notifies registered receivers, and returns the
     /// event to the caller.
     ///
@@ -372,31 +386,10 @@ impl EventRouter {
             }
             e
         })?;
-        let evt = Event::new(xfer)?;
-        let hdr = &evt.0.hdr;
 
         // TODO: One second command timeout ([Vol 4] Part E, Section 4.4)
-
-        // Provide Events to registered receivers and notify them
-        let mut rs = self.recv.lock();
-        if hdr.code.is_cmd() {
-            rs.cmd_quota = hdr.cmd_quota;
-            if hdr.opcode.is_some() {
-                (rs.queue.iter_mut().find(|r| r.opcode == hdr.opcode)).map_or_else(
-                    || warn!("Ignored {} command completion", hdr.opcode),
-                    |r| r.ready(&rwlock),
-                );
-            }
-        } else {
-            let mut received = false;
-            for r in rs.queue.iter_mut().filter(|r| r.opcode.is_none()) {
-                r.ready(&rwlock);
-                received = true;
-            }
-            if !received {
-                trace!("Ignored event: {evt:?}");
-            }
-        }
+        let evt = Event::new(xfer)?;
+        self.recv.lock().notify(&rwlock, &evt);
         Ok(evt)
     }
 }
@@ -406,6 +399,7 @@ impl EventRouter {
 /// commands, so it is likely to outperform `HashMap` and `BTreeMap`.
 #[derive(Debug)]
 struct Receivers {
+    conns: BTreeMap<ConnHandle, ArcConnInfo>,
     queue: VecDeque<Receiver>,
     err: Option<host::Error>,
     next_id: u64,
@@ -413,10 +407,52 @@ struct Receivers {
     _cmd_wakers: Vec<Waker>, // TODO: Implement
 }
 
+impl Receivers {
+    // Notifies registered receives of a new event.
+    fn notify(&mut self, xfer: &Arc<AsyncRwLock<EventTransfer>>, evt: &Event) {
+        let hdr = &evt.0.hdr;
+        if hdr.code.is_cmd() {
+            self.cmd_quota = hdr.cmd_quota;
+            if hdr.opcode.is_some() {
+                (self.queue.iter_mut().find(|r| r.opcode == hdr.opcode)).map_or_else(
+                    || warn!("Ignored {} command completion", hdr.opcode),
+                    |r| r.ready(xfer),
+                );
+            }
+            return;
+        }
+        if hdr.status.is_ok() {
+            // Update global connection information
+            match hdr.code {
+                EventCode::LeConnectionComplete | EventCode::LeEnhancedConnectionComplete => {
+                    let e: LeConnectionComplete = evt.get();
+                    let cn = Arc::new(SyncMutex::new(Conn::new(&e)));
+                    let old = self.conns.insert(e.handle, cn);
+                    assert!(old.is_none(), "duplicate connection handle");
+                }
+                EventCode::DisconnectionComplete => {
+                    // TODO: Store reason?
+                    self.conns.remove(&ConnHandle::new(hdr.handle).unwrap());
+                }
+                _ => {}
+            }
+        }
+        let mut received = false;
+        for r in self.queue.iter_mut().filter(|r| r.opcode.is_none()) {
+            r.ready(xfer);
+            received = true;
+        }
+        if !received {
+            trace!("Ignored event: {evt:?}");
+        }
+    }
+}
+
 impl Default for Receivers {
     #[inline]
     fn default() -> Self {
         Self {
+            conns: BTreeMap::new(),
             queue: VecDeque::with_capacity(8),
             err: None,
             next_id: 0,
@@ -443,7 +479,7 @@ impl Receiver {
     /// Panics if `try_read_owned()` fails. The caller prevents this by holding
     /// another read lock and ensuring that there are no writers waiting.
     #[inline]
-    fn ready(&mut self, xfer: &Arc<tokio::sync::RwLock<EventTransfer>>) {
+    fn ready(&mut self, xfer: &Arc<AsyncRwLock<EventTransfer>>) {
         self.ready = Some(Arc::clone(xfer).try_read_owned().unwrap());
         if let Some(w) = self.waker.take() {
             w.wake();
@@ -466,24 +502,21 @@ impl EventStream {
     pub fn next(&mut self) -> NextEvent {
         NextEvent(self)
     }
-}
 
-/// Next event future. This future is cancel safe.
-#[derive(Debug)]
-#[repr(transparent)]
-pub(crate) struct NextEvent<'a>(&'a mut EventStream);
+    /// Returns connection information for the specified handle or [`None`] if
+    /// the handle is invalid.
+    #[inline(always)]
+    pub fn conn(&self, hdl: ConnHandle) -> Option<SyncArcMutexGuard<Conn>> {
+        self.router.conn(hdl)
+    }
 
-impl Future for NextEvent<'_> {
-    type Output = Result<Event>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut rs = self.0.router.recv.lock();
+    /// Polls for the next event.
+    pub fn poll(&mut self, cx: &mut Context<'_>) -> Poll<<NextEvent as Future>::Output> {
+        let mut rs = self.router.recv.lock();
         if let Some(e) = rs.err {
             return Poll::Ready(Err(Error::Host(e)));
         }
-        let r = (rs.queue.iter_mut())
-            .find(|r| r.id == self.0.id)
-            .expect("unregistered event stream");
+        let r = (rs.queue.iter_mut().find(|r| r.id == self.id)).expect("unregistered event stream");
         if let Some(xfer) = r.ready.take() {
             Poll::Ready(Ok(Event(xfer, PhantomData)))
         } else {
@@ -501,6 +534,20 @@ impl Drop for EventStream {
             // async tasks are executed.
             rs.queue.swap_remove_back(i);
         }
+    }
+}
+
+/// Next event future. This future is cancel safe.
+#[derive(Debug)]
+#[repr(transparent)]
+pub(crate) struct NextEvent<'a>(&'a mut EventStream);
+
+impl Future for NextEvent<'_> {
+    type Output = Result<Event>;
+
+    #[inline(always)]
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.0.poll(cx)
     }
 }
 

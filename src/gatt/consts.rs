@@ -53,14 +53,20 @@ bitflags! {
     /// ([Vol 3] Part G, Section 3.3.3.3).
     #[derive(Default)]
     #[repr(transparent)]
-    pub struct ClientCfg: u8 {
+    pub struct ClientCfg: u16 {
         /// The Characteristic Value shall be notified. This value can only be
         /// set if the characteristic's properties have the `NOTIFY` bit set.
         const NOTIFY = 1 << 0;
         /// The Characteristic Value shall be indicated. This value can only be
         /// set if the characteristic's properties have the `INDICATE` bit set.
         const INDICATE = 1 << 0;
+        /// Notify or indicate bit mask.
+        const NOTIFY_MASK = Self::NOTIFY.bits | Self::INDICATE.bits;
     }
+}
+
+impl ClientCfg {
+    pub(super) const INIT: [u8; 2] = Self::empty().bits().to_le_bytes();
 }
 
 /// Characteristic presentation format types ([Assigned Numbers] Section 2.4.1).
