@@ -19,7 +19,7 @@ use super::*;
 /// maintains shared client state.
 #[derive(Debug)]
 pub struct Server {
-    db: Schema,
+    db: Db,
     io: IoMap,
     store: Arc<CacheStore>,
     clients: SyncMutex<BTreeMap<Addr, Weak<SyncMutex<ClientCtx>>>>,
@@ -29,26 +29,26 @@ impl Server {
     /// Creates a new GATT server.
     #[inline]
     #[must_use]
-    pub fn new(mut db: Builder<Schema>, store: Arc<CacheStore>) -> Arc<Self> {
+    pub fn new(mut db: Builder<Db>, store: Arc<CacheStore>) -> Arc<Self> {
         let srv_io = Io::from(|_: IoReq| unreachable!());
         // [Vol 3] Part G, Section 7
-        db.primary_service(Service::GenericAttribute, [], |b| {
+        db.primary_service(Service::GenericAttribute, [], |db| {
             // TODO: Implement
-            /*b.characteristic(
+            /*db.characteristic(
                 Characteristic::ServiceChanged,
                 Prop::INDICATE,
                 Access::NONE,
                 srv_io.clone(),
                 |b| b.client_cfg(Access::READ_WRITE),
             );*/
-            /*b.characteristic(
+            /*db.characteristic(
                 Characteristic::ClientSupportedFeatures,
                 Prop::READ | Prop::WRITE,
                 Access::READ_WRITE,
                 srv_io.clone(),
                 |_| {},
             );*/
-            b.characteristic(
+            db.characteristic(
                 Characteristic::DatabaseHash,
                 Prop::READ,
                 Access::READ,
@@ -65,10 +65,10 @@ impl Server {
         })
     }
 
-    /// Returns the server schema.
+    /// Returns the server database.
     #[inline(always)]
     #[must_use]
-    pub const fn db(&self) -> &Schema {
+    pub const fn db(&self) -> &Db {
         &self.db
     }
 
@@ -637,13 +637,13 @@ impl ValueIter<Handle> for Reader<'_> {
     }
 
     #[inline(always)]
-    fn value(&self) -> &[u8] {
-        &self.req.buf
+    fn handle(&self) -> Handle {
+        self.req.hdl
     }
 
     #[inline(always)]
-    fn handle(&self) -> Handle {
-        self.req.hdl
+    fn value(&self) -> &[u8] {
+        &self.req.buf
     }
 }
 

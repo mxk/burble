@@ -5,7 +5,7 @@
 //! [DIS]: https://www.bluetooth.com/specifications/specs/device-information-service-1-1/
 
 use crate::att::Perms;
-use crate::gatt::{Builder, Characteristic, Schema, Service, ServiceDef};
+use crate::gatt::{Builder, Characteristic, Db, Service, ServiceDef};
 
 /// Device Information Service configuration.
 #[derive(Clone, Debug, Default)]
@@ -83,40 +83,40 @@ impl DeviceInfoService {
         self
     }
 
-    /// Defines the service schema.
-    pub fn define(&self, b: &mut Builder<Schema>, perms: impl Into<Perms>) {
-        fn chr(b: &mut Builder<ServiceDef>, c: Characteristic, p: Perms, v: impl AsRef<[u8]>) {
-            b.ro_characteristic(c, p, v, |_| {});
+    /// Defines the service db.
+    pub fn define(&self, db: &mut Builder<Db>, perms: impl Into<Perms>) {
+        fn chr(db: &mut Builder<ServiceDef>, c: Characteristic, p: Perms, v: impl AsRef<[u8]>) {
+            db.ro_characteristic(c, p, v, |_| {});
         }
         let p = perms.into();
-        b.primary_service(Service::DeviceInformation, [], |b| {
+        db.primary_service(Service::DeviceInformation, [], |db| {
             use Characteristic::*;
             if let Some(v) = self.manufacturer_name.as_ref() {
-                chr(b, ManufacturerNameString, p, v);
+                chr(db, ManufacturerNameString, p, v);
             }
             if let Some(v) = self.model_num.as_ref() {
-                chr(b, ModelNumberString, p, v);
+                chr(db, ModelNumberString, p, v);
             }
             if let Some(v) = self.serial_num.as_ref() {
-                chr(b, SerialNumberString, p, v);
+                chr(db, SerialNumberString, p, v);
             }
             if let Some(v) = self.hardware_rev.as_ref() {
-                chr(b, HardwareRevisionString, p, v);
+                chr(db, HardwareRevisionString, p, v);
             }
             if let Some(v) = self.firmware_rev.as_ref() {
-                chr(b, FirmwareRevisionString, p, v);
+                chr(db, FirmwareRevisionString, p, v);
             }
             if let Some(v) = self.software_rev.as_ref() {
-                chr(b, SoftwareRevisionString, p, v);
+                chr(db, SoftwareRevisionString, p, v);
             }
             if let Some(v) = self.system_id.as_ref() {
-                chr(b, SystemId, p, v.0.to_le_bytes());
+                chr(db, SystemId, p, v.0.to_le_bytes());
             }
             if let Some(v) = self.regulatory_data.as_ref() {
-                chr(b, IeeeRegulatoryCertificationDataList, p, &v.0);
+                chr(db, IeeeRegulatoryCertificationDataList, p, &v.0);
             }
             if let Some(v) = self.pnp_id.as_ref() {
-                chr(b, PnpId, p, v.to_bytes());
+                chr(db, PnpId, p, v.to_bytes());
             }
         });
     }

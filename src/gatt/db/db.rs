@@ -13,15 +13,15 @@ use super::*;
 
 mod builder;
 
-/// Schema data index type. `u16` is enough for 3k 128-bit characteristics.
+/// Database data index type. `u16` is enough for 3k 128-bit characteristics.
 type Idx = u16;
 
-/// Read-only database schema.
+/// Read-only attribute database.
 ///
-/// Describes the service structure, attribute permissions, and attribute values
-/// used in the database hash calculation.
+/// Describes the service structure, attribute permissions, and stores read-only
+/// values.
 #[derive(Clone, Debug, Default)]
-pub struct Schema {
+pub struct Db {
     /// Attribute metadata sorted by handle.
     attr: Box<[Attr]>,
     /// Concatenated GATT profile attribute values and 128-bit UUIDs, ending
@@ -29,8 +29,8 @@ pub struct Schema {
     data: Box<[u8]>,
 }
 
-impl Schema {
-    /// Creates a new schema builder.
+impl Db {
+    /// Creates a new database builder.
     #[inline(always)]
     #[must_use]
     pub fn build() -> Builder<Self> {
@@ -55,7 +55,7 @@ impl Schema {
 
     /// Returns the type and value of the specified handle or [`None`] if the
     /// handle is invalid. The value will be empty if it's not part of the
-    /// read-only schema.
+    /// database.
     #[inline]
     #[must_use]
     pub fn get(&self, hdl: Handle) -> Option<(Uuid, &[u8])> {
@@ -78,7 +78,7 @@ impl Schema {
         &self,
         start: Handle,
         uuid: Option<Uuid>,
-    ) -> impl Iterator<Item = SchemaEntry<ServiceDef>> {
+    ) -> impl Iterator<Item = DbEntry<ServiceDef>> {
         let i = self.try_get(start).map_or_else(|i| i, |at| self.index(at));
         let uuid = uuid.map_or_else(UuidVec::default, UuidVec::new);
         // SAFETY: 0 <= i <= self.attr.len()
@@ -89,9 +89,9 @@ impl Schema {
 
     /// Returns an iterator over service includes
     /// ([Vol 3] Part G, Section 4.5.1).
-    pub fn includes(&self, hdls: HandleRange) -> impl Iterator<Item = SchemaEntry<IncludeDef>> {
+    pub fn includes(&self, hdls: HandleRange) -> impl Iterator<Item = DbEntry<IncludeDef>> {
         (self.service_attrs(hdls).iter())
-            .map_while(|at| at.is_include().then(|| SchemaEntry::new(self, at, at.hdl)))
+            .map_while(|at| at.is_include().then(|| DbEntry::new(self, at, at.hdl)))
     }
 
     /// Returns an iterator over service characteristics
@@ -99,16 +99,13 @@ impl Schema {
     pub fn characteristics(
         &self,
         hdls: HandleRange,
-    ) -> impl Iterator<Item = SchemaEntry<CharacteristicDef>> {
+    ) -> impl Iterator<Item = DbEntry<CharacteristicDef>> {
         GroupIter::new(self, self.service_attrs(hdls), Attr::is_char)
     }
 
     /// Returns an iterator over characteristic descriptors
     /// ([Vol 3] Part G, Section 4.7.1).
-    pub fn descriptors(
-        &self,
-        hdls: HandleRange,
-    ) -> impl Iterator<Item = SchemaEntry<DescriptorDef>> {
+    pub fn descriptors(&self, hdls: HandleRange) -> impl Iterator<Item = DbEntry<DescriptorDef>> {
         let attr = self.subset(hdls).and_then(|s| {
             use private::Group;
             // SAFETY: 0 <= s.off < self.attr.len()
@@ -120,7 +117,7 @@ impl Schema {
                 && !(s.attr.iter()).any(|at| CharacteristicDef::is_next_group(at.typ)))
             .then_some(s.attr)
         });
-        (attr.unwrap_or_default().iter()).map(|at| SchemaEntry::new(self, at, at.hdl))
+        (attr.unwrap_or_default().iter()).map(|at| DbEntry::new(self, at, at.hdl))
     }
 
     /// Performs read/write access permission check for a single handle.
@@ -170,7 +167,7 @@ impl Schema {
         Ok(it.map_while(RspResult::ok).collect())
     }
 
-    /// Logs schema contents.
+    /// Logs database contents.
     pub fn dump(&self) {
         use Declaration::*;
         macro_rules! log {
@@ -181,7 +178,7 @@ impl Schema {
         let mut vhdl = Handle::MIN;
         let mut last_char_hdl = Handle::MIN;
         let mut cont = ' ';
-        info!("GATT schema:");
+        info!("GATT database:");
         for at in self.attr.iter() {
             let v = self.value(at);
             let mut v = v.unpack();
@@ -362,7 +359,7 @@ impl Schema {
     }
 }
 
-/// Operations shared by [`Schema`] and [`SchemaBuilder`].
+/// Operations shared by [`Db`] and [`DbBuilder`].
 trait CommonOps {
     /// Returns the attribute metadata.
     fn attr(&self) -> &[Attr];
@@ -428,7 +425,7 @@ trait CommonOps {
     }
 }
 
-impl CommonOps for Schema {
+impl CommonOps for Db {
     #[inline(always)]
     fn attr(&self) -> &[Attr] {
         &self.attr
@@ -446,24 +443,24 @@ pub trait Group: private::Group {}
 impl Group for ServiceDef {}
 impl Group for CharacteristicDef {}
 
-/// Schema attribute information.
+/// Database attribute information.
 #[derive(Clone, Copy, Debug)]
-pub struct SchemaEntry<'a, T> {
+pub struct DbEntry<'a, T> {
     hdls: HandleRange,
     typ: Uuid,
     val: &'a [u8],
     _marker: PhantomData<T>,
 }
 
-impl<'a, T> SchemaEntry<'a, T> {
-    /// Combines information about a schema entry.
+impl<'a, T> DbEntry<'a, T> {
+    /// Combines information about a database entry.
     #[inline(always)]
     #[must_use]
-    fn new(s: &'a Schema, at: &Attr, end_hdl: Handle) -> Self {
+    fn new(db: &'a Db, at: &Attr, end_hdl: Handle) -> Self {
         Self {
             hdls: HandleRange::new(at.hdl, end_hdl),
-            typ: s.typ(at),
-            val: s.value(at),
+            typ: db.typ(at),
+            val: db.value(at),
             _marker: PhantomData,
         }
     }
@@ -483,12 +480,12 @@ impl<'a, T> SchemaEntry<'a, T> {
     }
 }
 
-impl<T: Group> SchemaEntry<'_, T> {
+impl<T: Group> DbEntry<'_, T> {
     /// Returns the group handle range.
     #[inline(always)]
     pub const fn handle_range(&self) -> HandleRange {
         // We could use 0xFFFF for the end handle of the last service in the
-        // schema. This avoids an extra round-trip for primary service
+        // database. This avoids an extra round-trip for primary service
         // discovery, but adds one for characteristic descriptor discovery.
         // Leaving the handle range open allows new services to be added without
         // invalidating existing ones.
@@ -504,7 +501,7 @@ impl<T: Group> SchemaEntry<'_, T> {
     }
 }
 
-impl SchemaEntry<'_, CharacteristicDef> {
+impl DbEntry<'_, CharacteristicDef> {
     /// Returns the characteristic properties.
     #[inline]
     #[must_use]
@@ -521,7 +518,7 @@ impl SchemaEntry<'_, CharacteristicDef> {
     }
 }
 
-impl SchemaEntry<'_, DescriptorDef> {
+impl DbEntry<'_, DescriptorDef> {
     /// Returns the descriptor UUID.
     #[inline(always)]
     #[must_use]
@@ -530,7 +527,7 @@ impl SchemaEntry<'_, DescriptorDef> {
     }
 }
 
-impl<'a, T> AsRef<[u8]> for SchemaEntry<'a, T> {
+impl<'a, T> AsRef<[u8]> for DbEntry<'a, T> {
     #[inline(always)]
     fn as_ref(&self) -> &'a [u8] {
         self.val
@@ -646,7 +643,7 @@ impl<'a> Subset<'a> {
 }
 
 struct GroupIter<'a, T, F> {
-    schema: &'a Schema,
+    db: &'a Db,
     it: iter::Peekable<slice::Iter<'a, Attr>>,
     is_start: F,
     _marker: PhantomData<T>,
@@ -656,9 +653,9 @@ impl<'a, T: Group, F: Fn(&Attr) -> bool> GroupIter<'a, T, F> {
     /// Creates a new attribute group iterator.
     #[inline(always)]
     #[must_use]
-    fn new(schema: &'a Schema, it: &'a [Attr], is_start: F) -> Self {
+    fn new(db: &'a Db, it: &'a [Attr], is_start: F) -> Self {
         Self {
-            schema,
+            db,
             it: it.iter().peekable(),
             is_start,
             _marker: PhantomData,
@@ -667,7 +664,7 @@ impl<'a, T: Group, F: Fn(&Attr) -> bool> GroupIter<'a, T, F> {
 }
 
 impl<'a, T: Group, F: Fn(&Attr) -> bool> Iterator for GroupIter<'a, T, F> {
-    type Item = SchemaEntry<'a, T>;
+    type Item = DbEntry<'a, T>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let decl = self.it.find(|at| (self.is_start)(at))?;
@@ -676,7 +673,7 @@ impl<'a, T: Group, F: Fn(&Attr) -> bool> Iterator for GroupIter<'a, T, F> {
             // SAFETY: `peek()` returned another attribute
             end = unsafe { self.it.next().unwrap_unchecked().hdl };
         }
-        Some(SchemaEntry::new(self.schema, decl, end))
+        Some(DbEntry::new(self.db, decl, end))
     }
 
     #[inline]

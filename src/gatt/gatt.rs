@@ -5,14 +5,14 @@
 use std::collections::BTreeMap;
 use std::fmt::Debug;
 
-pub use {consts::*, io::*, schema::*, server::*};
+pub use {consts::*, db::*, io::*, server::*};
 
 use crate::att::*;
 
 mod consts;
+#[path = "db/db.rs"]
+mod db;
 mod io;
-#[path = "schema/schema.rs"]
-mod schema;
 mod server;
 
 /// Interface to persistent GATT cache storage.

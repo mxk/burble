@@ -7,26 +7,26 @@ use burble_const::UuidPacker;
 
 use super::*;
 
-/// Schema service definition marker type.
+/// Database service definition marker type.
 #[derive(Debug)]
 pub struct ServiceDef;
 
-/// Schema characteristic definition marker type.
+/// Database characteristic definition marker type.
 #[derive(Debug)]
 pub struct CharacteristicDef;
 
-/// Schema include definition marker type.
+/// Database include definition marker type.
 #[derive(Debug)]
 pub struct IncludeDef;
 
-/// Schema descriptor definition marker type.
+/// Database descriptor definition marker type.
 #[derive(Debug)]
 pub struct DescriptorDef;
 
-/// Schema builder used to define services, characteristics, and descriptors.
+/// Database builder used to define services, characteristics, and descriptors.
 #[derive(Debug)]
 #[repr(transparent)]
-pub struct Builder<T>(SchemaBuilder, PhantomData<T>);
+pub struct Builder<T>(DbBuilder, PhantomData<T>);
 
 impl<T> Builder<T> {
     /// Creates a generic attribute with an externally stored value.
@@ -41,7 +41,7 @@ impl<T> Builder<T> {
 }
 
 impl<T> Deref for Builder<T> {
-    type Target = SchemaBuilder;
+    type Target = DbBuilder;
 
     #[inline(always)]
     fn deref(&self) -> &Self::Target {
@@ -56,25 +56,25 @@ impl<T> DerefMut for Builder<T> {
     }
 }
 
-impl Builder<Schema> {
-    /// Creates a new schema builder.
+impl Builder<Db> {
+    /// Creates a new database builder.
     #[inline]
     #[must_use]
     pub(super) fn new() -> Self {
         Self(
-            SchemaBuilder {
+            DbBuilder {
                 attr: Vec::with_capacity(128),
                 data: Vec::with_capacity(512),
-                ..SchemaBuilder::default()
+                ..DbBuilder::default()
             },
             PhantomData,
         )
     }
 
-    /// Returns the final read-only schema and I/O map.
+    /// Returns the final read-only database and I/O map.
     #[inline]
     #[must_use]
-    pub(in crate::gatt) fn freeze(mut self) -> (Schema, IoMap) {
+    pub(in crate::gatt) fn freeze(mut self) -> (Db, IoMap) {
         let hash = self.calc_hash().to_le_bytes();
         let hash = self.append_data(hash);
         for at in &mut self.0.attr {
@@ -84,7 +84,7 @@ impl Builder<Schema> {
             }
         }
         (
-            Schema {
+            Db {
                 attr: self.0.attr.into_boxed_slice(),
                 data: self.0.data.into_boxed_slice(),
             },
@@ -191,7 +191,7 @@ impl Builder<ServiceDef> {
         (hdl, v)
     }
 
-    /// Defines a read-only characteristic with a schema-stored value
+    /// Defines a read-only characteristic with a database-stored value
     /// ([Vol 3] Part G, Section 3.3).
     #[inline]
     pub fn ro_characteristic<T>(
@@ -248,7 +248,7 @@ impl Builder<CharacteristicDef> {
     }
 
     /// Declares a read-only non-GATT profile characteristic descriptor with the
-    /// value stored in the schema ([Vol 3] Part G, Section 3.3.3).
+    /// value stored in the database ([Vol 3] Part G, Section 3.3.3).
     #[inline]
     pub fn ro_descriptor(
         &mut self,
@@ -332,9 +332,9 @@ impl Builder<CharacteristicDef> {
     }
 }
 
-/// Shared schema builder state.
+/// Shared [`Db`] builder state.
 #[derive(Debug, Default)]
-pub struct SchemaBuilder {
+pub struct DbBuilder {
     attr: Vec<Attr>,
     data: Vec<u8>,
     io: BTreeMap<Handle, Io>,
@@ -344,11 +344,11 @@ pub struct SchemaBuilder {
     fmt: SmallVec<[Handle; 4]>,
 }
 
-impl SchemaBuilder {
+impl DbBuilder {
     /// Creates a read-only GATT profile declaration with value set by `val`.
     #[inline]
     fn decl(&mut self, typ: impl Into<Uuid16>, val: impl FnOnce(&mut Packer)) -> Handle {
-        fn append_attr(this: &mut SchemaBuilder, typ: Uuid16, val: &[u8]) -> Handle {
+        fn append_attr(this: &mut DbBuilder, typ: Uuid16, val: &[u8]) -> Handle {
             let hdl = this.next_handle();
             let val = this.append_data(val);
             this.attr.push(Attr {
@@ -360,7 +360,7 @@ impl SchemaBuilder {
             hdl
         }
         // Maximum length of the Characteristic declaration value, which is the
-        // longest value stored in the schema ([Vol 3] Part G, Section 3.3.1).
+        // longest value stored in the database ([Vol 3] Part G, Section 3.3.1).
         let mut b = StructBuf::new(1 + 2 + 16);
         val(&mut b.append());
         append_attr(self, typ.into(), &b)
@@ -395,17 +395,17 @@ impl SchemaBuilder {
     /// Appends a read-only value for the last attribute entry.
     #[inline]
     fn append_val(&mut self, v: impl AsRef<[u8]>) {
-        self.attr.last_mut().expect("empty schema").val = self.append_data(v);
+        self.attr.last_mut().expect("empty database").val = self.append_data(v);
     }
 
-    /// Appends `v` to schema data and returns the resulting index range.
+    /// Appends `v` to the database and returns the resulting index range.
     #[inline]
     fn append_data(&mut self, v: impl AsRef<[u8]>) -> (Idx, Idx) {
         #[allow(clippy::cast_possible_truncation)]
         let start = self.data.len() as Idx;
         self.data.extend_from_slice(v.as_ref());
         let end = Idx::try_from(self.data.len())
-            .expect("schema data overflow (see Idx type in gatt/schema.rs)");
+            .expect("database data overflow (see Idx type in gatt/db.rs)");
         (start, end)
     }
 
@@ -417,7 +417,7 @@ impl SchemaBuilder {
     }
 }
 
-impl CommonOps for SchemaBuilder {
+impl CommonOps for DbBuilder {
     #[inline(always)]
     fn attr(&self) -> &[Attr] {
         &self.attr
@@ -437,20 +437,20 @@ mod tests {
 
     #[test]
     fn service_group() {
-        fn eq(b: &SchemaBuilder, h: Handle, r: Range<usize>) {
+        fn eq(b: &DbBuilder, h: Handle, r: Range<usize>) {
             let s = b.service_group(h).unwrap();
             assert_eq!(s.off..s.off + s.attr.len(), r);
         }
 
-        let mut b = Schema::build();
-        let (h1, _) = b.primary_service(Service::GenericAccess, [], |_| {});
-        let (h2, _) = b.primary_service(Service::GenericAttribute, [h1], |_| {});
-        eq(&b, h1, 0..1);
-        eq(&b, h2, 1..3);
+        let mut db = Db::build();
+        let (h1, _) = db.primary_service(Service::GenericAccess, [], |_| {});
+        let (h2, _) = db.primary_service(Service::GenericAttribute, [h1], |_| {});
+        eq(&db, h1, 0..1);
+        eq(&db, h2, 1..3);
 
-        let (h3, _) = b.primary_service(Service::Battery, [], |_| {});
-        eq(&b, h2, 1..3);
-        eq(&b, h3, 3..4);
+        let (h3, _) = db.primary_service(Service::Battery, [], |_| {});
+        eq(&db, h2, 1..3);
+        eq(&db, h3, 3..4);
     }
 
     /// Example database hash ([Vol 3] Part G, Appendix B).
@@ -535,7 +535,7 @@ mod tests {
         assert!(it.next().is_none());
     }
 
-    fn group_eq<T: Group>(v: Option<SchemaEntry<T>>, decl: u16, end: u16, uuid: impl Into<Uuid16>) {
+    fn group_eq<T: Group>(v: Option<DbEntry<T>>, decl: u16, end: u16, uuid: impl Into<Uuid16>) {
         let v = v.unwrap();
         assert_eq!(
             v.handle_range(),
@@ -544,17 +544,17 @@ mod tests {
         assert_eq!(v.uuid(), uuid.into().as_uuid());
     }
 
-    fn appendix_b() -> Schema {
-        let mut b = Schema::build();
-        b.primary_service(Service::GenericAccess, [], |b| {
-            b.characteristic(
+    fn appendix_b() -> Db {
+        let mut db = Db::build();
+        db.primary_service(Service::GenericAccess, [], |db| {
+            db.characteristic(
                 Characteristic::DeviceName,
                 Prop::READ | Prop::WRITE,
                 Access::READ_WRITE,
                 Io::NONE,
                 |_| {},
             );
-            b.characteristic(
+            db.characteristic(
                 Characteristic::Appearance,
                 Prop::READ,
                 Access::READ,
@@ -562,22 +562,22 @@ mod tests {
                 |_| {},
             )
         });
-        b.primary_service(Service::GenericAttribute, [], |b| {
-            b.characteristic(
+        db.primary_service(Service::GenericAttribute, [], |db| {
+            db.characteristic(
                 Characteristic::ServiceChanged,
                 Prop::INDICATE,
                 Access::NONE,
                 Io::NONE,
-                |b| b.client_cfg(Access::READ_WRITE),
+                |db| db.client_cfg(Access::READ_WRITE),
             );
-            b.characteristic(
+            db.characteristic(
                 Characteristic::ClientSupportedFeatures,
                 Prop::READ | Prop::WRITE,
                 Access::READ_WRITE,
                 Io::NONE,
                 |_| {},
             );
-            b.characteristic(
+            db.characteristic(
                 Characteristic::DatabaseHash,
                 Prop::READ,
                 Access::READ,
@@ -585,21 +585,21 @@ mod tests {
                 |_| {},
             );
         });
-        b.primary_service(Service::Glucose, [], |b| {
+        db.primary_service(Service::Glucose, [], |db| {
             // Hack to include a service that hasn't been defined yet
-            b.decl(Declaration::Include, |v| {
+            db.decl(Declaration::Include, |v| {
                 v.u16(0x0014_u16).u16(0x0016_u16).u16(0x180F_u16);
             });
-            b.characteristic(
+            db.characteristic(
                 Characteristic::GlucoseMeasurement,
                 Prop::READ | Prop::INDICATE | Prop::EXT_PROPS,
                 Access::READ,
                 Io::NONE,
-                |b| b.client_cfg(Access::READ_WRITE),
+                |db| db.client_cfg(Access::READ_WRITE),
             );
         });
-        b.secondary_service(Service::Battery, [], |b| {
-            b.characteristic(
+        db.secondary_service(Service::Battery, [], |db| {
+            db.characteristic(
                 Characteristic::BatteryLevel,
                 Prop::READ,
                 Access::READ,
@@ -607,7 +607,7 @@ mod tests {
                 |_| {},
             );
         });
-        let (s, _) = b.freeze();
-        s
+        let (db, _) = db.freeze();
+        db
     }
 }

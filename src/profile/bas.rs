@@ -6,7 +6,7 @@
 //! [BAS]: https://www.bluetooth.com/specifications/specs/battery-service/
 
 use crate::att::{Handle, Perms};
-use crate::gatt::{Builder, Characteristic, Schema, Service};
+use crate::gatt::{Builder, Characteristic, Db, Service};
 
 /// Battery service state.
 #[derive(Clone, Debug, Default)]
@@ -21,12 +21,12 @@ impl BatteryService {
         Self::default()
     }
 
-    /// Defines the service schema.
-    pub fn define(&mut self, b: &mut Builder<Schema>, perms: impl Into<Perms>) -> Handle {
+    /// Defines the service db.
+    pub fn define(&mut self, db: &mut Builder<Db>, perms: impl Into<Perms>) -> Handle {
         let p = perms.into();
-        let (hdl, _) = b.primary_service(Service::Battery, [], |b| {
+        let (hdl, _) = db.primary_service(Service::Battery, [], |db| {
             use Characteristic::*;
-            b.ro_characteristic(BatteryLevel, p, [100], |_| {});
+            db.ro_characteristic(BatteryLevel, p, [100], |_| {});
         });
         hdl
     }

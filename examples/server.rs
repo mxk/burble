@@ -106,18 +106,18 @@ async fn server_loop(srv: Arc<gatt::Server>, mut cm: l2cap::ChanManager) -> Resu
 
 fn server() -> Arc<gatt::Server> {
     use burble::att::Access;
-    use burble::gatt::{Characteristic, Prop, Schema, Service};
-    let mut b = Schema::build();
+    use burble::gatt::{Characteristic, Db, Prop, Service};
+    let mut db = Db::build();
 
-    b.primary_service(Service::GenericAccess, [], |b| {
-        b.characteristic(
+    db.primary_service(Service::GenericAccess, [], |db| {
+        db.characteristic(
             Characteristic::DeviceName,
             Prop::READ | Prop::WRITE,
             Access::READ_WRITE,
             dev_name_io,
             |_| {},
         );
-        b.ro_characteristic(
+        db.ro_characteristic(
             Characteristic::Appearance,
             Access::READ,
             (Appearance::GenericHumanInterfaceDevice as u16).to_le_bytes(),
@@ -127,9 +127,9 @@ fn server() -> Arc<gatt::Server> {
     dis::DeviceInfoService::new()
         .with_manufacturer_name("Blackrock Neurotech")
         .with_pnp_id(dis::PnpId::new(dis::VendorId::USB(0x1209), 0x0001, (1, 0, 0)).unwrap())
-        .define(&mut b, Access::READ);
-    bas::BatteryService::new().define(&mut b, Access::READ);
-    gatt::Server::new(b, Arc::new(burble_fs::GattServerStore::new()))
+        .define(&mut db, Access::READ);
+    bas::BatteryService::new().define(&mut db, Access::READ);
+    gatt::Server::new(db, Arc::new(burble_fs::GattServerStore::new()))
 }
 
 fn dev_name_io(req: IoReq) -> IoResult {
