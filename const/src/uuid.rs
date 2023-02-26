@@ -20,6 +20,11 @@ pub struct Uuid(NonZeroU128);
 impl Uuid {
     /// UUID size in bytes.
     pub const BYTES: usize = std::mem::size_of::<Self>();
+    /// Maximum UUID value.
+    pub const MAX: Self = Self(
+        // SAFETY: Non-zero
+        unsafe { NonZeroU128::new_unchecked(u128::MAX) },
+    );
 
     /// Creates a UUID from a `u128`.
     #[inline]
@@ -41,6 +46,13 @@ impl Uuid {
     #[must_use]
     pub const unsafe fn new_unchecked(v: u128) -> Self {
         Self(NonZeroU128::new_unchecked(v))
+    }
+
+    /// Returns the UUID type. Returns [`UuidType::NonSig`] for non-SIG UUID.
+    #[inline]
+    #[must_use]
+    pub fn typ(self) -> UuidType {
+        self.as_uuid16().map_or(UuidType::NonSig, Uuid16::typ)
     }
 
     /// Returns a [`Uuid16`] representation or [`None`] if the UUID is not an
@@ -163,6 +175,14 @@ impl Uuid16 {
         }
     }
 
+    /// Returns the UUID type.
+    #[inline(always)]
+    pub fn typ(self) -> UuidType {
+        let u = self.0.get();
+        // SAFETY: UUID_MAP has 256 entries
+        (unsafe { &*UUID_MAP.as_ptr().add((u >> 8) as _) })(u)
+    }
+
     /// Returns 128-bit UUID representation.
     #[inline]
     #[must_use]
@@ -170,14 +190,6 @@ impl Uuid16 {
         // TODO: Use NonZeroU128::from() when it is const
         // SAFETY: Always non-zero
         unsafe { Uuid::new_unchecked((self.0.get() as u128) << SHIFT | BASE) }
-    }
-
-    /// Returns the UUID type.
-    #[inline(always)]
-    pub fn typ(self) -> UuidType {
-        let u = self.0.get();
-        // SAFETY: UUID_MAP has 256 entries
-        (unsafe { &*UUID_MAP.as_ptr().add((u >> 8) as _) })(u)
     }
 
     /// Returns the raw 16-bit UUID value.
@@ -239,6 +251,7 @@ pub enum UuidType {
     // ([Assigned Numbers] Section 3.11)
     Member(u16),
     Unknown(u16),
+    NonSig,
 }
 
 type UuidMap = [fn(u16) -> UuidType; 256];
@@ -282,6 +295,7 @@ impl Debug for UuidType {
             Characteristic(ref u) => f.debug_tuple("Characteristic").field(u).finish(),
             Member(id) => f.debug_tuple("Company").field(&id).finish(),
             Unknown(u) => (f.debug_tuple("Unknown").field(&format_args!("{u:#06X}"))).finish(),
+            NonSig => f.write_str("NonSig"),
         }
     }
 }

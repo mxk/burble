@@ -138,6 +138,24 @@ uuid16_enum! {
     }
 }
 
+impl Service {
+    /// Returns whether the server can host multiple instances of this service.
+    #[must_use]
+    pub const fn multi_instance(self) -> bool {
+        use Service::*;
+        #[allow(clippy::match_same_arms)]
+        match self {
+            GenericAccess => false,
+            GenericAttribute => false,
+            DeviceInformation => false,
+            Battery => true,
+            HumanInterfaceDevice => true,
+            ScanParameters => false,
+            _ => false, // TODO: Specify for all
+        }
+    }
+}
+
 uuid16_enum! {
     /// Characteristic presentation format units ([Assigned Numbers] Section 3.5.2).
     pub enum Unit {
