@@ -236,8 +236,7 @@ impl EventCode {
     #[inline(always)]
     #[must_use]
     pub(super) const fn is_cmd(self) -> bool {
-        const CMD: u16 = EventCode::CommandComplete as _;
-        (self as u16) & CMD == CMD
+        matches!(self, Self::CommandComplete | Self::CommandStatus)
     }
 
     /// Returns the format of the associated event parameters.
