@@ -1,7 +1,6 @@
 #![allow(clippy::print_stdout)]
 #![allow(clippy::print_stderr)]
 
-use std::str::from_utf8;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -10,9 +9,10 @@ use clap::Parser;
 use futures_core::future::BoxFuture;
 use tracing::info;
 
-use burble::att::ErrorCode;
+use burble::att::Access;
 use burble::gap::Appearance;
-use burble::gatt::{IoReq, IoResult};
+use burble::gatt::Db;
+use burble::hci::AdvEvent;
 use burble::*;
 use burble_crypto::NumCompare;
 
@@ -43,24 +43,74 @@ async fn main() -> Result<()> {
     };
     ctlr.init()?;
     let host = hci::Host::new(Arc::new(ctlr));
-
     let event_loop = host.event_loop();
     host.init().await?;
     info!("Local version: {:?}", host.read_local_version().await?);
     info!("Device address: {:?}", host.read_bd_addr().await?);
+    let r = serve(host).await;
+    event_loop.stop().await?;
+    r
+}
+
+async fn serve(host: hci::Host) -> Result<()> {
+    let mut db = Db::build();
+    gap::GapService::new("Burble", Appearance::GenericHumanInterfaceDevice)
+        .define(&mut db, Access::READ);
+    dis::DeviceInfoService::new()
+        .with_manufacturer_name("Blackrock Neurotech")
+        .with_pnp_id(dis::PnpId::new(dis::VendorId::USB(0x1209), 0x0001, (1, 0, 0)).unwrap())
+        .define(&mut db, Access::READ);
+    bas::BatteryService::new().define(&mut db, Access::READ);
+    let srv = gatt::Server::new(db, Arc::new(burble_fs::GattServerStore::new()));
+    srv.db().dump();
 
     let mut secdb = smp::SecDb::new(host.clone(), Arc::new(burble_fs::KeyStore::new()));
     tokio::task::spawn(async move { secdb.event_loop().await });
 
-    let cm = tokio::task::spawn(server_loop(server(), l2cap::ChanManager::new(&host).await?));
-
-    advertise(&host).await?;
-    let _ = cm.await?;
-    Ok(event_loop.stop().await?)
+    // TODO: Redesign ChanManager for easier integration with advertisements
+    let mut cm = l2cap::ChanManager::new(&host).await?;
+    let mut adv_task = None;
+    let mut srv_task = None;
+    let mut link = None;
+    loop {
+        if srv_task.is_none() && adv_task.is_none() {
+            info!("Enabling advertisements");
+            adv_task = Some(tokio::task::spawn(advertise(host.clone())));
+        }
+        tokio::select! {
+            adv = async { adv_task.as_mut().unwrap().await }, if adv_task.is_some() => {
+                info!("Advertisement result: {:?}", adv);
+                adv_task = None;
+                if matches!(adv??, AdvEvent::Term(_)) {
+                    continue;
+                }
+                let link = match link.take() {
+                    Some(link) => link,
+                    None => cm.recv().await?,
+                };
+                info!("Serving {link}");
+                let mut smp = cm.smp_chan(link).unwrap();
+                tokio::task::spawn(async move {
+                    let mut dev = smp::Device::new();
+                    smp.respond(&mut dev, &burble_fs::KeyStore::new()).await
+                });
+                let br = cm.att_chan(link).unwrap();
+                srv_task = Some(tokio::task::spawn(srv.attach(&br).serve(br)));
+            }
+            srv = async { srv_task.as_mut().unwrap().await }, if srv_task.is_some() => {
+                info!("GATT server terminated: {:?}", srv);
+                srv_task = None;
+            }
+            r = cm.recv() => {
+                assert!(link.is_none());
+                link = Some(r?);
+            }
+        }
+    }
 }
 
-async fn advertise(host: &hci::Host) -> Result<()> {
-    let mut adv = hci::Advertiser::new(host).await?;
+async fn advertise(host: hci::Host) -> hci::Result<AdvEvent> {
+    let mut adv = hci::Advertiser::new(&host).await?;
     let params = hci::AdvParams {
         props: hci::AdvProp::CONNECTABLE | hci::AdvProp::INCLUDE_TX_POWER,
         pri_interval: (Duration::from_millis(20), Duration::from_millis(25)),
@@ -71,7 +121,7 @@ async fn advertise(host: &hci::Host) -> Result<()> {
     let mut data = gap::ResponseDataMut::new();
     data.flags(gap::AdvFlag::LE_GENERAL | gap::AdvFlag::NO_BREDR)
         .local_name(true, "Burble")
-        .appearance(gap::Appearance::GenericHumanInterfaceDevice)
+        .appearance(Appearance::GenericHumanInterfaceDevice)
         .tx_power(power);
     adv.set_data(h, data.get()).await?;
     let enable_params = hci::AdvEnableParams {
@@ -81,71 +131,8 @@ async fn advertise(host: &hci::Host) -> Result<()> {
     };
     let adv_set = adv.enable(enable_params).await?;
     let r = adv_set.await;
-    info!("Advertising result: {r:?}");
     adv.remove_all().await?;
-    r?;
-    Ok(())
-}
-
-async fn server_loop(srv: Arc<gatt::Server>, mut cm: l2cap::ChanManager) -> Result<()> {
-    srv.db().dump();
-    loop {
-        let link = cm.recv().await?;
-        let Some(att) = cm.att_chan(link) else { continue };
-        tokio::task::spawn(srv.attach(&att).serve(att));
-        let Some(mut smp) = cm.smp_chan(link) else { continue };
-        tokio::task::spawn(async move {
-            let mut dev = smp::Device::new()
-                .with_display(Box::new(Dev))
-                .with_confirm(Box::new(Dev));
-            smp.respond(&mut dev, &burble_fs::KeyStore::new()).await
-        });
-    }
-}
-
-fn server() -> Arc<gatt::Server> {
-    use burble::att::Access;
-    use burble::gatt::{Characteristic, Db, Prop, Service};
-    let mut db = Db::build();
-
-    db.primary_service(Service::GenericAccess, [], |db| {
-        db.characteristic(
-            Characteristic::DeviceName,
-            Prop::READ | Prop::WRITE,
-            Access::READ_WRITE,
-            dev_name_io,
-            |_| {},
-        );
-        db.ro_characteristic(
-            Characteristic::Appearance,
-            Access::READ,
-            (Appearance::GenericHumanInterfaceDevice as u16).to_le_bytes(),
-            |_| {},
-        );
-    });
-    dis::DeviceInfoService::new()
-        .with_manufacturer_name("Blackrock Neurotech")
-        .with_pnp_id(dis::PnpId::new(dis::VendorId::USB(0x1209), 0x0001, (1, 0, 0)).unwrap())
-        .define(&mut db, Access::READ);
-    bas::BatteryService::new().define(&mut db, Access::READ);
-    gatt::Server::new(db, Arc::new(burble_fs::GattServerStore::new()))
-}
-
-fn dev_name_io(req: IoReq) -> IoResult {
-    lazy_static::lazy_static! {
-        static ref NAME: parking_lot::Mutex<String> = parking_lot::Mutex::new("Burble".to_owned());
-    }
-    match req {
-        IoReq::Read(r) => r.complete(NAME.lock().as_str()),
-        IoReq::Write(w) => {
-            NAME.lock().replace_range(
-                ..,
-                from_utf8(w.value()).map_err(|_| ErrorCode::ValueNotAllowed)?,
-            );
-            Ok(())
-        }
-        IoReq::Notify(_) => unreachable!(),
-    }
+    r
 }
 
 #[derive(Debug)]

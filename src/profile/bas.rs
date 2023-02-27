@@ -21,8 +21,8 @@ impl BatteryService {
         Self::default()
     }
 
-    /// Defines the service db.
-    pub fn define(&mut self, db: &mut Builder<Db>, perms: impl Into<Perms>) -> Handle {
+    /// Defines the service structure.
+    pub fn define(self, db: &mut Builder<Db>, perms: impl Into<Perms>) -> Handle {
         let p = perms.into();
         let (hdl, _) = db.primary_service(Service::Battery, [], |db| {
             use Characteristic::*;

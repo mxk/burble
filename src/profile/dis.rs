@@ -11,15 +11,15 @@ use crate::gatt::{Builder, Characteristic, Db, Service, ServiceDef};
 #[derive(Clone, Debug, Default)]
 #[non_exhaustive]
 pub struct DeviceInfoService {
-    pub manufacturer_name: Option<String>,
-    pub model_num: Option<String>,
-    pub serial_num: Option<String>,
-    pub hardware_rev: Option<String>,
-    pub firmware_rev: Option<String>,
-    pub software_rev: Option<String>,
-    pub system_id: Option<Eui64>,
-    pub regulatory_data: Option<RegulatoryData>,
-    pub pnp_id: Option<PnpId>,
+    manufacturer_name: Option<String>,
+    model_num: Option<String>,
+    serial_num: Option<String>,
+    hardware_rev: Option<String>,
+    firmware_rev: Option<String>,
+    software_rev: Option<String>,
+    system_id: Option<Eui64>,
+    regulatory_data: Option<RegulatoryData>,
+    pnp_id: Option<PnpId>,
 }
 
 /// Implements `with_<x>` methods for [`String`] characteristics.
@@ -83,8 +83,8 @@ impl DeviceInfoService {
         self
     }
 
-    /// Defines the service db.
-    pub fn define(&self, db: &mut Builder<Db>, perms: impl Into<Perms>) {
+    /// Defines the service structure.
+    pub fn define(self, db: &mut Builder<Db>, perms: impl Into<Perms>) {
         fn chr(db: &mut Builder<ServiceDef>, c: Characteristic, p: Perms, v: impl AsRef<[u8]>) {
             db.ro_characteristic(c, p, v, |_| {});
         }
