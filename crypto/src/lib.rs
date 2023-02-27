@@ -136,7 +136,6 @@ impl Nonce {
 
     /// Generates LE Secure Connections numeric comparison value
     /// ([Vol 3] Part H, Section 2.2.9).
-    #[allow(clippy::similar_names)]
     #[inline]
     pub fn g2(&self, pkax: &PublicKeyX, pkbx: &PublicKeyX, nb: &Self) -> NumCompare {
         let mut m = AesCmac::new(&Key::new(self.0));

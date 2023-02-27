@@ -18,6 +18,7 @@ rustflags = [
     "-Aclippy::missing_errors_doc", # TODO: Remove
     "-Aclippy::missing_panics_doc", # TODO: Remove
     "-Aclippy::module_name_repetitions",
+    "-Aclippy::similar_names",
     "-Aclippy::wildcard_imports",
     # "-Wclippy::restriction",
     "-Wclippy::assertions_on_result_states",

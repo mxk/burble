@@ -519,7 +519,6 @@ impl ServerCtx {
     }
 
     /// Applies CCCD configuration.
-    #[allow(clippy::similar_names)]
     fn cccd_apply(
         &self,
         cc: &mut SyncMutexGuard<ClientCtx>,

@@ -39,7 +39,6 @@ impl SecretKey {
     /// Computes a shared secret from the local secret key and remote public
     /// key. Returns [`None`] if the public key is either invalid or derived
     /// from the same secret key ([Vol 3] Part H, Section 2.3.5.6.1).
-    #[allow(clippy::similar_names)]
     #[must_use]
     pub fn dh_key(&self, pk: PublicKey) -> Option<DHKey> {
         use p256::elliptic_curve::sec1::FromEncodedPoint;
@@ -169,7 +168,6 @@ pub(super) fn u256<T: From<[u8; 32]>>(hi: u128, lo: u128) -> T {
     T::from(b)
 }
 
-#[allow(clippy::similar_names)]
 #[allow(clippy::unusual_byte_groupings)]
 #[cfg(test)]
 mod tests {

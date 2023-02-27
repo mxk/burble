@@ -185,7 +185,6 @@ struct ResManager {
 impl ResManager {
     /// Creates a new resource manager after configuring the ACL data packet
     /// parameters ([Vol 3] Part A, Section 1.1).
-    #[allow(clippy::similar_names)]
     async fn new(host: &hci::Host) -> Result<Self> {
         // [Vol 4] Part E, Section 4.1 and [Vol 4] Part E, Section 7.8.2
         let mut cbuf = host.le_read_buffer_size().await?;

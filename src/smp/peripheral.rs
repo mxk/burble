@@ -118,7 +118,6 @@ impl Peripheral {
 
     /// Performs LE Secure Connections Long Term Key (LTK) Generation phase
     /// ([Vol 3] Part H, Section 2.3.5.6).
-    #[allow(clippy::similar_names)]
     async fn phase2(
         &mut self,
         dev: &mut Device,
@@ -176,7 +175,6 @@ impl Peripheral {
 
     /// Implements Authentication stage 1 – Just Works or Numeric Comparison
     /// ([Vol 3] Part H, Section 2.3.5.6.2 and C.2.2.2.1).
-    #[allow(clippy::similar_names)]
     async fn authn1_num_compare(
         &mut self,
         dev: &mut Device,

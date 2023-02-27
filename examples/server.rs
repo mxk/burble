@@ -1,6 +1,5 @@
 #![allow(clippy::print_stdout)]
 #![allow(clippy::print_stderr)]
-#![allow(clippy::similar_names)]
 
 use std::str::from_utf8;
 use std::sync::Arc;

@@ -165,7 +165,6 @@ pub struct PnpId {
 impl PnpId {
     /// Creates PNP ID from vendor ID, product ID, and version. Returns [`None`]
     /// if the version cannot be encoded (`minor` and `patch` must be `<= 15`).
-    #[allow(clippy::similar_names)]
     #[must_use]
     pub const fn new(vid: VendorId, pid: u16, ver: (u8, u8, u8)) -> Option<Self> {
         // TODO: Use `then_some` when const stable
