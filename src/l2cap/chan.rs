@@ -117,6 +117,13 @@ impl Future for Recv {
     }
 }
 
+impl Drop for Recv {
+    #[inline]
+    fn drop(&mut self) {
+        self.0.state.lock().rx_waker = None;
+    }
+}
+
 /// Channel receive future with SDU filtering.
 #[derive(Debug)]
 pub(crate) struct RecvFilter<F> {
@@ -219,6 +226,13 @@ impl Future for MaySend<'_> {
             return Poll::Ready(Err(e));
         }
         cs.tx_await(cx)
+    }
+}
+
+impl Drop for MaySend<'_> {
+    #[inline]
+    fn drop(&mut self) {
+        self.0.state.lock().tx_waker = None;
     }
 }
 
