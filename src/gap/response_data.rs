@@ -12,10 +12,12 @@ use std::time::Duration;
 
 use structbuf::{Pack, Packer, StructBuf};
 
+use burble_const::Uuid;
+
+use crate::gap::consts::ResponseDataType;
+use crate::gap::{AdvFlag, Appearance};
 use crate::hci::{ticks_1250us, ticks_625us};
 use crate::le::TxPower;
-
-use super::*;
 
 /// Response data builder.
 #[derive(Clone, Debug)]
