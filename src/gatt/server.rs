@@ -483,13 +483,30 @@ impl ServerCtx {
 
     /// Executes a read operation.
     fn do_read<'a>(&self, r: &'a mut ReadReq) -> RspResult<&'a [u8]> {
-        use Descriptor::*;
+        use {Characteristic::*, Descriptor::*};
         // TODO: Cache awareness check
         match r.uuid().typ() {
-            // TODO: DatabaseHash read results in change-aware state
-            UuidType::Descriptor(ClientCharacteristicConfiguration) => self.cache_read(r),
-            _ => self.srv.io.read(r),
+            UuidType::Characteristic(DatabaseHash) => self.read_hash(r),
+            UuidType::Descriptor(ClientCharacteristicConfiguration) => self.read_cache(r),
+            _ => match self.srv.db.get(r.hdl) {
+                Some((_, val)) if !val.is_empty() => r.complete(val),
+                _ => self.srv.io.read(r),
+            },
         }
+        .map_or_else(|e| r.op.hdl_err(e, r.hdl), |_| Ok(r.buf.as_ref()))
+    }
+
+    /// Executes a read operation from the client's cache.
+    #[inline]
+    fn read_cache(&self, r: &mut ReadReq) -> IoResult {
+        r.complete(&self.cc.lock().cache.vals[&r.handle()])
+    }
+
+    /// Executes a database hash read.
+    #[inline]
+    fn read_hash(&self, r: &mut ReadReq) -> IoResult {
+        // TODO: DatabaseHash read results in change-aware state
+        r.complete(self.srv.db.hash().to_le_bytes())
     }
 
     /// Executes a write operation.
@@ -500,20 +517,21 @@ impl ServerCtx {
             UuidType::Descriptor(ClientCharacteristicConfiguration) => self.cccd_write(w),
             _ => self.srv.io.write(w),
         }
+        .map_or_else(|e| w.op.hdl_err(e, w.hdl), Ok)
     }
 
     /// Executes a CCCD write operation.
     #[inline]
-    fn cccd_write(&self, w: &WriteReq) -> RspResult<()> {
+    fn cccd_write(&self, w: &WriteReq) -> IoResult {
         if w.off != 0 {
-            return w.op.hdl_err(InvalidOffset, w.hdl);
+            return Err(InvalidOffset);
         }
         let Some(cfg) = w.val.unpack().map(Unpacker::u16).and_then(ClientCfg::from_bits) else {
-            return w.op.hdl_err(ValueNotAllowed, w.hdl);
+            return Err(ValueNotAllowed);
         };
         if cfg.contains(ClientCfg::NOTIFY) && cfg.contains(ClientCfg::INDICATE) {
             // TODO: Is this combination valid?
-            return w.op.hdl_err(ValueNotAllowed, w.hdl);
+            return Err(ValueNotAllowed);
         }
         self.cccd_apply(&mut self.cc.lock(), w.op, w.hdl, w.mtu, cfg)
     }
@@ -526,7 +544,7 @@ impl ServerCtx {
         hdl: Handle,
         mtu: u16,
         cfg: ClientCfg,
-    ) -> RspResult<()> {
+    ) -> IoResult {
         let char = (self.srv.db.get_characteristic(hdl)).expect("invalid CCCD handle");
         let vhdl = char.value_handle();
         let uuid = self.uuid(vhdl);
@@ -563,9 +581,8 @@ impl ServerCtx {
             }
             Err(e) => {
                 warn!(
-                    "Failed to enable notifications for {} ({vhdl}): {}",
+                    "Failed to enable notifications for {} ({vhdl}): {e}",
                     uuid.typ(),
-                    e.err()
                 );
                 ct.cancel();
                 if let Some(v) = cc.cache.vals.get_mut(&hdl) {
@@ -575,16 +592,6 @@ impl ServerCtx {
         }
         self.srv.persist(cc);
         r
-    }
-
-    /// Executes a read operation from the client's cache.
-    #[inline]
-    fn cache_read<'a>(&self, r: &'a mut ReadReq) -> RspResult<&'a [u8]> {
-        let cc = self.cc.lock();
-        match r.complete(&cc.cache.vals[&r.handle()]) {
-            Ok(_) => Ok(r.buf.as_ref()),
-            Err(e) => r.opcode().hdl_err(e, r.handle()),
-        }
     }
 
     /// Returns the UUID of the specified handle.

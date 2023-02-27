@@ -57,29 +57,26 @@ pub(super) struct IoMap(pub(super) BTreeMap<Handle, Io>);
 impl IoMap {
     /// Executes a read request.
     #[inline(always)]
-    pub fn read<'a>(&self, r: &'a mut ReadReq) -> RspResult<&'a [u8]> {
-        self.exec(r.op, r.hdl, IoReq::Read(r))
-            .map(|_| r.buf.as_ref())
+    pub fn read(&self, r: &mut ReadReq) -> IoResult {
+        self.exec(r.hdl, IoReq::Read(r))
     }
 
     /// Executes a write request.
     #[inline(always)]
-    pub fn write(&self, w: &WriteReq) -> RspResult<()> {
-        self.exec(w.op, w.hdl, IoReq::Write(w))
+    pub fn write(&self, w: &WriteReq) -> IoResult {
+        self.exec(w.hdl, IoReq::Write(w))
     }
 
     /// Executes a notify request.
     #[inline(always)]
-    pub fn notify(&self, n: NotifyReq) -> RspResult<()> {
-        self.exec(n.op, n.hdl, IoReq::Notify(n))
+    pub fn notify(&self, n: NotifyReq) -> IoResult {
+        self.exec(n.hdl, IoReq::Notify(n))
     }
 
     /// Executes the specified request.
     #[inline]
-    fn exec(&self, op: Opcode, hdl: Handle, req: IoReq) -> RspResult<()> {
-        (self.0.get(&hdl).ok_or(ErrorCode::UnlikelyError))
-            .and_then(|io| io.0(req))
-            .or_else(|e| op.hdl_err(e, hdl))
+    fn exec(&self, hdl: Handle, req: IoReq) -> IoResult {
+        (self.0.get(&hdl).ok_or(ErrorCode::UnlikelyError)).and_then(|io| io.0(req))
     }
 }
 
