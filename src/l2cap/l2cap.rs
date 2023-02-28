@@ -119,6 +119,7 @@ impl ChanManager {
     }
 
     /// Handles signaling channel communications.
+    #[allow(dead_code)] // TODO: Remove
     fn handle_signal(&mut self, cid: LeCid) {
         if cid.chan != Cid::SIG {
             return;
