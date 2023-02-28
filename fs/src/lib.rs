@@ -113,7 +113,7 @@ impl Dir {
     fn new(name: impl AsRef<Path>) -> Self {
         let dir = dirs::data_local_dir()
             .expect("user directory not available")
-            .join("burble/")
+            .join("burble")
             .join(name);
         Self(dir)
     }

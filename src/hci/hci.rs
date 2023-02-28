@@ -311,6 +311,7 @@ bitflags! {
     #[allow(clippy::unsafe_derive_deserialize)]
     #[derive(Default, serde::Deserialize, serde::Serialize)]
     #[repr(transparent)]
+    #[serde(transparent)]
     pub(crate) struct ConnSec: u8 {
         /// Authentication flag.
         const AUTHN = 1 << 0;
