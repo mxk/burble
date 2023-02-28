@@ -106,7 +106,7 @@ impl Peripheral {
         }
         self.send(Command::PairingResponse(b)).await?;
         // [Vol 3] Part H, Section 2.3.4
-        let mut sec = hci::ConnSec::key_len(a.max_key_len.min(b.max_key_len));
+        let mut sec = hci::ConnSec::key_len(a.max_key_len.min(b.max_key_len) * 8);
         if authn {
             sec.insert(hci::ConnSec::AUTHN);
         }
