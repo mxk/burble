@@ -355,10 +355,10 @@ impl SchedulerGuard {
             .u16(data_len);
         self.ch.may_send().await?;
         trace!(
-            "{}PDU fragment from {}: {:02X?}",
+            "{}{}: {:02X?}",
             if is_cont { "Cont. " } else { "" },
             self.ch.cid,
-            xfer.as_ref()
+            &xfer.as_ref()[4 + 4..] // Skip ACL and L2CAP headers
         );
         match xfer.submit().await {
             Ok(xfer) => {

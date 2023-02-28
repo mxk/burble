@@ -134,7 +134,7 @@ impl Receiver {
                 warn!("PDU fragment for an unknown {cid}: {pkt:02X?}");
                 return;
             };
-            trace!("PDU fragment for {cid}: {pkt:02X?}");
+            trace!("{cid}: {:02X?}", &pkt[4 + 4..]); // Skip ACL and L2CAP headers
             ch.first(pdu_len, xfer);
             if !ch.buf.is_none() {
                 *cont_cid = Some(cid.chan);

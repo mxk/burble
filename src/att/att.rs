@@ -4,7 +4,7 @@ use std::fmt::Debug;
 use std::time::Duration;
 
 use structbuf::{Pack, Packer, Unpacker};
-use tracing::{debug, error, warn};
+use tracing::{debug, error, trace, warn};
 
 pub use {consts::*, handle::*, perm::*};
 
@@ -139,8 +139,8 @@ impl Bearer {
         let rsp = match r {
             Ok(r) => r.0,
             Err(e) => {
-                error!(
-                    "ATT response: opcode {:#06X} for {:?} failed with {}",
+                warn!(
+                    "Opcode {:#04X} for {:?} failed with {}",
                     e.req, e.hdl, e.err
                 );
                 if Opcode::is_cmd(e.req) {
@@ -216,6 +216,7 @@ impl Bearer {
     fn rsp(&self, op: Opcode, f: impl FnOnce(&mut Packer) -> RspResult<()>) -> RspResult<Rsp> {
         let mut pdu = self.0.new_payload();
         f(pdu.append().u8(op))?;
+        trace!("{op}: {:02X?}", pdu.as_ref());
         Ok(Rsp(pdu))
     }
 

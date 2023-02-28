@@ -76,17 +76,17 @@ impl BasicChan {
     /// Returns a future that will resolve to the next inbound SDU.
     #[inline(always)]
     pub fn recv(&mut self) -> Recv {
-        Recv(Arc::clone(&self.raw))
+        Recv {
+            raw: Arc::clone(&self.raw),
+            have_lock: false,
+        }
     }
 
     /// Returns the next inbound SDU that matches filter `f`. All other SDUs
     /// stay in the buffer.
     #[inline(always)]
     pub fn recv_filter<F: Fn(Unpacker) -> bool + Send>(&mut self, f: F) -> RecvFilter<F> {
-        RecvFilter {
-            raw: Arc::clone(&self.raw),
-            f,
-        }
+        RecvFilter { r: self.recv(), f }
     }
 
     /// Sends an outbound SDU, returning as soon as the last fragment is
@@ -99,44 +99,53 @@ impl BasicChan {
 
 /// Channel receive future.
 #[derive(Debug)]
-#[repr(transparent)]
-pub(crate) struct Recv(Arc<RawChan>);
+pub(crate) struct Recv {
+    raw: Arc<RawChan>,
+    have_lock: bool,
+}
 
 impl Future for Recv {
     type Output = Result<Payload>;
 
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut cs = self.0.state.lock();
-        if let Err(e) = cs.err(self.0.cid) {
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut cs = self.raw.state.lock();
+        if let Err(e) = cs.err(self.raw.cid) {
             return Poll::Ready(Err(e));
         }
         if let Some(pdu) = cs.pdu.pop_front() {
             return Poll::Ready(Ok(Payload::new(pdu, L2CAP_HDR)));
         }
-        cs.rx_await(cx)
+        cs.rx_await(cx, self.have_lock);
+        drop(cs);
+        self.have_lock = true;
+        Poll::Pending
     }
 }
 
 impl Drop for Recv {
     #[inline]
     fn drop(&mut self) {
-        self.0.state.lock().rx_waker = None;
+        if self.have_lock {
+            let mut cs = self.raw.state.lock();
+            cs.status.remove(Status::RX_LOCK);
+            cs.rx_waker = None;
+        }
     }
 }
 
 /// Channel receive future with SDU filtering.
 #[derive(Debug)]
 pub(crate) struct RecvFilter<F> {
-    raw: Arc<RawChan>,
+    r: Recv,
     f: F,
 }
 
-impl<F: Fn(Unpacker) -> bool + Send> Future for RecvFilter<F> {
+impl<F: Fn(Unpacker) -> bool + Send + Unpin> Future for RecvFilter<F> {
     type Output = Result<Payload>;
 
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut cs = self.raw.state.lock();
-        if let Err(e) = cs.err(self.raw.cid) {
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut cs = self.r.raw.state.lock();
+        if let Err(e) = cs.err(self.r.raw.cid) {
             return Poll::Ready(Err(e));
         }
         let mut it = cs.pdu.iter();
@@ -145,7 +154,10 @@ impl<F: Fn(Unpacker) -> bool + Send> Future for RecvFilter<F> {
             let pdu = unsafe { cs.pdu.remove(i).unwrap_unchecked() };
             return Poll::Ready(Ok(Payload::new(pdu, L2CAP_HDR)));
         }
-        cs.rx_await(cx)
+        cs.rx_await(cx, self.r.have_lock);
+        drop(cs);
+        self.r.have_lock = true;
+        Poll::Pending
     }
 }
 
@@ -192,7 +204,10 @@ impl RawChan {
     /// send a PDU fragment.
     #[inline(always)]
     pub const fn may_send(&self) -> MaySend {
-        MaySend(self)
+        MaySend {
+            raw: self,
+            have_lock: false,
+        }
     }
 
     /// Sets channel closed flag.
@@ -210,29 +225,38 @@ impl RawChan {
 
 /// Channel send permission future.
 #[derive(Debug)]
-#[repr(transparent)]
-pub(crate) struct MaySend<'a>(&'a RawChan);
+pub(crate) struct MaySend<'a> {
+    raw: &'a RawChan,
+    have_lock: bool,
+}
 
 impl Future for MaySend<'_> {
     type Output = Result<()>;
 
     #[inline]
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut cs = self.0.state.lock();
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut cs = self.raw.state.lock();
         if cs.status.contains(Status::MAY_SEND) {
             return Poll::Ready(Ok(()));
         }
-        if let Err(e) = cs.err(self.0.cid) {
+        if let Err(e) = cs.err(self.raw.cid) {
             return Poll::Ready(Err(e));
         }
-        cs.tx_await(cx)
+        cs.tx_await(cx, self.have_lock);
+        drop(cs);
+        self.have_lock = true;
+        Poll::Pending
     }
 }
 
 impl Drop for MaySend<'_> {
     #[inline]
     fn drop(&mut self) {
-        self.0.state.lock().tx_waker = None;
+        if self.have_lock {
+            let mut cs = self.raw.state.lock();
+            cs.status.remove(Status::TX_LOCK);
+            cs.tx_waker = None;
+        }
     }
 }
 
@@ -248,6 +272,10 @@ bitflags::bitflags! {
         const SCHEDULED = 1 << 2;
         /// Channel is allowed to send a single PDU fragment.
         const MAY_SEND = 1 << 3;
+        /// [`Recv`] future is using rx_waker.
+        const RX_LOCK = 1 << 4;
+        /// [`MaySend`] future is using tx_waker.
+        const TX_LOCK = 1 << 5;
     }
 }
 
@@ -374,17 +402,31 @@ impl State {
 
     /// Returns [`Poll::Pending`] after configuring the rx waker.
     #[inline(always)]
-    fn rx_await<P>(&mut self, cx: &Context<'_>) -> Poll<P> {
-        debug_assert!(self.rx_waker.is_none(), "multiple channel receivers");
+    fn rx_await(&mut self, cx: &Context<'_>, have_lock: bool) {
+        // We want to ensure that there is at most one receiver at any given
+        // time. This can't be based on rx_waker being Some because Recv::poll
+        // may be called twice in a row before the waker is signaled and
+        // cleared. This happens with tokio::select. The caller takes the lock
+        // when this method returns and is responsible for releasing it when
+        // dropped.
+        assert_eq!(
+            have_lock,
+            self.status.contains(Status::RX_LOCK),
+            "channel receiver lock mismatch"
+        );
+        self.status.insert(Status::RX_LOCK);
         self.rx_waker = Some(cx.waker().clone());
-        Poll::Pending
     }
 
     /// Returns [`Poll::Pending`] after configuring the tx waker.
     #[inline(always)]
-    fn tx_await<P>(&mut self, cx: &Context<'_>) -> Poll<P> {
-        debug_assert!(self.tx_waker.is_none(), "multiple channel senders");
+    fn tx_await(&mut self, cx: &Context<'_>, have_lock: bool) {
+        assert_eq!(
+            have_lock,
+            self.status.contains(Status::TX_LOCK),
+            "channel sender lock mismatch"
+        );
+        self.status.insert(Status::TX_LOCK);
         self.tx_waker = Some(cx.waker().clone());
-        Poll::Pending
     }
 }
