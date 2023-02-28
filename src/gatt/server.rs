@@ -30,7 +30,7 @@ impl Server {
     /// Attribute service, which can be defined with [`Self::define_service`].
     #[inline]
     #[must_use]
-    pub fn new(mut db: Builder<Db>, store: Arc<CacheStore>) -> Arc<Self> {
+    pub fn new(db: Builder<Db>, store: Arc<CacheStore>) -> Arc<Self> {
         let (db, io) = db.freeze();
         Arc::new(Self {
             db,

@@ -8,6 +8,8 @@
 
 use std::collections::VecDeque;
 
+pub use service::*;
+
 mod descriptor;
 
 /// Collection of HID report descriptor items that can be converted to a byte
@@ -17,6 +19,7 @@ pub type ReportDescriptor = descriptor::Items;
 #[path = "kbd/kbd.rs"]
 pub mod kbd;
 pub mod mouse;
+mod service;
 
 /// Basic HID.
 pub trait Dev {

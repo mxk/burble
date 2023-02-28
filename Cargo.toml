@@ -53,5 +53,6 @@ anyhow = "1.0.65"
 burble-fs = { path = "fs" }
 clap = { version = "4.1.3", features = ["derive"] }
 matches = "0.1.9"
+sscanf = "0.4.0"
 tokio = { version = "1.21.2", features = ["io-std", "io-util"] }
 tracing-subscriber = "0.3.15"

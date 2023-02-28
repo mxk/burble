@@ -391,7 +391,6 @@ pub(super) struct USKbd;
 
 impl KbdMap for USKbd {
     #[allow(clippy::too_many_lines)]
-    #[rustfmt::skip]
     fn key(&self, c: char) -> Option<Key> {
         Some(match c {
             // Row 1

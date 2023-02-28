@@ -1,18 +1,21 @@
 #![allow(clippy::print_stdout)]
 #![allow(clippy::print_stderr)]
 
+use std::io::BufRead;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
 use clap::Parser;
 use futures_core::future::BoxFuture;
+use sscanf::sscanf;
 use tracing::info;
 
 use burble::att::Access;
 use burble::gap::Appearance;
 use burble::gatt::Db;
 use burble::hci::AdvEvent;
+use burble::hid::{Input, MouseIn};
 use burble::*;
 use burble_crypto::NumCompare;
 
@@ -52,8 +55,50 @@ async fn main() -> Result<()> {
     r
 }
 
+fn read_input(srv: Arc<hid::HidService>) {
+    let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+    std::thread::spawn(move || {
+        // https://github.com/tokio-rs/tokio/issues/2466
+        for ln in std::io::BufReader::new(std::io::stdin()).lines() {
+            tx.blocking_send(ln?)?;
+        }
+        Ok::<_, anyhow::Error>(())
+    });
+    tokio::task::spawn(async move {
+        use {Input::*, MouseIn::*};
+        loop {
+            let ln: String = tokio::select! {
+                ln = rx.recv() => match ln {
+                    None => return,
+                    Some(ln) => ln,
+                },
+                //_ = tokio::signal::ctrl_c() => return,
+            };
+            let mut tok = ln.split_ascii_whitespace();
+            let Some(cmd) = tok.next() else { continue };
+            let inp = match (cmd, tok.collect::<Vec<&str>>().join(" ")) {
+                ("click", params) => {
+                    if params.is_empty() {
+                        Mouse(Click(0))
+                    } else {
+                        let Ok(v) = sscanf!(params, "{u8}") else { continue };
+                        Mouse(Click(v))
+                    }
+                }
+                ("move", params) => {
+                    let Ok(v) = sscanf!(params, "{i32} {i32}") else { continue };
+                    Mouse(MoveRel { dx: v.0, dy: v.1 })
+                }
+                _ => continue,
+            };
+            srv.exec(inp).await.unwrap();
+        }
+    });
+}
+
 async fn serve(host: hci::Host) -> Result<()> {
     let mut db = Db::build();
+    gatt::Server::define_service(&mut db);
     gap::GapService::new("Burble", Appearance::GenericHumanInterfaceDevice)
         .define(&mut db, Access::READ);
     dis::DeviceInfoService::new()
@@ -61,6 +106,12 @@ async fn serve(host: hci::Host) -> Result<()> {
         .with_pnp_id(dis::PnpId::new(dis::VendorId::USB(0x1209), 0x0001, (1, 0, 0)).unwrap())
         .define(&mut db, Access::READ);
     bas::BatteryService::new().define(&mut db, Access::READ);
+    let hid = hid::HidService::new();
+    //#[cfg(debug_assertions)]
+    //db.morph_next();
+    hid.define(&mut db);
+    read_input(hid);
+
     let srv = gatt::Server::new(db, Arc::new(burble_fs::GattServerStore::new()));
     srv.db().dump();
 
@@ -91,7 +142,7 @@ async fn serve(host: hci::Host) -> Result<()> {
                 info!("Serving {link}");
                 let mut smp = cm.smp_chan(link).unwrap();
                 tokio::task::spawn(async move {
-                    let mut dev = smp::Device::new();
+                    let mut dev = smp::Device::new().with_display(Box::new(Dev)).with_confirm(Box::new(Dev));
                     smp.respond(&mut dev, &burble_fs::KeyStore::new()).await
                 });
                 let br = cm.att_chan(link).unwrap();
@@ -147,6 +198,8 @@ impl smp::Display for Dev {
 
 impl smp::Confirm for Dev {
     fn confirm(&mut self) -> BoxFuture<bool> {
+        Box::pin(std::future::ready(true))
+        /*
         use tokio::io::AsyncBufReadExt;
         Box::pin(async {
             let buf = tokio::io::BufReader::new(tokio::io::stdin());
@@ -161,6 +214,7 @@ impl smp::Confirm for Dev {
                 }
             }
         })
+        */
     }
 }
 
