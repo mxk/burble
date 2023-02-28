@@ -1,5 +1,6 @@
 use std::ops::{Deref, DerefMut};
 
+use bitflags::bitflags;
 use smallvec::SmallVec;
 use structbuf::{Pack, Packer, StructBuf};
 
@@ -31,6 +32,7 @@ pub struct Builder<T>(DbBuilder, PhantomData<T>);
 impl<T> Builder<T> {
     /// Creates a generic attribute with an externally stored value.
     fn attr(&mut self, typ: Uuid, perms: Perms) -> Handle {
+        let typ = self.0.morph(typ);
         let typ16 = typ.as_uuid16();
         if typ16.is_none() {
             self.append_data(u128::from(typ).to_le_bytes());
@@ -103,7 +105,7 @@ impl Builder<Db> {
         chars: impl FnOnce(&mut Builder<ServiceDef>) -> T,
     ) -> (Handle, T) {
         let hdl = self.service(Declaration::PrimaryService, uuid.into(), include.as_ref());
-        (hdl, chars(self.builder()))
+        self.service_chars(hdl, chars)
     }
 
     /// Defines a secondary service ([Vol 3] Part G, Section 3.1).
@@ -117,12 +119,21 @@ impl Builder<Db> {
         chars: impl FnOnce(&mut Builder<ServiceDef>) -> T,
     ) -> (Handle, T) {
         let hdl = self.service(Declaration::SecondaryService, uuid.into(), include.as_ref());
-        (hdl, chars(self.builder()))
+        self.service_chars(hdl, chars)
+    }
+
+    /// Morphs all UUIDs of the next service to allow debugging otherwise
+    /// protected services on the client.
+    #[cfg(debug_assertions)]
+    #[inline(always)]
+    pub fn morph_next(&mut self) {
+        self.0.flag.insert(Bld::MORPH);
     }
 
     /// Declares a primary or secondary service and any included services
     /// ([Vol 3] Part G, Section 3.2).
     fn service(&mut self, typ: Declaration, uuid: Uuid, include: &[Handle]) -> Handle {
+        let uuid = self.morph(uuid);
         if let Some((UuidType::Service(s), uuid16)) = uuid.as_uuid16().map(|u| (u.typ(), u)) {
             assert!(
                 s.multi_instance() || !self.attr.iter().any(|at| at.typ == Some(uuid16)),
@@ -140,6 +151,18 @@ impl Builder<Db> {
             });
         }
         hdl
+    }
+
+    /// Calls `f` to define service characteristics.
+    #[inline(always)]
+    fn service_chars<T>(
+        &mut self,
+        hdl: Handle,
+        f: impl FnOnce(&mut Builder<ServiceDef>) -> T,
+    ) -> (Handle, T) {
+        let v = f(self.builder());
+        self.0.flag.remove(Bld::MORPH);
+        (hdl, v)
     }
 
     /// Calculates the database hash ([Vol 3] Part G, Section 7.3.1).
@@ -185,7 +208,9 @@ impl Builder<ServiceDef> {
     ) -> (Handle, T) {
         let hdl = self.decl_value(uuid.into(), props, perms.into());
         self.io.insert(hdl, io.into());
-        let b = self.builder(props.contains(Prop::EXT_PROPS));
+        let mut flag = Bld::empty();
+        flag.set(Bld::NEED_EXT_PROPS, props.contains(Prop::EXT_PROPS));
+        let b = self.builder(flag);
         let v = descs(b);
         b.finalize();
         (hdl, v)
@@ -203,7 +228,7 @@ impl Builder<ServiceDef> {
     ) -> T {
         self.decl_value(uuid.into(), Prop::READ, perms.into());
         self.append_val(val);
-        let b = self.builder(false);
+        let b = self.builder(Bld::empty());
         let v = descs(b);
         b.finalize();
         v
@@ -213,6 +238,7 @@ impl Builder<ServiceDef> {
 
     /// Adds characteristic and characteristic value declarations.
     fn decl_value(&mut self, uuid: Uuid, props: Prop, perms: Perms) -> Handle {
+        let uuid = self.0.morph(uuid);
         let val_hdl = self.next_handle().next().expect("maximum handle reached");
         self.decl(Declaration::Characteristic, |v| {
             v.u8(props.bits()).u16(val_hdl).uuid(uuid);
@@ -221,10 +247,8 @@ impl Builder<ServiceDef> {
     }
 
     /// Returns a new descriptor builder.
-    fn builder(&mut self, need_ext_props: bool) -> &mut Builder<CharacteristicDef> {
-        self.need_ext_props = need_ext_props;
-        self.have_cccd = false;
-        self.have_aggregate_fmt = false;
+    fn builder(&mut self, flag: Bld) -> &mut Builder<CharacteristicDef> {
+        self.flag = flag;
         // SAFETY: 0 is a valid length and there is nothing to drop
         unsafe { self.fmt.set_len(0) };
         self.0.builder()
@@ -238,8 +262,8 @@ impl Builder<CharacteristicDef> {
     pub fn descriptor(
         &mut self,
         uuid: impl Into<Uuid>,
-        io: impl Into<Io>,
         perms: impl Into<Perms>,
+        io: impl Into<Io>,
     ) -> Handle {
         let perms = perms.into();
         let hdl = self.attr(uuid.into(), perms);
@@ -253,8 +277,8 @@ impl Builder<CharacteristicDef> {
     pub fn ro_descriptor(
         &mut self,
         uuid: impl Into<Uuid>,
-        val: impl AsRef<[u8]>,
         perms: impl Into<Perms>,
+        val: impl AsRef<[u8]>,
     ) {
         self.attr(uuid.into(), perms.into());
         self.append_val(val);
@@ -267,10 +291,10 @@ impl Builder<CharacteristicDef> {
     /// properties contain `EXT_PROPS` flag.
     pub fn ext_props(&mut self, props: ExtProp) {
         assert!(
-            self.need_ext_props,
+            self.flag.contains(Bld::NEED_EXT_PROPS),
             "EXT_PROPS not set or descriptor already exists"
         );
-        self.need_ext_props = false;
+        self.flag.remove(Bld::NEED_EXT_PROPS);
         self.decl(Descriptor::CharacteristicExtendedProperties, |v| {
             v.u16(props.bits());
         });
@@ -280,8 +304,11 @@ impl Builder<CharacteristicDef> {
     /// ([Vol 3] Part G, Section 3.3.3.3).
     #[inline]
     pub fn client_cfg(&mut self, perms: impl Into<Perms>) -> Handle {
-        assert!(!self.have_cccd, "descriptor already exists");
-        self.have_cccd = true;
+        assert!(
+            !self.flag.contains(Bld::HAVE_CCCD),
+            "descriptor already exists"
+        );
+        self.flag.insert(Bld::HAVE_CCCD);
         self.attr(
             Descriptor::ClientCharacteristicConfiguration.uuid(),
             perms.into(),
@@ -310,8 +337,11 @@ impl Builder<CharacteristicDef> {
     /// This descriptor will be added automatically when more than one
     /// Presentation Format descriptor is present.
     pub fn aggregate_fmt(&mut self, hdls: impl AsRef<[Handle]>) {
-        assert!(!self.have_aggregate_fmt, "descriptor already exists");
-        self.have_aggregate_fmt = true;
+        assert!(
+            !self.flag.contains(Bld::HAVE_AGGREGATE_FMT),
+            "descriptor already exists"
+        );
+        self.flag.insert(Bld::HAVE_AGGREGATE_FMT);
         self.decl(Descriptor::CharacteristicAggregateFormat, |v| {
             for &hdl in hdls.as_ref() {
                 v.u16(hdl);
@@ -321,14 +351,27 @@ impl Builder<CharacteristicDef> {
 
     /// Finalizes characteristic definition by adding required descriptors.
     fn finalize(&mut self) {
-        if self.need_ext_props {
+        // TODO: Add CCCD if NOTIFY or INDICATE properties are set
+        if self.flag.contains(Bld::NEED_EXT_PROPS) {
             self.ext_props(ExtProp::empty());
         }
-        if !self.have_aggregate_fmt && self.fmt.len() > 1 {
+        if !self.flag.contains(Bld::HAVE_AGGREGATE_FMT) && self.fmt.len() > 1 {
             let fmt = mem::take(&mut self.fmt);
             self.aggregate_fmt(&fmt);
             self.fmt = fmt; // Preserve any allocated capacity
         }
+    }
+}
+
+bitflags! {
+    /// Builder flags.
+    #[derive(Default)]
+    #[repr(transparent)]
+    pub struct Bld: u8 {
+        const MORPH = 1 << 0;
+        const NEED_EXT_PROPS = 1 << 1;
+        const HAVE_CCCD = 1 << 2;
+        const HAVE_AGGREGATE_FMT = 1 << 3;
     }
 }
 
@@ -338,9 +381,7 @@ pub struct DbBuilder {
     attr: Vec<Attr>,
     data: Vec<u8>,
     io: BTreeMap<Handle, Io>,
-    need_ext_props: bool,
-    have_cccd: bool,
-    have_aggregate_fmt: bool,
+    flag: Bld,
     fmt: SmallVec<[Handle; 4]>,
 }
 
@@ -414,6 +455,17 @@ impl DbBuilder {
     fn builder<T>(&mut self) -> &mut Builder<T> {
         // SAFETY: Builder is a `repr(transparent)` onetype
         unsafe { &mut *(self as *mut Self).cast() }
+    }
+
+    /// Returns the possibly morphed UUID.
+    #[inline(always)]
+    fn morph(&self, u: impl Into<Uuid>) -> Uuid {
+        let u = u.into();
+        if !cfg!(debug_assertions) || !self.flag.contains(Bld::MORPH) {
+            return u;
+        }
+        // SAFETY: `u` is a non-zero 16-bit UUID
+        (u.as_u16()).map_or(u, |u| unsafe { Uuid::new_unchecked(u128::from(u) << 96) })
     }
 }
 
