@@ -571,7 +571,7 @@ impl ServerCtx {
             uuid,
             mtu,
             ind: cfg.contains(ClientCfg::INDICATE),
-            tx: tokio_util::sync::PollSender::new(cc.tx.clone()),
+            tx: cc.tx.clone(),
             ct: ct.clone(),
         });
         match r {

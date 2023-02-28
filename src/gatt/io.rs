@@ -24,6 +24,16 @@ pub struct Io(Arc<dyn for<'a> Fn(IoReq<'a>) -> IoResult + Send + Sync>);
 
 impl Io {
     pub const NONE: () = ();
+
+    /// Returns an I/O callback for a method of `T`.
+    #[inline(always)]
+    pub fn map<T: Send + Sync + 'static>(
+        this: &Arc<T>,
+        f: impl Fn(&T, IoReq) -> IoResult + Send + Sync + 'static,
+    ) -> Self {
+        let this = Arc::clone(this);
+        Self(Arc::new(move |req: IoReq| f(&this, req)))
+    }
 }
 
 impl Debug for Io {
@@ -226,7 +236,7 @@ pub struct NotifyReq {
     pub(super) uuid: Uuid,
     pub(super) mtu: u16,
     pub(super) ind: bool,
-    pub(super) tx: tokio_util::sync::PollSender<NotifyVal>,
+    pub(super) tx: tokio::sync::mpsc::Sender<NotifyVal>,
     pub(super) ct: tokio_util::sync::CancellationToken,
 }
 
@@ -243,15 +253,18 @@ impl NotifyReq {
     /// Returns a future that sends an updated characteristic value to the
     /// client. For indications, the future resolves once confirmation is
     /// received.
-    pub fn notify(&mut self, f: impl FnOnce(&mut Packer)) -> Notify {
+    pub fn notify(&self, f: impl FnOnce(&mut Packer)) -> Notify {
         let mut val = StructBuf::new(usize::from(self.mtu) - 3);
         f(&mut val.append());
         let (hdl, ind) = (self.hdl, self.ind);
         let ct = self.ct.clone().cancelled_owned();
         let (tx, rx) = tokio::sync::oneshot::channel();
         Notify {
-            req: self,
             val: Some(NotifyVal { hdl, val, ind, tx }),
+            // TODO: We don't want Notify to have a lifetime, but this allocates
+            // a ReusableBoxFuture. That's ok for now since we also allocate
+            // a oneshot channel.
+            tx: tokio_util::sync::PollSender::new(self.tx.clone()),
             rx,
             ct,
         }
@@ -259,14 +272,14 @@ impl NotifyReq {
 
     /// Resolves when the notification session is closed.
     #[inline(always)]
-    async fn closed(&self) {
+    pub async fn closed(&self) {
         self.ct.cancelled().await;
     }
 
     /// Returns whether the notification session is closed.
     #[inline(always)]
     #[must_use]
-    fn is_closed(&self) -> bool {
+    pub fn is_closed(&self) -> bool {
         self.ct.is_cancelled()
     }
 }
@@ -274,16 +287,16 @@ impl NotifyReq {
 /// Characteristic notification or confirmation future.
 #[pin_project(PinnedDrop)]
 #[derive(Debug)]
-pub struct Notify<'a> {
-    req: &'a mut NotifyReq,
+pub struct Notify {
     val: Option<NotifyVal>,
+    tx: tokio_util::sync::PollSender<NotifyVal>,
     #[pin]
     rx: tokio::sync::oneshot::Receiver<Result<()>>,
     #[pin]
     ct: WaitForCancellationFutureOwned,
 }
 
-impl Future for Notify<'_> {
+impl Future for Notify {
     type Output = Result<()>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -293,15 +306,15 @@ impl Future for Notify<'_> {
             return CLOSED;
         }
         if this.val.is_some() {
-            if ready!(this.req.tx.poll_reserve(cx)).is_err() {
+            if ready!(this.tx.poll_reserve(cx)).is_err() {
                 return CLOSED;
             }
             // SAFETY: `self.val` is Some
             let val = unsafe { this.val.take().unwrap_unchecked() };
-            if this.req.tx.send_item(val).is_err() {
+            if this.tx.send_item(val).is_err() {
                 return CLOSED;
             }
-            this.req.tx.close();
+            this.tx.close();
         }
         match this.rx.poll(cx) {
             Poll::Ready(Ok(r)) => Poll::Ready(r),
@@ -312,10 +325,10 @@ impl Future for Notify<'_> {
 }
 
 #[pinned_drop]
-impl PinnedDrop for Notify<'_> {
+impl PinnedDrop for Notify {
     #[inline(always)]
     fn drop(self: Pin<&mut Self>) {
-        self.project().req.tx.abort_send();
+        self.project().tx.abort_send();
     }
 }
 
