@@ -26,36 +26,11 @@ pub struct Server {
 }
 
 impl Server {
-    /// Creates a new GATT server.
+    /// Creates a new GATT server. The database should contain the Generic
+    /// Attribute service, which can be defined with [`Self::define_service`].
     #[inline]
     #[must_use]
     pub fn new(mut db: Builder<Db>, store: Arc<CacheStore>) -> Arc<Self> {
-        let srv_io = Io::from(|_: IoReq| unreachable!());
-        // [Vol 3] Part G, Section 7
-        db.primary_service(Service::GenericAttribute, [], |db| {
-            // TODO: Implement
-            /*db.characteristic(
-                Characteristic::ServiceChanged,
-                Prop::INDICATE,
-                Access::NONE,
-                srv_io.clone(),
-                |b| b.client_cfg(Access::READ_WRITE),
-            );*/
-            /*db.characteristic(
-                Characteristic::ClientSupportedFeatures,
-                Prop::READ | Prop::WRITE,
-                Access::READ_WRITE,
-                srv_io.clone(),
-                |_| {},
-            );*/
-            db.characteristic(
-                Characteristic::DatabaseHash,
-                Prop::READ,
-                Access::READ,
-                srv_io.clone(),
-                |_| {},
-            );
-        });
         let (db, io) = db.freeze();
         Arc::new(Self {
             db,
@@ -63,6 +38,35 @@ impl Server {
             store,
             clients: SyncMutex::new(BTreeMap::new()),
         })
+    }
+
+    /// Defines Generic Attribute service.
+    pub fn define_service(db: &mut Builder<Db>) {
+        // [Vol 3] Part G, Section 7
+        db.primary_service(Service::GenericAttribute, [], |db| {
+            // TODO: Implement
+            /*db.characteristic(
+                Characteristic::ServiceChanged,
+                Prop::INDICATE,
+                Access::NONE,
+                Io::NONE, // I/O is handled directly
+                |b| b.client_cfg(Access::READ_WRITE),
+            );*/
+            /*db.characteristic(
+                Characteristic::ClientSupportedFeatures,
+                Prop::READ | Prop::WRITE,
+                Access::READ_WRITE,
+                Io::NONE,
+                |_| {},
+            );*/
+            db.characteristic(
+                Characteristic::DatabaseHash,
+                Prop::READ,
+                Access::READ,
+                Io::NONE,
+                |_| {},
+            );
+        });
     }
 
     /// Returns the server database.
@@ -561,7 +565,7 @@ impl ServerCtx {
                 ct.cancel();
             }
             self.srv.persist(cc);
-            debug!("Disabled notifications for {} ({vhdl})", uuid.typ());
+            debug!("Disabled notifications for {} {vhdl}", uuid.typ());
             return Ok(());
         }
         let ct = CancellationToken::new();
@@ -576,12 +580,12 @@ impl ServerCtx {
         });
         match r {
             Ok(_) => {
-                debug!("Enabled notifications for {} ({vhdl})", uuid.typ());
+                debug!("Enabled notifications for {} {vhdl}", uuid.typ());
                 cc.notify_cancel.insert(hdl, ct);
             }
             Err(e) => {
                 warn!(
-                    "Failed to enable notifications for {} ({vhdl}): {e}",
+                    "Failed to enable notifications for {} {vhdl}: {e}",
                     uuid.typ(),
                 );
                 ct.cancel();

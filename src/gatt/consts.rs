@@ -59,7 +59,7 @@ bitflags! {
         const NOTIFY = 1 << 0;
         /// The Characteristic Value shall be indicated. This value can only be
         /// set if the characteristic's properties have the `INDICATE` bit set.
-        const INDICATE = 1 << 0;
+        const INDICATE = 1 << 1;
         /// Notify or indicate bit mask.
         const NOTIFY_MASK = Self::NOTIFY.bits | Self::INDICATE.bits;
     }
