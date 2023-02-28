@@ -44,6 +44,12 @@ impl Access {
         Self(self.0.union(Perm::AUTHZ))
     }
 
+    /// Require encryption with the maximum key length.
+    #[inline]
+    pub const fn encrypt(self) -> Self {
+        self.key_len(Perm::KEY_MAX)
+    }
+
     /// Sets encryption key length between 56 and 128 bits in 8 bit increments.
     /// A key length of 0 clears encryption requirement/status.
     #[inline]
