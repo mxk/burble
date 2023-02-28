@@ -161,6 +161,43 @@ impl<F: Fn(Unpacker) -> bool + Send + Unpin> Future for RecvFilter<F> {
     }
 }
 
+/// Channel send permission future.
+#[derive(Debug)]
+pub(crate) struct MaySend<'a> {
+    raw: &'a RawChan,
+    have_lock: bool,
+}
+
+impl Future for MaySend<'_> {
+    type Output = Result<()>;
+
+    #[inline]
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut cs = self.raw.state.lock();
+        if cs.status.contains(Status::MAY_SEND) {
+            return Poll::Ready(Ok(()));
+        }
+        if let Err(e) = cs.err(self.raw.cid) {
+            return Poll::Ready(Err(e));
+        }
+        cs.tx_await(cx, self.have_lock);
+        drop(cs);
+        self.have_lock = true;
+        Poll::Pending
+    }
+}
+
+impl Drop for MaySend<'_> {
+    #[inline]
+    fn drop(&mut self) {
+        if self.have_lock {
+            let mut cs = self.raw.state.lock();
+            cs.status.remove(Status::TX_LOCK);
+            cs.tx_waker = None;
+        }
+    }
+}
+
 /// Channel state shared between the Channel Manager, Resource Manager, and the
 /// channel owner.
 #[derive(Debug)]
@@ -220,43 +257,6 @@ impl RawChan {
     #[inline]
     pub fn set_error(&self) {
         self.state.lock().set_fatal(Status::ERROR);
-    }
-}
-
-/// Channel send permission future.
-#[derive(Debug)]
-pub(crate) struct MaySend<'a> {
-    raw: &'a RawChan,
-    have_lock: bool,
-}
-
-impl Future for MaySend<'_> {
-    type Output = Result<()>;
-
-    #[inline]
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut cs = self.raw.state.lock();
-        if cs.status.contains(Status::MAY_SEND) {
-            return Poll::Ready(Ok(()));
-        }
-        if let Err(e) = cs.err(self.raw.cid) {
-            return Poll::Ready(Err(e));
-        }
-        cs.tx_await(cx, self.have_lock);
-        drop(cs);
-        self.have_lock = true;
-        Poll::Pending
-    }
-}
-
-impl Drop for MaySend<'_> {
-    #[inline]
-    fn drop(&mut self) {
-        if self.have_lock {
-            let mut cs = self.raw.state.lock();
-            cs.status.remove(Status::TX_LOCK);
-            cs.tx_waker = None;
-        }
     }
 }
 
