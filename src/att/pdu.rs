@@ -32,7 +32,7 @@ impl Pdu {
 
     /// Returns the result of calling `f` to unpack the PDU.
     #[inline]
-    fn unpack<'b, V: Debug>(
+    pub(super) fn unpack<'b, V: Debug>(
         &'b self,
         op: Opcode,
         f: impl FnOnce(&mut Unpacker<'b>) -> RspResult<V>,
@@ -71,30 +71,6 @@ impl Pdu {
     #[inline]
     fn uuid16(&self, p: &mut Unpacker, hdl: Handle) -> RspResult<Uuid16> {
         Uuid16::new(p.u16()).map_or_else(|| self.hdl_err(AttributeNotFound, hdl), Ok)
-    }
-}
-
-//
-// MTU exchange ([Vol 3] Part F, Section 3.4.2)
-//
-
-/// MTU exchange decoders ([Vol 3] Part F, Section 3.4.2).
-impl Pdu {
-    /// Returns `ATT_EXCHANGE_MTU_REQ` PDU parameters
-    /// ([Vol 3] Part F, Section 3.4.2.1).
-    pub(super) fn exchange_mtu_req(&self) -> RspResult<u16> {
-        self.unpack(ExchangeMtuReq, |p| Ok(p.u16()))
-    }
-}
-
-/// MTU exchange encoders ([Vol 3] Part F, Section 3.4.2).
-impl Bearer {
-    /// Returns an `ATT_EXCHANGE_MTU_RSP` PDU ([Vol 3] Part F, Section 3.4.2.2).
-    pub(super) fn exchange_mtu_rsp(&self, mtu: u16) -> RspResult<Rsp> {
-        self.rsp(ExchangeMtuRsp, |p| {
-            p.u16(mtu);
-            Ok(())
-        })
     }
 }
 

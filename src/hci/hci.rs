@@ -285,30 +285,6 @@ impl Conn {
             bond_id: None,
         }
     }
-
-    /// Returns whether the connection is authenticated (has MITM protection).
-    #[inline(always)]
-    pub const fn authn(&self) -> bool {
-        self.sec.contains(ConnSec::AUTHN)
-    }
-
-    /// Returns whether the remote device is authorized.
-    #[inline(always)]
-    pub const fn authz(&self) -> bool {
-        self.sec.contains(ConnSec::AUTHZ)
-    }
-
-    /// Returns whether a trusted relationship exists between the devices.
-    #[inline(always)]
-    pub const fn bond(&self) -> bool {
-        self.sec.contains(ConnSec::BOND)
-    }
-
-    /// Returns the encryption key length.
-    #[inline(always)]
-    pub const fn key_len(&self) -> u8 {
-        self.sec.intersection(ConnSec::KEY_LEN).bits
-    }
 }
 
 bitflags! {

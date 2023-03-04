@@ -439,17 +439,16 @@ impl AclTransfer {
 
     /// Submits the transfer for execution.
     #[inline]
-    async fn submit(mut self) -> host::Result<Self> {
-        // SAFETY: self.0 is not used again
-        let (xfer, alloc) = unsafe { ManuallyDrop::take(&mut self.0) };
-        mem::forget(self);
+    async fn submit(self) -> host::Result<Self> {
+        // SAFETY: `self` is not used again
+        let (xfer, alloc) = unsafe { ManuallyDrop::take(&mut ManuallyDrop::new(self).0) };
         Ok(Self::new(xfer.submit()?.await?, alloc))
     }
 }
 
 impl Drop for AclTransfer {
     fn drop(&mut self) {
-        // SAFETY: self.0 is not used again
+        // SAFETY: `self` is not used again
         let (mut xfer, alloc) = unsafe { ManuallyDrop::take(&mut self.0) };
         if xfer.at(ACL_HDR).remaining() != alloc.acl_data_len as usize {
             return; // TODO: Remove workaround

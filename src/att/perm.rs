@@ -5,7 +5,7 @@ use super::*;
 type Result<T> = std::result::Result<T, ErrorCode>;
 
 /// Access permission/request builder.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 #[must_use]
 #[repr(transparent)]
 pub struct Access(Perm);
@@ -23,13 +23,17 @@ impl Access {
     /// Read/write access permission/request.
     pub const READ_WRITE: Self = Self(Perm::READ_WRITE);
 
-    /// Copies parameters from an HCI connection.
+    /// Copies security parameters from HCI connection security properties.
     #[inline]
-    pub(crate) fn copy_from_conn(self, cn: &hci::Conn) -> Self {
-        let mut p = self.0;
-        p.set(Perm::AUTHN, cn.authn());
-        p.set(Perm::AUTHZ, cn.authz());
-        Self(p).key_len(cn.key_len())
+    pub(crate) fn copy_from_conn_sec(self, sec: hci::ConnSec) -> Self {
+        let mut p = self.0.access_type();
+        if sec.contains(hci::ConnSec::AUTHN) {
+            p.insert(Perm::AUTHN);
+        }
+        if sec.contains(hci::ConnSec::AUTHZ) {
+            p.insert(Perm::AUTHZ);
+        }
+        Self(p).key_len(sec.intersection(hci::ConnSec::KEY_LEN).bits())
     }
 
     /// Sets the authentication flag.
@@ -44,7 +48,7 @@ impl Access {
         Self(self.0.union(Perm::AUTHZ))
     }
 
-    /// Require encryption with the maximum key length.
+    /// Require 128-bit encryption.
     #[inline]
     pub const fn encrypt(self) -> Self {
         self.key_len(Perm::KEY_MAX)
@@ -53,7 +57,7 @@ impl Access {
     /// Sets encryption key length between 56 and 128 bits in 8 bit increments.
     /// A key length of 0 clears encryption requirement/status.
     #[inline]
-    pub const fn key_len(self, n: u8) -> Self {
+    const fn key_len(self, n: u8) -> Self {
         assert!(
             Perm::KEY_MIN <= n && n <= Perm::KEY_MAX && n % 8 == 0 || n == 0,
             "invalid encryption key length"
@@ -195,7 +199,7 @@ impl Perm {
     const KEY_MAX: u8 = 128;
     const KEY_OFF: u8 = Self::KEY_MIN - 8;
 
-    /// Returns the read/write access type.
+    /// Returns whether any read/write bits are set.
     #[inline]
     #[must_use]
     const fn is_set(self) -> bool {
@@ -293,13 +297,13 @@ mod tests {
             Err(InsufficientAuthorization),
         );
         test(
-            rw.authn().key_len(128),
+            rw.authn().encrypt(),
             wo.authn().authz(),
             Err(InsufficientEncryption),
         );
 
         test(ro.key_len(0), ro.key_len(0), Ok(()));
-        test(ro.key_len(56), ro.authn().key_len(128), Ok(()));
+        test(ro.key_len(56), ro.authn().encrypt(), Ok(()));
         test(
             rw.key_len(80),
             rw.authn().authz().key_len(56),
@@ -315,7 +319,7 @@ mod tests {
         }
         let (ro, wo, rw) = (Access::READ, Access::WRITE, Access::READ_WRITE);
 
-        let ps = Access::READ.authn() | Access::READ_WRITE.authz().key_len(128);
+        let ps = Access::READ.authn() | Access::READ_WRITE.authz().encrypt();
 
         test(ps, Access(Perm::default()), Err(RequestNotSupported));
 
@@ -323,13 +327,13 @@ mod tests {
         test(ps, ro.authz(), Err(InsufficientAuthentication));
         test(ps, ro.authz().key_len(120), Err(EncryptionKeySizeTooShort));
         test(ps, ro.authn(), Ok(()));
-        test(ps, ro.authz().key_len(128), Ok(()));
+        test(ps, ro.authz().encrypt(), Ok(()));
 
         test(ps, wo, Err(InsufficientAuthorization));
         test(ps, wo.authz(), Err(InsufficientEncryption));
-        test(ps, wo.authz().key_len(128), Ok(()));
+        test(ps, wo.authz().encrypt(), Ok(()));
 
-        test(ps, rw.key_len(128), Err(InsufficientAuthorization));
-        test(ps, rw.authz().key_len(128), Ok(()));
+        test(ps, rw.encrypt(), Err(InsufficientAuthorization));
+        test(ps, rw.authz().encrypt(), Ok(()));
     }
 }

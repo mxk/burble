@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 
 use structbuf::{Unpack, Unpacker};
-use tracing::{error, trace};
+use tracing::{error, info, trace};
 
 use crate::hci::ACL_LE_MIN_DATA_LEN;
 use crate::SyncMutexGuard;
@@ -62,9 +62,26 @@ impl BasicChan {
 
     /// Sets new channel MTU.
     pub fn set_mtu(&mut self, mtu: u16) {
-        assert!(mtu >= L2CAP_LE_MIN_MTU);
+        // The MTU can only be changed once, so the current one is the minimum
+        // allowed for the channel.
+        if mtu <= self.mtu {
+            if mtu < self.mtu {
+                error!(
+                    "Refusing {} MTU change: {} -> {mtu}",
+                    self.raw.cid, self.mtu
+                );
+            }
+            return;
+        }
+        info!("{} MTU change: {} -> {mtu}", self.raw.cid, self.mtu);
         self.mtu = mtu;
         self.raw.state.lock().max_frame_len = L2CAP_HDR + mtu as usize;
+    }
+
+    /// Sets channel error flag.
+    #[inline(always)]
+    pub fn set_error(&self) {
+        self.raw.set_error();
     }
 
     /// Creates a new outbound SDU.
@@ -232,9 +249,9 @@ impl RawChan {
     }
 
     /// Prevents the channel from sending PDU fragments.
-    #[inline]
+    #[inline(always)]
     pub fn deny_send(&self) {
-        self.state.lock().status -= Status::MAY_SEND;
+        self.state.lock().status.remove(Status::MAY_SEND);
     }
 
     /// Returns a future that blocks until the scheduler allows the channel to
@@ -248,13 +265,13 @@ impl RawChan {
     }
 
     /// Sets channel closed flag.
-    #[inline]
+    #[inline(always)]
     pub fn set_closed(&self) {
         self.state.lock().set_fatal(Status::CLOSED);
     }
 
     /// Sets channel error flag.
-    #[inline]
+    #[inline(always)]
     pub fn set_error(&self) {
         self.state.lock().set_fatal(Status::ERROR);
     }

@@ -1,6 +1,6 @@
 //! Attribute Protocol ([Vol 3] Part F).
 
-use std::fmt::Debug;
+use std::fmt::{Debug, Display, Formatter};
 use std::time::Duration;
 
 use structbuf::{Pack, Packer, Unpacker};
@@ -9,7 +9,7 @@ use tracing::{debug, error, trace, warn};
 pub use {consts::*, handle::*, perm::*};
 
 use crate::gap::Uuid;
-use crate::l2cap::{BasicChan, LeCid, Payload};
+use crate::l2cap::{BasicChan, Cid, LeCid, Payload};
 use crate::{hci, l2cap, SyncMutexGuard};
 
 mod consts;
@@ -49,7 +49,6 @@ pub struct Rsp(Payload);
 
 /// `ATT_ERROR_RSP` PDU ([Vol 3] Part F, Section 3.4.1.1).
 #[derive(Clone, Copy, Debug, thiserror::Error)]
-#[error("ATT {req}{} failed with {err}", .hdl.map_or(String::new(), |h| format!(" for handle {:#06X}", u16::from(h))))]
 pub struct ErrorRsp {
     req: u8,
     hdl: Option<Handle>,
@@ -62,6 +61,21 @@ impl ErrorRsp {
     #[must_use]
     pub(crate) const fn new(req: u8, hdl: Option<Handle>, err: ErrorCode) -> Self {
         Self { req, hdl, err }
+    }
+}
+
+impl Display for ErrorRsp {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        use num_enum::TryFromPrimitive;
+        f.write_str("ATT ")?;
+        match Opcode::try_from_primitive(self.req) {
+            Ok(op) => write!(f, "{op} "),
+            Err(_) => write!(f, "request {:#04X} ", self.req),
+        }?;
+        if let Some(hdl) = self.hdl {
+            write!(f, "for handle {:#06X} ", u16::from(hdl))?;
+        }
+        write!(f, "failed with {}", self.err)
     }
 }
 
@@ -113,6 +127,7 @@ impl Bearer {
             return Err(ErrorRsp::new(op, None, ErrorCode::RequestNotSupported).into());
         };
         if matches!(op.typ(), PduType::Rsp | PduType::Cfm) {
+            // TODO: This should probably be ignored.
             warn!("Unexpected PDU: {op}");
             return Err(ErrorRsp::new(op as _, None, ErrorCode::UnlikelyError).into());
         }
@@ -129,7 +144,8 @@ impl Bearer {
     /// Panics if the `pdu` is not a read/write request.
     #[inline]
     pub(crate) fn access_req(&self, pdu: &Pdu) -> Request {
-        pdu.opcode().request(&self.0.conn())
+        let sec = self.0.conn().sec;
+        pdu.opcode().request(sec)
     }
 
     /// Sends a response PDU or an `ATT_ERROR_RSP` if the request could not be
@@ -154,59 +170,92 @@ impl Bearer {
         self.send(rsp).await
     }
 
+    /// Performs MTU exchange ([Vol 3] Part F, Section 3.2.8 and 3.4.2.1).
+    pub(crate) async fn exchange_mtu(&mut self) -> Result<()> {
+        if self.0.cid().chan != Cid::ATT {
+            return Ok(());
+        }
+        let local = self.0.preferred_mtu();
+        let req = self.pack(Opcode::ExchangeMtuReq, |p| {
+            p.u16(local);
+        });
+        self.send(req).await?;
+        loop {
+            let pdu = match self.recv_rsp(Opcode::ExchangeMtuRsp).await {
+                Ok(p) => Pdu(p),
+                // [Vol 3] Part G, Section 4.3.1
+                Err(Error::Att(ErrorRsp {
+                    err: ErrorCode::RequestNotSupported,
+                    ..
+                })) => {
+                    debug!("Remote host does not support ATT_EXCHANGE_MTU_REQ");
+                    return Ok(());
+                }
+                Err(e) => return Err(e),
+            };
+            match pdu.opcode() {
+                Opcode::ExchangeMtuReq => {
+                    self.handle_exchange_mtu_req(&pdu).await?;
+                }
+                Opcode::ExchangeMtuRsp => {
+                    let remote = pdu.unpack(Opcode::ExchangeMtuRsp, |p| Ok(p.u16()))?;
+                    debug!("{} remote preferred MTU: {}", self.cid(), remote);
+                    self.0.set_mtu(local.min(remote));
+                    return Ok(());
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
+
     /// Handles `ATT_EXCHANGE_MTU_REQ` ([Vol 3] Part F, Section 3.4.2.1).
     pub(crate) async fn handle_exchange_mtu_req(&mut self, pdu: &Pdu) -> Result<()> {
-        let r = pdu.exchange_mtu_req().and_then(|mtu| {
-            // This procedure can only be performed once, so the current MTU
-            // is the minimum one allowed for the channel.
-            if mtu < self.0.mtu() {
-                return pdu.err(ErrorCode::RequestNotSupported);
-            }
-            // TODO: Increase server MTU if the controller's ACL data packet
-            // limits are too small.
-            let srv_mtu = self.0.preferred_mtu();
-            let rsp = self.exchange_mtu_rsp(srv_mtu);
-            let min = mtu.min(srv_mtu);
-            debug!("{} ATT_MTU={min}", self.0.cid());
-            self.0.set_mtu(min);
-            rsp
+        let r = (pdu.unpack(Opcode::ExchangeMtuReq, |p| Ok(p.u16()))).and_then(|remote| {
+            debug!("{} remote preferred MTU: {}", self.cid(), remote);
+            let local = self.0.preferred_mtu();
+            self.0.set_mtu(local.min(remote));
+            self.rsp(Opcode::ExchangeMtuRsp, |p| {
+                p.u16(local);
+                Ok(())
+            })
         });
         self.send_rsp(r).await
     }
 
     /// Receives a response or confirmation PDU ([Vol 3] Part F, Section 3.4.9).
+    /// If `rsp` is `ExchangeMtuRsp`, then this will also return any received
+    /// `ExchangeMtuReq` to avoid a deadlock.
     async fn recv_rsp(&mut self, rsp: Opcode) -> Result<Payload> {
         let want = u8::from(rsp);
-        let err = if rsp.typ() == PduType::Rsp {
-            Opcode::ErrorRsp as u8
-        } else {
-            0
-        };
+        let err = matches!(rsp.typ(), PduType::Rsp).then_some(Opcode::ErrorRsp as u8);
         // Transaction timeout ([Vol 3] Part F, Section 3.3.3)
         let r = tokio::time::timeout(
             Duration::from_secs(30),
             self.0.recv_filter(|mut pdu| {
-                let op = pdu.u8();
-                op == want || (op == err && err != 0 && pdu.u8() == want)
+                let have = pdu.u8();
+                have == want
+                    || (Some(have) == err && pdu.u8() == want)
+                    || (want == Opcode::ExchangeMtuRsp as u8
+                        && have == Opcode::ExchangeMtuReq as u8)
             }),
-        )
-        .await;
-        let sdu = match r {
-            Ok(r) => r?,
+        );
+        let pdu = match r.await {
+            Ok(Ok(pdu)) => pdu,
+            Ok(Err(e)) => return Err(e.into()),
             Err(_) => {
-                // TODO: Close channel
+                self.0.set_error();
                 return Err(Error::Timeout(rsp));
             }
         };
-        let mut p = Unpacker::new(sdu.as_ref());
-        if p.u8() == want {
-            Ok(sdu)
-        } else {
+        let mut p = Unpacker::new(pdu.as_ref());
+        if Some(p.u8()) == err {
             Err(Error::Att(ErrorRsp {
                 req: p.u8(),
                 hdl: Handle::new(p.u16()),
                 err: ErrorCode::try_from(p.u8()).unwrap_or(ErrorCode::UnlikelyError),
             }))
+        } else {
+            Ok(pdu)
         }
     }
 
@@ -226,6 +275,7 @@ impl Bearer {
     fn pack(&self, op: Opcode, f: impl FnOnce(&mut Packer)) -> Payload {
         let mut pdu = self.0.new_payload();
         f(pdu.append().u8(op));
+        trace!("{op}: {:02X?}", pdu.as_ref());
         pdu
     }
 
