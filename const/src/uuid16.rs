@@ -139,19 +139,20 @@ uuid16_enum! {
 }
 
 impl Service {
-    /// Returns whether the server can host multiple instances of this service.
+    /// Returns whether the server can host at most one instances of this
+    /// service.
     #[must_use]
-    pub const fn multi_instance(self) -> bool {
+    pub const fn singleton(self) -> bool {
         use Service::*;
         #[allow(clippy::match_same_arms)]
         match self {
-            GenericAccess => false,
-            GenericAttribute => false,
-            DeviceInformation => false,
-            Battery => true,
-            HumanInterfaceDevice => true,
-            ScanParameters => false,
-            _ => false, // TODO: Specify for all
+            GenericAccess => true,
+            GenericAttribute => true,
+            DeviceInformation => true,
+            Battery => false,
+            HumanInterfaceDevice => false,
+            ScanParameters => true,
+            _ => true, // TODO: Specify for all
         }
     }
 }

@@ -254,6 +254,20 @@ pub enum UuidType {
     NonSig,
 }
 
+impl From<Uuid> for UuidType {
+    #[inline(always)]
+    fn from(u: Uuid) -> Self {
+        u.typ()
+    }
+}
+
+impl From<Uuid16> for UuidType {
+    #[inline(always)]
+    fn from(u: Uuid16) -> Self {
+        u.typ()
+    }
+}
+
 type UuidMap = [fn(u16) -> UuidType; 256];
 
 static UUID_MAP: UuidMap = {

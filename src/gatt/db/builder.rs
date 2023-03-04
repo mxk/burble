@@ -136,7 +136,7 @@ impl Builder<Db> {
         let uuid = self.morph(uuid);
         if let Some((UuidType::Service(s), uuid16)) = uuid.as_uuid16().map(|u| (u.typ(), u)) {
             assert!(
-                s.multi_instance() || !self.attr.iter().any(|at| at.typ == Some(uuid16)),
+                !s.singleton() || !self.attr.iter().any(|at| at.typ == Some(uuid16)),
                 "only one instance of the {s} service is allowed"
             );
         }
@@ -209,6 +209,10 @@ impl Builder<ServiceDef> {
         let hdl = self.decl_value(uuid.into(), props, perms.into());
         self.io.insert(hdl, io.into());
         let mut flag = Bld::empty();
+        flag.set(
+            Bld::NEED_CCCD,
+            props.intersects(Prop::NOTIFY.union(Prop::INDICATE)),
+        );
         flag.set(Bld::NEED_EXT_PROPS, props.contains(Prop::EXT_PROPS));
         let b = self.builder(flag);
         let v = descs(b);
@@ -303,11 +307,12 @@ impl Builder<CharacteristicDef> {
     /// Declares a Client Characteristic Configuration descriptor
     /// ([Vol 3] Part G, Section 3.3.3.3).
     #[inline]
-    pub fn client_cfg(&mut self, perms: impl Into<Perms>) -> Handle {
+    pub fn cccd(&mut self, perms: impl Into<Perms>) -> Handle {
         assert!(
             !self.flag.contains(Bld::HAVE_CCCD),
             "descriptor already exists"
         );
+        self.flag.remove(Bld::NEED_CCCD);
         self.flag.insert(Bld::HAVE_CCCD);
         self.attr(
             Descriptor::ClientCharacteristicConfiguration.uuid(),
@@ -351,9 +356,12 @@ impl Builder<CharacteristicDef> {
 
     /// Finalizes characteristic definition by adding required descriptors.
     fn finalize(&mut self) {
-        // TODO: Add CCCD if NOTIFY or INDICATE properties are set
         if self.flag.contains(Bld::NEED_EXT_PROPS) {
             self.ext_props(ExtProp::empty());
+        }
+        if self.flag.contains(Bld::NEED_CCCD) {
+            // TODO: Copy write permission from value?
+            self.cccd(Access::READ | Access::WRITE.authn().encrypt());
         }
         if !self.flag.contains(Bld::HAVE_AGGREGATE_FMT) && self.fmt.len() > 1 {
             let fmt = mem::take(&mut self.fmt);
@@ -370,8 +378,9 @@ bitflags! {
     pub struct Bld: u8 {
         const MORPH = 1 << 0;
         const NEED_EXT_PROPS = 1 << 1;
-        const HAVE_CCCD = 1 << 2;
-        const HAVE_AGGREGATE_FMT = 1 << 3;
+        const NEED_CCCD = 1 << 2;
+        const HAVE_CCCD = 1 << 3;
+        const HAVE_AGGREGATE_FMT = 1 << 4;
     }
 }
 
@@ -620,7 +629,7 @@ mod tests {
                 Prop::INDICATE,
                 Access::NONE,
                 Io::NONE,
-                |db| db.client_cfg(Access::READ_WRITE),
+                |db| db.cccd(Access::READ_WRITE),
             );
             db.characteristic(
                 Characteristic::ClientSupportedFeatures,
@@ -647,7 +656,7 @@ mod tests {
                 Prop::READ | Prop::INDICATE | Prop::EXT_PROPS,
                 Access::READ,
                 Io::NONE,
-                |db| db.client_cfg(Access::READ_WRITE),
+                |db| db.cccd(Access::READ_WRITE),
             );
         });
         db.secondary_service(Service::Battery, [], |db| {

@@ -36,6 +36,15 @@ bitflags! {
     }
 }
 
+impl Prop {
+    /// Returns a mask of valid CCCD bits.
+    #[inline(always)]
+    pub(super) const fn cccd_mask(self) -> Cccd {
+        // SAFETY: All bits are valid
+        unsafe { Cccd::from_bits_unchecked((self.bits >> 4) as u16 & Cccd::NOTIFY_MASK.bits) }
+    }
+}
+
 bitflags! {
     /// Characteristic extended properties ([Vol 3] Part G, Section 3.3.3.1).
     #[derive(Default)]
@@ -51,9 +60,11 @@ bitflags! {
 bitflags! {
     /// Client Characteristic Configuration descriptor value
     /// ([Vol 3] Part G, Section 3.3.3.3).
-    #[derive(Default)]
+    #[allow(clippy::unsafe_derive_deserialize)]
+    #[derive(Default, serde::Deserialize, serde::Serialize)]
     #[repr(transparent)]
-    pub struct ClientCfg: u16 {
+    #[serde(transparent)]
+    pub struct Cccd: u16 {
         /// The Characteristic Value shall be notified. This value can only be
         /// set if the characteristic's properties have the `NOTIFY` bit set.
         const NOTIFY = 1 << 0;
@@ -65,8 +76,32 @@ bitflags! {
     }
 }
 
-impl ClientCfg {
-    pub(super) const INIT: [u8; 2] = Self::empty().bits().to_le_bytes();
+bitflags! {
+    /// Client Supported Features characteristic value
+    /// ([Vol 3] Part G, Section 7.2).
+    #[allow(clippy::unsafe_derive_deserialize)]
+    #[derive(Default, serde::Deserialize, serde::Serialize)]
+    #[repr(transparent)]
+    #[serde(transparent)]
+    pub(super) struct ClientFeature: u8 {
+        /// The client supports robust caching.
+        const ROBUST_CACHING = 1 << 0;
+        /// The client supports Enhanced ATT bearer.
+        const ENHANCED_ATT = 1 << 1;
+        /// The client supports receiving `ATT_MULTIPLE_HANDLE_VALUE_NTF` PDUs.
+        const MULTI_NTF = 1 << 2;
+    }
+}
+
+bitflags! {
+    /// Server Supported Features characteristic value
+    /// ([Vol 3] Part G, Section 7.4).
+    #[derive(Default)]
+    #[repr(transparent)]
+    pub(super) struct ServerFeature: u8 {
+        /// The server supports Enhanced ATT bearer.
+        const EATT = 1 << 0;
+    }
 }
 
 /// Characteristic presentation format types ([Assigned Numbers] Section 2.4.1).

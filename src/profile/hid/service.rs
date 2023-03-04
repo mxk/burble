@@ -122,7 +122,7 @@ impl HidService {
                 RO,
                 Io::map(self, |this, req| this.srv.lock().kbd.inp_io(req)),
                 |db| {
-                    db.client_cfg(RW);
+                    db.cccd(RW);
                     db.ro_descriptor(ReportReference, RO, [1, 1]);
                 },
             );
@@ -143,7 +143,7 @@ impl HidService {
                 RO,
                 Io::map(self, |this, req| this.srv.lock().mouse.inp_io(req)),
                 |db| {
-                    db.client_cfg(RW);
+                    db.cccd(RW);
                     db.ro_descriptor(ReportReference, RO, [2, 1]);
                 },
             );

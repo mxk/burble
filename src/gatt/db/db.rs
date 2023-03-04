@@ -255,7 +255,7 @@ impl Db {
         let Some(ch) = self.characteristic_for_attr(at) else {
             return Ok(hdl); // Permission check passed and no properties to test
         };
-        if hdl != ch.val.hdl {
+        if hdl != ch.val_hdl {
             // [Vol 3] Part G, Section 3.3.3.1 and 3.3.3.2
             return if req.ac.typ() == Access::WRITE
                 && matches!(at.typ, Some(Descriptor::CHARACTERISTIC_USER_DESCRIPTION))
@@ -309,26 +309,29 @@ impl Db {
             return None; // hdl is not part of a characteristic definition
         }
         // SAFETY: 0 <= decl < self.attr.len()
-        let v = self.value(unsafe { self.attr.get_unchecked(decl) });
-        let vhdl = value_handle(v);
+        let dval = self.value(unsafe { self.attr.get_unchecked(decl) });
+        let vhdl = value_handle(dval);
         // SAFETY: 0 <= decl < end <= self.attr.len()
         let val = unsafe { self.attr.get_unchecked(decl + 1..end).iter() }
             .position(|at| at.hdl == vhdl)
-            .map(|j| decl + 1 + j)?;
+            .map(|j| decl + 1 + j)
+            .expect("invalid characteristic");
         // SAFETY: 0 < val < end <= self.attr.len()
         let desc = unsafe { self.attr.get_unchecked(val + 1..end) };
         // SAFETY: All bits are valid and a valid handle is at indices 1-2
-        let props = unsafe { Prop::from_bits_unchecked(*v.get_unchecked(0)) };
+        let props = unsafe { Prop::from_bits_unchecked(*dval.get_unchecked(0)) };
         let ext_props = props.contains(Prop::EXT_PROPS).then(|| {
             (desc.iter().find(|&at| Attr::is_ext_props(at))).map_or(ExtProp::empty(), |at| {
                 ExtProp::from_bits_truncate(self.value(at).unpack().u16())
             })
         });
+        // SAFETY: 0 < desc < val < end <= self.attr.len()
+        let at = unsafe { self.attr.get_unchecked(val) };
         Some(CharInfo {
             props,
             ext_props,
-            // SAFETY: 0 < desc < val < end <= self.attr.len()
-            val: unsafe { self.attr.get_unchecked(val) },
+            val_hdl: at.hdl,
+            val_typ: self.typ(at),
             desc,
         })
     }
@@ -535,21 +538,13 @@ impl<'a, T> AsRef<[u8]> for DbEntry<'a, T> {
 }
 
 /// Information about a single characteristic.
-#[allow(dead_code)] // TODO: Remove
 #[derive(Clone, Copy, Debug)]
 pub(super) struct CharInfo<'a> {
-    props: Prop,
-    ext_props: Option<ExtProp>,
-    val: &'a Attr,
+    pub props: Prop,
+    pub ext_props: Option<ExtProp>,
+    pub val_hdl: Handle,
+    pub val_typ: Uuid,
     desc: &'a [Attr],
-}
-
-impl CharInfo<'_> {
-    /// Returns the value attribute handle.
-    #[inline(always)]
-    pub const fn value_handle(&self) -> Handle {
-        self.val.hdl
-    }
 }
 
 /// Attribute entry. `val` contains start and end indices of the attribute value
