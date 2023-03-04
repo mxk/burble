@@ -251,8 +251,7 @@ impl Future for AdvFuture {
         // short amount of time for a matching ConnectionComplete event, which
         // normally comes within 5ms.
         *this.term = Some(term);
-        this.timeout
-            .set(Some(tokio::time::sleep(Duration::from_millis(100))));
+        (this.timeout).set(Some(tokio::time::sleep(Duration::from_millis(100))));
         this.poll_timeout(cx)
     }
 }

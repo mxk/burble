@@ -1,17 +1,16 @@
 use std::collections::btree_map::Entry;
 use std::sync::{Arc, Weak};
-use std::time::Duration;
 use std::vec;
 
-use structbuf::{Unpack, Unpacker};
+use structbuf::Unpack;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, warn};
+use tracing::{debug, error, info, warn};
 
 use ErrorCode::*;
 
 use crate::gap::{Uuid, UuidType};
-use crate::le::Addr;
-use crate::{SyncMutex, SyncMutexGuard};
+use crate::hci::FromEvent;
+use crate::{hci, le, SyncMutex, SyncMutexGuard};
 
 use super::*;
 
@@ -21,44 +20,34 @@ use super::*;
 pub struct Server {
     db: Db,
     io: IoMap,
+    sc: Option<ServiceChanged>,
+    features: ServerFeature,
     store: Arc<CacheStore>,
-    clients: SyncMutex<BTreeMap<Addr, Weak<SyncMutex<ClientCtx>>>>,
+    clients: SyncMutex<BTreeMap<le::Addr, Weak<SyncMutex<ClientCtx>>>>,
 }
 
 impl Server {
-    /// Creates a new GATT server. The database should contain the Generic
-    /// Attribute service, which can be defined with [`Self::define_service`].
-    #[inline]
-    #[must_use]
-    pub fn new(db: Builder<Db>, store: Arc<CacheStore>) -> Arc<Self> {
-        let (db, io) = db.freeze();
-        Arc::new(Self {
-            db,
-            io,
-            store,
-            clients: SyncMutex::new(BTreeMap::new()),
-        })
-    }
-
-    /// Defines Generic Attribute service.
+    /// Defines the Generic Attribute service ([Vol 3] Part G, Section 7). This
+    /// service should be first to maintain consistent handles for control-point
+    /// characteristics. In particular, the Service Changed characteristic
+    /// handle must not change while the server has a trusted relationship
+    /// (bond) with any client.
     pub fn define_service(db: &mut Builder<Db>) {
-        // [Vol 3] Part G, Section 7
         db.primary_service(Service::GenericAttribute, [], |db| {
-            // TODO: Implement
-            /*db.characteristic(
+            db.characteristic(
                 Characteristic::ServiceChanged,
                 Prop::INDICATE,
                 Access::NONE,
                 Io::NONE, // I/O is handled directly
-                |b| b.client_cfg(Access::READ_WRITE),
-            );*/
-            /*db.characteristic(
+                |db| db.cccd(Access::READ_WRITE),
+            );
+            db.characteristic(
                 Characteristic::ClientSupportedFeatures,
                 Prop::READ | Prop::WRITE,
                 Access::READ_WRITE,
                 Io::NONE,
                 |_| {},
-            );*/
+            );
             db.characteristic(
                 Characteristic::DatabaseHash,
                 Prop::READ,
@@ -66,7 +55,31 @@ impl Server {
                 Io::NONE,
                 |_| {},
             );
+            db.ro_characteristic(
+                Characteristic::ServerSupportedFeatures,
+                Access::READ,
+                [],
+                |_| {},
+            );
         });
+    }
+
+    /// Creates a new GATT server. The first service in the database should be
+    /// Generic Attribute, which can be defined with [`Self::define_service`].
+    #[inline]
+    #[must_use]
+    pub fn new(db: Builder<Db>, store: Arc<CacheStore>) -> Arc<Self> {
+        let (db, io) = db.freeze();
+        let features = ServerFeature::empty();
+        let sc = Self::sc_hash(&db, features);
+        Arc::new(Self {
+            db,
+            io,
+            sc,
+            features,
+            store,
+            clients: SyncMutex::new(BTreeMap::new()),
+        })
     }
 
     /// Returns the server database.
@@ -79,20 +92,29 @@ impl Server {
     /// Creates a [`ServerCtx`] for the specified ATT bearer. The first bearer
     /// for a new connection, which should be the fixed ATT channel, becomes the
     /// sender of all notifications and indications.
-    pub fn attach(self: &Arc<Self>, br: &Bearer) -> ServerCtx {
-        let srv = Arc::clone(self);
-        let cc = self.get_client_ctx(br.conn().peer_addr);
+    #[inline]
+    pub fn attach(self: &Arc<Self>, host: &hci::Host, br: &Bearer) -> ServerCtx {
+        let peer = br.conn().peer_addr;
+        let cc = self.get_client_ctx(peer);
         let ntf = cc.lock().notify_rx();
-        ServerCtx { srv, cc, ntf }
+        let host = ntf.is_some().then(|| host.clone());
+        ServerCtx {
+            srv: Arc::clone(self),
+            cc,
+            notify: ntf,
+            peer,
+            host,
+            db_oos_sent: false,
+        }
     }
 
-    /// Returns shared [`ClientCtx`] for the specified peer address.
-    fn get_client_ctx(&self, peer: Addr) -> ArcClientCtx {
+    /// Returns the shared [`ClientCtx`] for the specified peer address.
+    fn get_client_ctx(&self, peer: le::Addr) -> ArcClientCtx {
         let mut clients = self.clients.lock();
         clients.retain(|_, cc| cc.strong_count() != 0);
         match clients.entry(peer) {
             Entry::Vacant(e) => {
-                let cc = self.new_client_ctx();
+                let cc = ClientCtx::new();
                 e.insert(Arc::downgrade(&cc));
                 cc
             }
@@ -100,42 +122,36 @@ impl Server {
                 // `upgrade()` shouldn't fail because we just removed all Arcs
                 // without strong references, but there is a race with the last
                 // strong reference being dropped in a multithreaded runtime.
-                let cc = self.new_client_ctx();
+                let cc = ClientCtx::new();
                 e.insert(Arc::downgrade(&cc));
                 cc
             }),
         }
     }
 
-    /// Creates a new [`ClientCtx`].
-    fn new_client_ctx(&self) -> ArcClientCtx {
-        let cache = Cache {
-            // Guarantee hash mismatch until the first request is received and
-            // bond status can be determined.
-            db_hash: !self.db.hash(),
-            vals: BTreeMap::new(),
-        };
-        let (tx, rx) = tokio::sync::mpsc::channel(1);
-        Arc::new(SyncMutex::new(ClientCtx {
-            bond: None,
-            cache,
-            write_queue: WriteQueue::default(),
-            notify_cancel: BTreeMap::new(),
-            tx,
-            rx: Some(rx),
-        }))
-    }
-
-    /// Saves client cache to persistent storage.
-    fn persist(&self, cc: &mut ClientCtx) {
-        let Some(peer) = cc.bond else { return };
-        cc.cache.vals.retain(|&hdl, v| {
-            v != &ClientCfg::INIT
-                || self.db.get(hdl).map_or(true, |(uuid, _)| {
-                    uuid != Descriptor::ClientCharacteristicConfiguration
-                })
-        });
-        self.store.save(peer, &cc.cache);
+    /// Returns the Service Changed parameters for `db`
+    /// ([Vol 3] Part G, Section 2.5.2).
+    #[must_use]
+    fn sc_hash(db: &Db, features: ServerFeature) -> Option<ServiceChanged> {
+        let mut vhdl = None;
+        let mut m = burble_crypto::AesCmac::db_hash();
+        m.update([features.bits()]);
+        for (hdl, uuid, _) in db.iter() {
+            if uuid == Characteristic::ServiceChanged {
+                assert_eq!(vhdl, None);
+                vhdl = Some(hdl);
+            }
+            m.update(u16::from(hdl).to_le_bytes());
+            m.update(u128::from(uuid).to_le_bytes());
+        }
+        if vhdl.map_or(false, |hdl| u16::from(hdl) != 3) {
+            warn!("GATT service isn't first, which may result in client compatibility problems");
+        }
+        vhdl.map(|hdl| ServiceChanged {
+            hash: m.finalize(),
+            handle: hdl,
+            cccd: Cccd::empty(),
+        })
     }
 }
 
@@ -146,135 +162,432 @@ impl Server {
 pub struct ServerCtx {
     srv: Arc<Server>,
     cc: ArcClientCtx,
-    ntf: Option<tokio::sync::mpsc::Receiver<NotifyVal>>,
+    peer: le::Addr,
+    host: Option<hci::Host>,
+    notify: Option<tokio::sync::mpsc::Receiver<NotifyVal>>,
+    db_oos_sent: bool,
 }
 
 impl ServerCtx {
+    // TODO: The same ATT bearer can act both as a server and a client. We
+    // provide a simple way of running a server-only event loop via serve(), but
+    // we may want to expose some of the helper methods for mixed uses.
+    // Alternatively, EATT support would allow using a separate channel for
+    // client functionality.
+
     /// Runs a server event loop for the specified bearer.
     pub async fn serve(mut self, mut br: Bearer) -> Result<()> {
-        // Configuration phase for exchanging the MTU before enabling
-        // notifications ([Vol 3] Part G, Section 4.3).
-        // TODO: Fixed ATT bearer only
-        match tokio::time::timeout(Duration::from_secs(3), br.recv()).await {
-            Ok(Ok(pdu)) => {
-                if pdu.opcode() == Opcode::ExchangeMtuReq {
-                    br.handle_exchange_mtu_req(&pdu).await?;
-                } else {
-                    self.handle(&mut br, &pdu).await?;
-                }
-            }
-            Ok(Err(e)) => return Err(e),
-            Err(_timeout) => {}
-        }
-        if self.enable_notify(&mut br) {
-            loop {
-                // TODO: Allow processing requests while waiting for indication
-                // confirmation?
-                tokio::select! {
-                    pdu = br.recv() => self.handle(&mut br, &pdu?).await?,
-                    nv = self.notify() => nv.exec(&mut br).await,
-                }
-            }
-        } else {
+        br.exchange_mtu().await?;
+        let Some(mut notify) = self.notify.take() else {
+            // Additional bearer for an existing client connection that will not
+            // handle notifications, indications, or HCI events.
+            // TODO: This should block until the cache is initialized
             loop {
                 let pdu = br.recv().await?;
                 self.handle(&mut br, &pdu).await?;
             }
-        }
-    }
-
-    /// Enables service notifications/indications. This resumes notification
-    /// sessions for bonded clients and should be done after the MTU exchange.
-    /// Returns false if this bearer will not be used for sending notifications,
-    /// in which case [`Self::notify`] will never resolve.
-    fn enable_notify(&mut self, br: &mut Bearer) -> bool {
-        if self.ntf.is_none() {
-            return false;
-        }
-        // TODO: The client can re-enable encryption at any time, so there
-        // should be some signal mechanism for when that happens. Right now, we
-        // assume that if a bond exists, then the client will enable encryption
-        // immediately.
-        if self.restore_bond(br) {
-            self.resume_notify(br);
-        }
-        true
-    }
-
-    /// Restores cached state for bonded clients. Returns whether the in-memory
-    /// cache was updated.
-    fn restore_bond(&mut self, br: &mut Bearer) -> bool {
-        let peer = {
-            let cn = br.conn();
-            if !cn.bond() {
-                drop(cn);
-                // The initial state of a client without a trusted relationship
-                // is change-aware ([Vol 3] Part G, Section 2.5.2.1).
-                let mut cc = self.cc.lock();
-                cc.bond = None;
-                cc.cache.db_hash = self.srv.db.hash();
-                return false;
-            }
-            cn.peer_addr
         };
-        let Some(cache) = self.srv.store.load(peer) else { return false };
-        let cur_hash = self.srv.db.hash();
-        if cache.db_hash != cur_hash {
-            // TODO: Service changed notification
-            debug!("Invalidating cache for {peer}");
-            self.srv.store.remove(peer);
-            return false;
+        self.cc.lock().notify_mtu = br.mtu();
+        if let Some(sc) = self.restore_bond(&mut br) {
+            self.indicate_service_changed(&mut br, sc).await;
         }
-        let mut cc = self.cc.lock();
-        if cc.cache.db_hash == cur_hash {
-            // Client became change-aware before re-enabling encryption? This
-            // shouldn't happen. We don't know whether to use the saved or
-            // in-memory cache, so we keep the latter.
-            warn!("Ignoring saved cache for {peer}");
-            return false;
+        let mut ctl = self.host.take().unwrap().events();
+        self.configure_notify(&br);
+        loop {
+            tokio::select! {
+                pdu = br.recv() => self.handle(&mut br, &pdu?).await?,
+                // TODO: Allow processing requests while waiting for indication
+                // confirmation?
+                ntf = notify.recv() => ntf.unwrap().exec(&mut br).await,
+                evt = async { ctl.next().await.map(hci::WaitEvent) } => {
+                    let evt = evt.map_err(|e| Error::L2Cap(e.into()))?;
+                    if hci::EncryptionChange::matches(evt.code()) && evt.status().is_ok() {
+                        let _ = evt.handled().await;
+                        self.configure_notify(&br);
+                    }
+                }
+            }
         }
-        cc.bond = Some(br.conn().peer_addr);
-        cc.cache = cache;
-        debug!("Restored bond for {peer}");
-        true
     }
 
-    /// Resumes notification sessions after the bond is restored.
-    fn resume_notify(&mut self, br: &mut Bearer) {
+    /// Restores client cache if it's still valid and returns [`Some`] if a
+    /// Service Changed indication should be sent
+    /// ([Vol 3] Part G, Section 2.5.2 and 7.1).
+    fn restore_bond(&mut self, br: &mut Bearer) -> Option<ServiceChanged> {
+        self.notify.as_ref()?;
+        // Avoid holding both locks at the same time
+        let bond_id = br.conn().bond_id;
+        let peer = self.peer;
         let mut cc = self.cc.lock();
-        if cc.bond.is_none() {
+        match self.srv.store.load(peer) {
+            Some(cache) => cc.cache = cache,
+            None => cc.cache.bond_id = None,
+        }
+
+        // Handle the absence or loss of a trusted relationship
+        if bond_id.is_none() || cc.cache.bond_id != bond_id {
+            match (bond_id.is_some(), cc.cache.bond_id.is_some()) {
+                (false, false) => info!("No bond or GATT cache for {peer}"),
+                (false, true) => warn!("Invalidating GATT cache for {peer}"),
+                (true, false) => warn!("Missing GATT cache for {peer}"),
+                (true, true) => warn!("Unexpected LTK and GATT cache mismatch for {peer}"),
+            }
+            // Try to send a Service Changed indication if the client had it
+            // enabled previously.
+            let sc = cc.cache.service_changed;
+            // "The initial state of a client without a trusted relationship is
+            // change-aware" ([Vol 3] Part G, Section 2.5.2.1).
+            cc.cache = Cache {
+                bond_id,
+                db_hash: self.srv.db.hash(),
+                service_changed: self.srv.sc,
+                ..Cache::default()
+            };
+            if bond_id.is_none() {
+                self.srv.store.remove(peer);
+            } else {
+                self.persist(&cc.cache);
+            }
+            return sc;
+        }
+
+        // Check for any changes that may invalidate the cache
+        let db_match = cc.cache.db_hash == self.srv.db.hash();
+        let sc_match = match (cc.cache.service_changed, self.srv.sc) {
+            (Some(sc), Some(srv)) => sc.hash == srv.hash,
+            (None, None) => true,
+            _ => false,
+        };
+        match (db_match, sc_match) {
+            (false, false) => warn!("Database and Service Changed hash mismatch for {peer}"),
+            (false, true) => warn!("Database hash mismatch for {peer}"),
+            (true, false) => warn!("Service Changed hash mismatch for {peer}"),
+            (true, true) => {
+                info!("Restored bond with {peer}");
+                return None;
+            }
+        }
+
+        // Let `indicate_service_changed()` finish clean-up, even if the actual
+        // Service Changed indication is disabled.
+        let sc = cc.cache.service_changed.unwrap_or_default();
+
+        // Only a database hash mismatch invalidates the cache since it captures
+        // the core service schema. A change in just the Service Changed hash
+        // represents backward-compatible modifications.
+        if !db_match {
+            // "The initial state of a client with a trusted relationship is
+            // unchanged from the previous connection unless the database has
+            // been updated since the last connection, in which case the initial
+            // state is change-unaware" ([Vol 3] Part G, Section 2.5.2.1).
+            cc.cache = Cache {
+                bond_id,
+                db_hash: cc.cache.db_hash,
+                service_changed: self.srv.sc,
+                ..Cache::default()
+            };
+            self.persist(&cc.cache);
+        }
+        Some(sc)
+    }
+
+    /// Sends a Service Changed indication to the client, if enabled, and
+    /// updates change-awareness state if the client supports Robust Caching
+    /// ([Vol 3] Part G, Section 2.5.2 and 7.1).
+    async fn indicate_service_changed(&self, br: &mut Bearer, sc: ServiceChanged) {
+        // The spec says that "The Service Changed characteristic Attribute
+        // Handle on the server shall not change if the server has a trusted
+        // relationship with any client" ([Vol 3] Part G, Section 7.1), but we
+        // can't enforce that, so the confirmation is considered valid only if
+        // the characteristic is still the same. Otherwise, we're just hoping
+        // that the client will interpret it correctly and invalidate its cache,
+        // but we can't be sure.
+        let peer = br.conn().peer_addr;
+        let confirmed = sc.indicate_all(br, peer).await
+            && self.srv.sc.map_or(false, |srv| srv.handle == sc.handle);
+        let db_hash = self.srv.db.hash();
+        let mut cc = self.cc.lock();
+        if cc.cache.db_hash == db_hash {
+            info!("{} is change-aware", self.peer);
             return;
         }
-        let v: Vec<(Handle, ClientCfg)> = (cc.cache.vals.iter())
-            .filter_map(|(&hdl, val)| {
-                (val.unpack().map(Unpacker::u16))
-                    .and_then(ClientCfg::from_bits)
-                    .and_then(|cfg| {
-                        (cfg.intersects(ClientCfg::NOTIFY_MASK)
-                            && self.uuid(hdl) == Descriptor::ClientCharacteristicConfiguration)
-                            .then_some((hdl, cfg))
-                    })
+        // "A change-unaware connected client using exactly one ATT bearer
+        // becomes change-aware when... [it] confirms a Handle Value Indication
+        // for the Service Changed characteristic"
+        // ([Vol 3] Part G, Section 2.5.2.1).
+        // TODO: Verify exactly one bearer?
+        if !confirmed {
+            if cc.cache.is_robust() {
+                info!("{} is change-unaware", self.peer);
+                return;
+            }
+            // This is bad because the client has no way of knowing that its
+            // cache is invalid.
+            // TODO: Wipe LTK and disconnect the client?
+            warn!("No Service Changed confirmation or Robust Caching for {peer}");
+        }
+        info!("{} is change-aware", self.peer);
+        cc.cache.db_hash = db_hash;
+        self.persist(&cc.cache);
+    }
+
+    /// Synchronizes service notification/indication state with the current
+    /// connection parameters. The spec says "When a client reconnects to a
+    /// server and expects to receive indications or notifications for which
+    /// security is required, the client shall enable encryption with the
+    /// server" ([Vol 3] Part C, Section 10.3.2.2). This resumes all
+    /// notifications/indications that are enabled by the client and meet the
+    /// connection security parameters, and disables all others.
+    fn configure_notify(&mut self, br: &Bearer) {
+        if self.notify.is_none() {
+            return;
+        }
+        let req = Opcode::WriteCmd.request(br.conn().sec);
+        let mut cc = self.cc.lock();
+        // "Except for a Handle Value Indication for the Service Changed
+        // characteristic, the server shall not send notifications and
+        // indications to such a client until it becomes change-aware"
+        // ([Vol 3] Part G, Section 2.5.2.1).
+        if !cc.cache.is_change_aware(self.srv.db.hash()) {
+            for ct in cc.notify_cancel.values() {
+                ct.cancel();
+            }
+            cc.notify_cancel.clear();
+        }
+        cc.notify_cancel.retain(|&hdl, ct| {
+            if self.srv.db.try_access(req, hdl).is_ok() {
+                return true;
+            }
+            ct.cancel();
+            false
+        });
+        let v: Vec<(Handle, Cccd)> = (cc.cache.cccd.iter())
+            .filter_map(|(&hdl, &cccd)| {
+                (!cc.notify_cancel.contains_key(&hdl) && self.srv.db.try_access(req, hdl).is_ok())
+                    .then_some((hdl, cccd))
             })
             .collect();
-        let mtu = br.mtu();
-        for (hdl, cfg) in v {
-            let _ = self.cccd_apply(&mut cc, Opcode::ExecuteWriteReq, hdl, mtu, cfg);
+        for (hdl, cccd) in v {
+            let _ = self.cccd_apply(&mut cc, Opcode::ExecuteWriteReq, hdl, cccd);
         }
     }
 
-    /// Receives the next service notification or indication.
-    async fn notify(&mut self) -> NotifyVal {
-        let Some(rx) = self.ntf.as_mut() else {
-            return std::future::pending().await;
-        };
-        // ClientCtx is holding a sender, so this will never return None
-        rx.recv().await.unwrap()
+    // Handles Robust Caching logic when a new request is received
+    // ([Vol 3] Part G, Section 2.5.2.1).
+    fn handle_robust_caching(&mut self, br: &Bearer, op: Opcode) -> Option<Result<()>> {
+        let mut cc = self.cc.lock();
+        if cc.cache.is_change_aware(self.srv.db.hash()) {
+            return None;
+        }
+        match op.typ() {
+            // "If a change-unaware client sends an ATT command, the server
+            // shall ignore it."
+            PduType::Cmd => {
+                debug!("Ignoring {op} for change-unaware client {}", self.peer);
+                Some(Ok(()))
+            }
+            // "A change-unaware connected client becomes change-aware when it
+            // reads the Database Hash characteristic and then the server
+            // receives another ATT request from the client... A change-unaware
+            // connected client using exactly one ATT bearer becomes
+            // change-aware when... The server sends the client a response with
+            // the Error Code parameter set to Database Out Of Sync (0x12) and
+            // then the server receives another ATT request from the client."
+            PduType::Req if cc.db_hash_read || self.db_oos_sent => {
+                // TODO: Only if one bearer for db_oos_sent, and it is only
+                // reset when "the client disconnects or the database changes
+                // again before the client becomes change-aware."
+                info!("{} is change-aware", self.peer);
+                cc.db_hash_read = false;
+                cc.cache.db_hash = self.srv.db.hash();
+                self.persist(&cc.cache);
+                drop(cc);
+                self.configure_notify(br);
+                None
+            }
+            _ => None,
+        }
     }
 
+    /// Returns a [`DatabaseOutOfSync`] error if a Robust Caching client is
+    /// change-unaware ([Vol 3] Part G, Section 2.5.2.1).
+    fn require_db_sync(&mut self, op: Opcode, db_hash_read: bool) -> RspResult<()> {
+        let mut cc = self.cc.lock();
+        if cc.cache.is_change_aware(self.srv.db.hash()) {
+            return Ok(());
+        }
+        if db_hash_read {
+            cc.db_hash_read = true;
+        }
+        if self.db_oos_sent {
+            Ok(())
+        } else {
+            self.db_oos_sent = true;
+            op.err(DatabaseOutOfSync)
+        }
+    }
+
+    /// Executes a read operation.
+    fn do_read<'a>(&self, r: &'a mut ReadReq) -> RspResult<&'a [u8]> {
+        use {Characteristic::*, Descriptor::*};
+        #[inline(always)]
+        fn trim(v: &[u8]) -> &[u8] {
+            v.iter().rposition(|&b| b != 0).map_or(&[], |i| &v[..=i])
+        }
+        // TODO: Cache awareness check
+        match r.uuid().typ() {
+            UuidType::Characteristic(ClientSupportedFeatures) => {
+                let v = self.cc.lock().cache.client_features;
+                r.complete(trim(v.bits().to_le_bytes().as_ref()))
+            }
+            UuidType::Characteristic(DatabaseHash) => {
+                if matches!(r.op, Opcode::ReadByTypeReq) {
+                    r.complete(self.srv.db.hash().to_le_bytes())
+                } else {
+                    error!("Client attempted to read database hash using {}", r.op);
+                    Err(RequestNotSupported)
+                }
+            }
+            UuidType::Characteristic(ServerSupportedFeatures) => {
+                r.complete(trim(self.srv.features.bits().to_le_bytes().as_ref()))
+            }
+            UuidType::Descriptor(ClientCharacteristicConfiguration) => {
+                let cccd = (self.cc.lock().cache.cccd.get(&r.hdl)).map_or(Cccd::empty(), |&v| v);
+                r.complete(cccd.bits().to_le_bytes())
+            }
+            _ => match self.srv.db.get(r.hdl) {
+                Some((_, val)) if !val.is_empty() => r.complete(val),
+                _ => self.srv.io.read(r),
+            },
+        }
+        .map_or_else(|e| r.op.hdl_err(e, r.hdl), |_| Ok(r.buf.as_ref()))
+    }
+
+    /// Executes a write operation.
+    fn do_write(&self, w: &WriteReq) -> RspResult<()> {
+        use {Characteristic::*, Descriptor::*};
+        // TODO: Cache awareness check
+        match w.uuid.typ() {
+            UuidType::Characteristic(ClientSupportedFeatures) => self.csf_write(w),
+            UuidType::Descriptor(ClientCharacteristicConfiguration) => self.cccd_write(w),
+            _ => self.srv.io.write(w),
+        }
+        .map_or_else(|e| w.op.hdl_err(e, w.hdl), Ok)
+    }
+
+    /// Executes a Client Supported Features write
+    /// ([Vol 3] Part G, Section 7.2).
+    #[inline]
+    fn csf_write(&self, w: &WriteReq) -> IoResult {
+        let mut v = ClientFeature::empty().bits().to_le_bytes();
+        w.update(&mut v)?;
+        // SAFETY: We allow the client to set unknown feature bits
+        let new = unsafe { ClientFeature::from_bits_unchecked(v[0]) };
+        let mut cc = self.cc.lock();
+        if !new.contains(cc.cache.client_features) {
+            // The client is not allowed to clear any bits
+            return Err(ValueNotAllowed);
+        }
+        info!("Client Supported Features for {}: {new:?}", self.peer);
+        cc.cache.client_features = new;
+        Ok(())
+    }
+
+    /// Executes a Client Characteristic Configuration descriptor write
+    /// ([Vol 3] Part G, Section 3.3.3.3).
+    #[inline]
+    fn cccd_write(&self, w: &WriteReq) -> IoResult {
+        let mut v = Cccd::empty().bits().to_le_bytes();
+        w.update(&mut v)?;
+        let Some(new) = Cccd::from_bits(u16::from_le_bytes(v)) else {
+            return Err(ValueNotAllowed);
+        };
+        let mut cc = self.cc.lock();
+        let r = self.cccd_apply(&mut cc, w.op, w.hdl, new);
+        self.persist(&cc.cache);
+        r
+    }
+
+    /// Applies CCCD configuration.
+    fn cccd_apply(
+        &self,
+        cc: &mut SyncMutexGuard<ClientCtx>,
+        op: Opcode,
+        hdl: Handle,
+        new: Cccd,
+    ) -> IoResult {
+        let char = (self.srv.db.get_characteristic(hdl)).expect("invalid CCCD handle");
+        let vhdl = char.val_hdl;
+        let vtyp = char.val_typ.typ();
+        if !char.props.cccd_mask().contains(new) {
+            warn!("Invalid CCCD value for {vtyp} {vhdl}: {new:?}");
+            return Err(CccdImproperlyConfigured);
+        }
+        if self.srv.sc.map_or(false, |srv| srv.handle == vhdl) {
+            debug!("Service Changed CCCD: {new:?}");
+            cc.cache.service_changed.as_mut().unwrap().cccd = new;
+            return Ok(());
+        }
+        // A CCCD write always resets any existing notification session
+        if let Some(ct) = cc.notify_cancel.remove(&hdl) {
+            ct.cancel();
+            debug!("Disabled notifications for {vtyp} {vhdl}");
+        }
+        if new.is_empty() {
+            cc.cache.cccd.remove(&hdl);
+            return Ok(());
+        }
+        // TODO: No notifications if the client is change-unaware
+        let ct = CancellationToken::new();
+        // TODO: Drop cc during this call?
+        let r = self.srv.io.notify(NotifyReq {
+            op,
+            hdl: vhdl,
+            uuid: char.val_typ,
+            mtu: cc.notify_mtu,
+            ind: new.contains(Cccd::INDICATE),
+            tx: cc.tx.clone(),
+            ct: ct.clone(),
+        });
+        match r {
+            Ok(_) => {
+                debug!("Enabled notifications for {vtyp} {vhdl}");
+                cc.cache.cccd.insert(hdl, new);
+                cc.notify_cancel.insert(hdl, ct);
+            }
+            Err(e) => {
+                cc.cache.cccd.remove(&hdl);
+                ct.cancel();
+                warn!("Failed to enable notifications for {vtyp} {vhdl}: {e}",);
+            }
+        }
+        r
+    }
+
+    /// Saves client cache to persistent storage.
+    #[inline(always)]
+    fn persist(&self, c: &Cache) {
+        if c.bond_id.is_some() {
+            self.srv.store.save(self.peer, c);
+        }
+    }
+
+    /// Returns the UUID of the specified handle.
+    #[inline]
+    fn uuid(&self, hdl: Handle) -> Uuid {
+        self.srv.db.get(hdl).expect("invalid handle").0
+    }
+}
+
+/// GATT server procedures ([Vol 3] Part G, Section 4).
+impl ServerCtx {
     /// Handles received client request.
     async fn handle(&mut self, br: &mut Bearer, pdu: &Pdu) -> Result<()> {
         use Opcode::*;
         let op = pdu.opcode();
+        if let Some(r) = self.handle_robust_caching(br, op) {
+            return r;
+        }
         #[allow(clippy::match_same_arms)]
         let r = match op {
             ExchangeMtuReq => return br.handle_exchange_mtu_req(pdu).await,
@@ -479,140 +792,22 @@ impl ServerCtx {
             val: &[],
         };
         for (hdl, off, val) in cc.write_queue.iter() {
-            (w.hdl, w.off, w.val) = (hdl, off, val);
+            (w.hdl, w.uuid, w.off, w.val) = (hdl, self.uuid(hdl), off, val);
             self.do_write(&w)?;
         }
         br.execute_write_rsp()
-    }
-
-    /// Executes a read operation.
-    fn do_read<'a>(&self, r: &'a mut ReadReq) -> RspResult<&'a [u8]> {
-        use {Characteristic::*, Descriptor::*};
-        // TODO: Cache awareness check
-        match r.uuid().typ() {
-            UuidType::Characteristic(DatabaseHash) => self.read_hash(r),
-            UuidType::Descriptor(ClientCharacteristicConfiguration) => self.read_cache(r),
-            _ => match self.srv.db.get(r.hdl) {
-                Some((_, val)) if !val.is_empty() => r.complete(val),
-                _ => self.srv.io.read(r),
-            },
-        }
-        .map_or_else(|e| r.op.hdl_err(e, r.hdl), |_| Ok(r.buf.as_ref()))
-    }
-
-    /// Executes a read operation from the client's cache.
-    #[inline]
-    fn read_cache(&self, r: &mut ReadReq) -> IoResult {
-        r.complete(&self.cc.lock().cache.vals[&r.handle()])
-    }
-
-    /// Executes a database hash read.
-    #[inline]
-    fn read_hash(&self, r: &mut ReadReq) -> IoResult {
-        // TODO: DatabaseHash read results in change-aware state
-        r.complete(self.srv.db.hash().to_le_bytes())
-    }
-
-    /// Executes a write operation.
-    fn do_write(&self, w: &WriteReq) -> RspResult<()> {
-        use Descriptor::*;
-        // TODO: Cache awareness check
-        match w.uuid.typ() {
-            UuidType::Descriptor(ClientCharacteristicConfiguration) => self.cccd_write(w),
-            _ => self.srv.io.write(w),
-        }
-        .map_or_else(|e| w.op.hdl_err(e, w.hdl), Ok)
-    }
-
-    /// Executes a CCCD write operation.
-    #[inline]
-    fn cccd_write(&self, w: &WriteReq) -> IoResult {
-        if w.off != 0 {
-            return Err(InvalidOffset);
-        }
-        let Some(cfg) = w.val.unpack().map(Unpacker::u16).and_then(ClientCfg::from_bits) else {
-            return Err(ValueNotAllowed);
-        };
-        if cfg.contains(ClientCfg::NOTIFY) && cfg.contains(ClientCfg::INDICATE) {
-            // TODO: Is this combination valid?
-            return Err(ValueNotAllowed);
-        }
-        self.cccd_apply(&mut self.cc.lock(), w.op, w.hdl, w.mtu, cfg)
-    }
-
-    /// Applies CCCD configuration.
-    fn cccd_apply(
-        &self,
-        cc: &mut SyncMutexGuard<ClientCtx>,
-        op: Opcode,
-        hdl: Handle,
-        mtu: u16,
-        cfg: ClientCfg,
-    ) -> IoResult {
-        let char = (self.srv.db.get_characteristic(hdl)).expect("invalid CCCD handle");
-        let vhdl = char.value_handle();
-        let uuid = self.uuid(vhdl);
-        let val = cfg.bits().to_le_bytes();
-        let cached = (cc.cache.vals.entry(hdl)).or_insert_with(|| ClientCfg::INIT.to_vec());
-        if cached == &val {
-            return Ok(());
-        }
-        (cc.cache.vals.entry(hdl))
-            .and_modify(|v| v.copy_from_slice(&val))
-            .or_insert_with(|| val.to_vec());
-        if cfg.union(ClientCfg::NOTIFY_MASK).is_empty() {
-            if let Some(ct) = cc.notify_cancel.remove(&hdl) {
-                ct.cancel();
-            }
-            self.srv.persist(cc);
-            debug!("Disabled notifications for {} {vhdl}", uuid.typ());
-            return Ok(());
-        }
-        let ct = CancellationToken::new();
-        let r = self.srv.io.notify(NotifyReq {
-            op,
-            hdl: vhdl,
-            uuid,
-            mtu,
-            ind: cfg.contains(ClientCfg::INDICATE),
-            tx: cc.tx.clone(),
-            ct: ct.clone(),
-        });
-        match r {
-            Ok(_) => {
-                debug!("Enabled notifications for {} {vhdl}", uuid.typ());
-                cc.notify_cancel.insert(hdl, ct);
-            }
-            Err(e) => {
-                warn!(
-                    "Failed to enable notifications for {} {vhdl}: {e}",
-                    uuid.typ(),
-                );
-                ct.cancel();
-                if let Some(v) = cc.cache.vals.get_mut(&hdl) {
-                    v.copy_from_slice(&cfg.difference(ClientCfg::NOTIFY_MASK).bits().to_le_bytes());
-                }
-            }
-        }
-        self.srv.persist(cc);
-        r
-    }
-
-    /// Returns the UUID of the specified handle.
-    #[inline]
-    fn uuid(&self, hdl: Handle) -> Uuid {
-        self.srv.db.get(hdl).expect("invalid handle").0
     }
 }
 
 impl Drop for ServerCtx {
     fn drop(&mut self) {
-        if self.ntf.is_some() {
+        if self.notify.is_some() {
             let mut cc = self.cc.lock();
             for ct in cc.notify_cancel.values() {
                 ct.cancel();
             }
             cc.notify_cancel.clear();
+            debug!("Disabled all notifications for {}", self.peer);
         }
     }
 }
@@ -637,7 +832,7 @@ impl<'a> Reader<'a> {
 
 impl ValueIter<Handle> for Reader<'_> {
     fn more(&mut self) -> RspResult<bool> {
-        let Some(hdl) = self.hdls.next() else { return Ok(false) };
+        let Some(hdl) = self.hdls.next() else { return Ok(false); };
         if let Err(e) = self.srv.do_read(self.req.with(hdl, self.srv.uuid(hdl), 0)) {
             self.hdls.nth(self.hdls.len());
             Err(e)
@@ -664,26 +859,43 @@ type ArcClientCtx = Arc<SyncMutex<ClientCtx>>;
 #[derive(Debug)]
 #[must_use]
 struct ClientCtx {
-    bond: Option<Addr>,
     cache: Cache,
+    db_hash_read: bool,
     write_queue: WriteQueue,
+    notify_mtu: u16,
     notify_cancel: BTreeMap<Handle, CancellationToken>,
     tx: tokio::sync::mpsc::Sender<NotifyVal>,
     rx: Option<tokio::sync::mpsc::Receiver<NotifyVal>>,
 }
 
 impl ClientCtx {
+    /// Creates a new client context.
+    #[must_use]
+    fn new() -> ArcClientCtx {
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        Arc::new(SyncMutex::new(Self {
+            cache: Cache::default(),
+            db_hash_read: false,
+            write_queue: WriteQueue::default(),
+            notify_mtu: 0,
+            notify_cancel: BTreeMap::new(),
+            tx,
+            rx: Some(rx),
+        }))
+    }
+
     /// Returns the notification/indication channel receiver. Returns [`None`]
     /// if another bearer is responsible for sending notifications.
+    #[must_use]
     fn notify_rx(&mut self) -> Option<tokio::sync::mpsc::Receiver<NotifyVal>> {
         self.rx.take().or_else(|| {
-            // This normally shouldn't happen, but if a previous notification
-            // receiver was dropped before the client connection was closed,
-            // then we want another ATT bearer to take over the role. The
-            // previous receiver can't be passed back in `ServerCtx::drop()`
-            // because we don't know if another bearer is available, so services
-            // may try to send notifications without any receiver, and the MTU
-            // of the new bearer may be different.
+            // This normally shouldn't happen, but if a previous receiver was
+            // dropped before the client connection was closed, then we want
+            // another ATT bearer to take over the role. The previous receiver
+            // can't be passed back in ServerCtx::drop() because the MTU of the
+            // new bearer may be different, and we don't know if another bearer
+            // is even available, so services may try to send notifications
+            // without any receiver.
             self.tx.is_closed().then(|| {
                 let (tx, rx) = tokio::sync::mpsc::channel(1);
                 self.tx = tx;

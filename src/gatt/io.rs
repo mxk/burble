@@ -217,6 +217,21 @@ impl<'a> WriteReq<'a> {
     pub const fn value(&self) -> &'a [u8] {
         self.val
     }
+
+    /// Updates `dst` with the written value. Returns either `InvalidOffset` or
+    /// `InvalidAttributeValueLength` if the written value is not a subslice of
+    /// `dst`.
+    #[inline]
+    pub fn update(&self, mut dst: impl AsMut<[u8]>) -> IoResult {
+        let Some(dst) = dst.as_mut().get_mut(self.off as usize..) else {
+            return Err(ErrorCode::InvalidOffset);
+        };
+        let Some(dst) = dst.get_mut(..self.val.len()) else {
+            return Err(ErrorCode::InvalidAttributeValueLength);
+        };
+        dst.copy_from_slice(self.val);
+        Ok(())
+    }
 }
 
 impl<'a> AsRef<[u8]> for WriteReq<'a> {
