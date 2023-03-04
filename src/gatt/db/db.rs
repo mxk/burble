@@ -123,7 +123,7 @@ impl Db {
     /// Performs read/write access permission check for a single handle.
     #[inline]
     pub fn try_access(&self, req: Request, hdl: Handle) -> RspResult<Handle> {
-        self.try_multi_access(req, &[hdl]).map(|_| hdl)
+        self.try_multi_access(req, [hdl]).map(|_| hdl)
     }
 
     /// Performs read/write access permission check for multiple handles.
@@ -255,17 +255,16 @@ impl Db {
         let Some(ch) = self.characteristic_for_attr(at) else {
             return Ok(hdl); // Permission check passed and no properties to test
         };
-        if hdl != ch.val_hdl {
+        if hdl != ch.vhdl {
             // [Vol 3] Part G, Section 3.3.3.1 and 3.3.3.2
-            return if req.ac.typ() == Access::WRITE
+            if req.ac.typ() == Access::WRITE
                 && matches!(at.typ, Some(Descriptor::CHARACTERISTIC_USER_DESCRIPTION))
                 && !(ch.ext_props).map_or(false, |p| p.contains(ExtProp::WRITABLE_AUX))
             {
                 warn!("Denied {op} to {hdl} because WRITABLE_AUX bit is not set");
-                op.hdl_err(ErrorCode::WriteNotPermitted, hdl)
-            } else {
-                Ok(hdl) // Descriptor or declaration access
-            };
+                return op.hdl_err(ErrorCode::WriteNotPermitted, hdl);
+            }
+            return Ok(hdl); // Descriptor or declaration access
         }
         // [Vol 3] Part G, Section 3.3.1.1
         let bit = match op {
@@ -291,6 +290,18 @@ impl Db {
             };
             warn!("Denied {op} for {hdl} due to {e} by properties");
             return op.hdl_err(e, hdl);
+        }
+        // [Vol 3] Part G, Section 3.3.3.1
+        if matches!(op, PrepareWriteReq)
+            && !(ch.ext_props).map_or(true, |p| p.contains(ExtProp::RELIABLE_WRITE))
+        {
+            // It's not clear how to handle this. WRITE allows Section 4.9.4
+            // procedure, and RELIABLE_WRITE allows Section 4.9.5 procedure, but
+            // they are the exact same procedure from the server's perspective.
+            // We deny it only if the Characteristic Extended Properties
+            // descriptor exists and the RELIABLE_WRITE bit is not set.
+            warn!("Denied {op} for {hdl} because RELIABLE_WRITE bit is not set");
+            return op.hdl_err(ErrorCode::WriteNotPermitted, hdl);
         }
         Ok(hdl) // Characteristic value access
     }
@@ -330,8 +341,8 @@ impl Db {
         Some(CharInfo {
             props,
             ext_props,
-            val_hdl: at.hdl,
-            val_typ: self.typ(at),
+            vhdl: at.hdl,
+            uuid: self.typ(at),
             desc,
         })
     }
@@ -542,8 +553,8 @@ impl<'a, T> AsRef<[u8]> for DbEntry<'a, T> {
 pub(super) struct CharInfo<'a> {
     pub props: Prop,
     pub ext_props: Option<ExtProp>,
-    pub val_hdl: Handle,
-    pub val_typ: Uuid,
+    pub vhdl: Handle,
+    pub uuid: Uuid,
     desc: &'a [Attr],
 }
 

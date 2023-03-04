@@ -513,8 +513,8 @@ impl ServerCtx {
         new: Cccd,
     ) -> IoResult {
         let char = (self.srv.db.get_characteristic(hdl)).expect("invalid CCCD handle");
-        let vhdl = char.val_hdl;
-        let vtyp = char.val_typ.typ();
+        let vhdl = char.vhdl;
+        let vtyp = char.uuid.typ();
         if !char.props.cccd_mask().contains(new) {
             warn!("Invalid CCCD value for {vtyp} {vhdl}: {new:?}");
             return Err(CccdImproperlyConfigured);
@@ -539,7 +539,7 @@ impl ServerCtx {
         let r = self.srv.io.notify(NotifyReq {
             op,
             hdl: vhdl,
-            uuid: char.val_typ,
+            uuid: char.uuid,
             mtu: cc.notify_mtu,
             ind: new.contains(Cccd::INDICATE),
             tx: cc.tx.clone(),
