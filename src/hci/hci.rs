@@ -16,7 +16,7 @@ use tracing::{debug, error};
 
 pub use {adv::*, cmd::*, consts::*, event::*, handle::*};
 
-use crate::{host, le, smp, SyncArcMutexGuard, SyncMutex};
+use crate::{host, le, smp, SyncMutex};
 
 mod adv;
 #[path = "cmd/cmd.rs"]
@@ -116,8 +116,15 @@ impl Host {
     /// Returns connection information for the specified handle or [`None`] if
     /// the handle is invalid.
     #[inline(always)]
-    pub(crate) fn conn(&self, hdl: ConnHandle) -> Option<SyncArcMutexGuard<Conn>> {
+    pub(crate) fn conn(&self, hdl: ConnHandle) -> Option<ConnWatch> {
         self.router.conn(hdl)
+    }
+
+    /// Calls `f` to update connection parameters. This is a no-op if the handle
+    /// is invalid.
+    #[inline]
+    pub(crate) fn update_conn(&self, hdl: ConnHandle, f: impl FnOnce(&mut Conn)) {
+        self.router.update_conn(hdl, f);
     }
 
     /// Performs a reset and basic controller initialization
@@ -250,8 +257,8 @@ impl Future for EventLoop {
     }
 }
 
-/// Shared connection information.
-pub(crate) type ArcConnInfo = Arc<SyncMutex<Conn>>;
+/// Connection watch channel used for broadcasting connection state changes.
+pub(crate) type ConnWatch = tokio::sync::watch::Receiver<Conn>;
 
 /// Information about an established connection.
 #[derive(Clone, Copy, Debug)]

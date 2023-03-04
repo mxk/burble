@@ -9,7 +9,6 @@ use structbuf::{Unpack, Unpacker};
 use tracing::{error, info, trace};
 
 use crate::hci::ACL_LE_MIN_DATA_LEN;
-use crate::SyncMutexGuard;
 
 use super::*;
 
@@ -26,7 +25,7 @@ pub(crate) struct BasicChan {
 impl BasicChan {
     /// Creates a new channel.
     #[inline]
-    pub(super) fn new(cid: LeCid, cn: &hci::ArcConnInfo, tx: &Arc<tx::State>, mtu: u16) -> Self {
+    pub(super) fn new(cid: LeCid, cn: &hci::ConnWatch, tx: &Arc<tx::State>, mtu: u16) -> Self {
         assert!(mtu >= L2CAP_LE_MIN_MTU);
         Self {
             raw: RawChan::new(cid, cn, L2CAP_HDR + mtu as usize),
@@ -41,10 +40,10 @@ impl BasicChan {
         self.raw.cid
     }
 
-    /// Returns connection information.
+    /// Returns the connection watch channel.
     #[inline(always)]
-    pub(crate) fn conn(&self) -> SyncMutexGuard<hci::Conn> {
-        self.raw.cn.lock()
+    pub(crate) fn conn(&self) -> &hci::ConnWatch {
+        &self.raw.cn
     }
 
     /// Returns the current MTU.
@@ -220,17 +219,17 @@ impl Drop for MaySend<'_> {
 #[derive(Debug)]
 pub(super) struct RawChan {
     pub cid: LeCid,
-    pub cn: hci::ArcConnInfo,
+    pub cn: hci::ConnWatch,
     pub state: SyncMutex<State>,
 }
 
 impl RawChan {
     /// Creates new channel state.
     #[inline]
-    fn new(cid: LeCid, cn: &hci::ArcConnInfo, max_frame_len: usize) -> Arc<Self> {
+    fn new(cid: LeCid, cn: &hci::ConnWatch, max_frame_len: usize) -> Arc<Self> {
         Arc::new(Self {
             cid,
-            cn: Arc::clone(cn),
+            cn: cn.clone(),
             state: SyncMutex::new(State::new(max_frame_len)),
         })
     }

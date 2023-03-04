@@ -22,7 +22,7 @@ impl Peripheral {
     /// Creates a new peripheral security manager.
     #[inline(always)]
     pub(crate) fn new(ch: BasicChan) -> Self {
-        assert_eq!(ch.conn().role, Role::Peripheral);
+        assert_eq!(ch.conn().borrow().role, Role::Peripheral);
         Self { ch }
     }
 
@@ -151,7 +151,7 @@ impl Peripheral {
         // ([Vol 3] Part H, Section 2.3.5.6.5 and C.2.2.4).
         let (peer, a, b) = {
             let (peer_addr, local_addr) = {
-                let cn = self.ch.conn();
+                let cn = self.ch.conn().borrow();
                 (cn.peer_addr, cn.local_addr)
             };
             let Some(local_addr) = local_addr else {

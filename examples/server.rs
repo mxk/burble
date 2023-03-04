@@ -146,7 +146,7 @@ async fn serve(host: hci::Host) -> Result<()> {
                     smp.respond(&mut dev, &burble_fs::KeyStore::new()).await
                 });
                 let br = cm.att_chan(link).unwrap();
-                srv_task = Some(tokio::task::spawn(srv.attach(&host, &br).serve(br)));
+                srv_task = Some(tokio::task::spawn(srv.attach(&br).serve(br)));
             }
             srv = async { srv_task.as_mut().unwrap().await }, if srv_task.is_some() => {
                 info!("GATT server terminated: {:?}", srv);

@@ -190,7 +190,7 @@ impl AdvFutureProj<'_> {
         term: LeAdvertisingSetTerminated,
     ) -> Poll<<AdvFuture as Future>::Output> {
         if conn.status.is_ok() {
-            self.ctl.conn(conn.handle).unwrap().local_addr = Some(*self.local_addr);
+            (self.ctl).update_conn(conn.handle, |cn| cn.local_addr = Some(*self.local_addr));
         }
         self.ready(Ok(AdvEvent::Conn { conn, term }))
     }
@@ -203,11 +203,11 @@ impl Future for AdvFuture {
         use EventCode::*;
         let mut this = self.project();
         let hdl = this.hdl.expect("poll of a completed future");
-        let evt = match this.ctl.poll(cx) {
+        let evt = match this.ctl.poll(Some(cx)) {
             Poll::Ready(r) => match r {
                 Ok(evt) => {
                     // Register a waker for the next event
-                    let p = this.ctl.poll(cx);
+                    let p = this.ctl.poll(Some(cx));
                     debug_assert!(p.is_pending());
                     evt
                 }

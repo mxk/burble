@@ -34,7 +34,6 @@ pub mod sdp {
 
 type SyncMutex<T> = parking_lot::Mutex<T>;
 type SyncMutexGuard<'a, T> = parking_lot::MutexGuard<'a, T>;
-type SyncArcMutexGuard<T> = lock_api::ArcMutexGuard<parking_lot::RawMutex, T>;
 type AsyncMutex<T> = tokio::sync::Mutex<T>;
 type AsyncRwLock<T> = tokio::sync::RwLock<T>;
 

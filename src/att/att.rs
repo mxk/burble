@@ -10,7 +10,7 @@ pub use {consts::*, handle::*, perm::*};
 
 use crate::gap::Uuid;
 use crate::l2cap::{BasicChan, Cid, LeCid, Payload};
-use crate::{hci, l2cap, SyncMutexGuard};
+use crate::{hci, l2cap};
 
 mod consts;
 mod handle;
@@ -100,9 +100,9 @@ impl Bearer {
         self.0.cid()
     }
 
-    /// Returns connection information.
+    /// Returns the connection watch channel.
     #[inline(always)]
-    pub(crate) fn conn(&self) -> SyncMutexGuard<hci::Conn> {
+    pub(crate) fn conn(&self) -> &hci::ConnWatch {
         self.0.conn()
     }
 
@@ -144,7 +144,7 @@ impl Bearer {
     /// Panics if the `pdu` is not a read/write request.
     #[inline]
     pub(crate) fn access_req(&self, pdu: &Pdu) -> Request {
-        let sec = self.0.conn().sec;
+        let sec = self.0.conn().borrow().sec;
         pdu.opcode().request(sec)
     }
 

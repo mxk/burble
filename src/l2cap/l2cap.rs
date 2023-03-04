@@ -15,7 +15,7 @@ pub(crate) use chan::*;
 pub use {consts::*, handle::*};
 
 use crate::hci::ACL_HDR;
-use crate::{att, hci, host, smp, SyncArcMutexGuard, SyncMutex};
+use crate::{att, hci, host, smp, SyncMutex};
 
 mod chan;
 mod consts;
@@ -136,7 +136,7 @@ impl ChanManager {
             return None;
         }
         let link = LeU::new(evt.handle);
-        let cn = SyncArcMutexGuard::into_arc(self.ctl.conn(evt.handle).expect("invalid {link}"));
+        let cn = self.ctl.conn(evt.handle).expect("invalid {link}");
 
         // [Vol 3] Part A, Section 4
         let sig = BasicChan::new(link.chan(Cid::SIG), &cn, &self.rm.tx, 23);

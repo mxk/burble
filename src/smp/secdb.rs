@@ -131,16 +131,15 @@ impl SecDb {
     /// Loads the keys for the specified connection handle and updates the
     /// connection bond ID.
     fn load_keys(&mut self, hdl: hci::ConnHandle) -> Option<Keys> {
-        let Some(mut cn) = self.host.conn(hdl) else {
+        let Some(peer) = self.host.conn(hdl).map(|cn| cn.borrow().peer_addr) else {
             error!("Unknown {hdl}");
             return None;
         };
-        let peer = cn.peer_addr;
         match self.store.load(peer) {
             Some(k) if k.is_valid() => {
                 debug!("Found keys for {peer} {hdl}");
                 if k.id.is_some() {
-                    cn.bond_id = k.id;
+                    self.host.update_conn(hdl, |cn| cn.bond_id = k.id);
                 } else {
                     debug!("Removing temporary keys for {peer} {hdl}");
                     self.store.remove(peer);
@@ -150,7 +149,7 @@ impl SecDb {
             Some(_) => {
                 warn!("Invalidating keys for {peer} {hdl}");
                 self.store.remove(peer);
-                cn.bond_id = None;
+                self.host.update_conn(hdl, |cn| cn.bond_id = None);
             }
             None => debug!("No saved keys for {peer} {hdl}"),
         }
@@ -176,19 +175,20 @@ impl SecDb {
 
     /// Handles [`hci::EncryptionChange`] event.
     fn handle_encryption_change(&mut self, e: hci::EncryptionChange) {
-        let Some(mut cn) = self.host.conn(e.handle) else { return };
-        let peer = cn.peer_addr;
+        let Some(peer) = self.host.conn(e.handle).map(|cn| cn.borrow().peer_addr) else { return };
         if !e.status.is_ok() {
             warn!("Encryption change for {peer} failed: {}", e.status);
             return;
         }
-        cn.sec = if let (true, Some(sec)) = (e.enabled, self.sec.remove(&e.handle)) {
-            debug!("Encryption enabled for {peer}: {sec}");
-            // TODO: Should AUTHZ bit ever be kept?
-            sec.difference(hci::ConnSec::AUTHZ)
-        } else {
-            debug!("Security reset for {peer}");
-            hci::ConnSec::empty()
-        };
+        self.host.update_conn(e.handle, |cn| {
+            cn.sec = if let (true, Some(sec)) = (e.enabled, self.sec.remove(&e.handle)) {
+                debug!("Encryption enabled for {peer}: {sec}");
+                // TODO: Should AUTHZ bit ever be kept?
+                sec.difference(hci::ConnSec::AUTHZ)
+            } else {
+                debug!("Security reset for {peer}");
+                hci::ConnSec::empty()
+            };
+        });
     }
 }

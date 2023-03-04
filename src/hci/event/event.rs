@@ -2,10 +2,7 @@ use std::collections::VecDeque;
 use std::fmt::Formatter;
 use std::future::Future;
 use std::marker::PhantomData;
-use std::mem;
-use std::ops::Deref;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 use std::time::Duration;
@@ -16,7 +13,7 @@ use tracing::{trace, warn};
 
 pub use {hci::*, le::*};
 
-use crate::{host, le::RawAddr, AsyncMutex, AsyncRwLock, SyncArcMutexGuard, SyncMutex};
+use crate::{host, le::RawAddr, AsyncMutex, AsyncRwLock, SyncMutex};
 
 use super::*;
 
@@ -132,7 +129,7 @@ impl Event {
         let (hdr, params) = EventHeader::unpack(raw)?;
         trace!("{hdr:?} {params:02X?}");
         (t.hdr, t.params_off) = (hdr, raw.len() - params.len());
-        Ok(Self(EventRef::first(t), PhantomData))
+        Ok(Self(t.downgrade(), PhantomData))
     }
 
     /// Returns the event code.
@@ -261,45 +258,6 @@ impl Debug for Event {
     }
 }
 
-/// `Send`able event that can await handling by other receivers.
-#[allow(clippy::non_send_fields_in_send_ty)]
-#[must_use]
-#[repr(transparent)]
-pub(crate) struct WaitEvent(pub(crate) Event);
-
-// SAFETY: Awaiting WaitEvent::handled() is safe because it waits for completion
-// of synchronous code.
-unsafe impl Send for WaitEvent {}
-
-impl WaitEvent {
-    /// Blocks until the event has been handled and dropped by another receiver.
-    /// Event handling is based on reference counting. The counter is
-    /// decremented for the duration of this call, leaving only active
-    /// references. When all active references are dropped and the counter
-    /// reaches zero, all waiters are notified and become active again.
-    pub(crate) async fn handled(self) -> Event {
-        let xfer: tokio::sync::OwnedRwLockReadGuard<EventTransfer> =
-            // SAFETY: `self` is a repr(transparent) of OwnedRwLockReadGuard
-            unsafe { mem::transmute(self) };
-        let notified = xfer.notify.notified();
-        xfer.dec_refs();
-        // TODO: Remove logging
-        debug!("Waiting for {} event to be handled", xfer.hdr.code);
-        notified.await;
-        debug!("{} event has been handled", xfer.hdr.code);
-        Event(EventRef::inc(xfer, true), PhantomData)
-    }
-}
-
-impl Deref for WaitEvent {
-    type Target = Event;
-
-    #[inline(always)]
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
 /// Trait for unpacking event parameters.
 pub(crate) trait FromEvent {
     /// Returns whether `unpack` supports event code `c`.
@@ -391,11 +349,22 @@ impl EventRouter {
         })
     }
 
-    /// Returns connection information for the specified handle or [`None`] if
+    /// Returns connection watch channel for the specified handle or [`None`] if
     /// the handle is invalid.
     #[inline]
-    pub fn conn(&self, hdl: ConnHandle) -> Option<SyncArcMutexGuard<Conn>> {
-        self.recv.lock().conns.get(&hdl).map(SyncMutex::lock_arc)
+    pub fn conn(&self, hdl: ConnHandle) -> Option<ConnWatch> {
+        let rs = self.recv.lock();
+        (rs.conns.get(&hdl)).map(tokio::sync::watch::Sender::subscribe)
+    }
+
+    /// Calls `f` to update connection parameters. This is a no-op if the handle
+    /// is invalid.
+    #[inline]
+    pub fn update_conn(&self, hdl: ConnHandle, f: impl FnOnce(&mut Conn)) {
+        let rs = self.recv.lock();
+        if let Some(s) = rs.conns.get(&hdl) {
+            s.send_modify(f);
+        }
     }
 
     /// Receives the next event, notifies registered receivers, and returns the
@@ -422,6 +391,7 @@ impl EventRouter {
             let mut rs = self.recv.lock();
             rs.err = Some(e);
             for r in &mut rs.queue {
+                r.ready = None;
                 if let Some(w) = r.waker.take() {
                     w.wake();
                 }
@@ -441,7 +411,7 @@ impl EventRouter {
 /// commands, so it is likely to outperform `HashMap` and `BTreeMap`.
 #[derive(Debug)]
 struct Receivers {
-    conns: BTreeMap<ConnHandle, ArcConnInfo>,
+    conns: BTreeMap<ConnHandle, tokio::sync::watch::Sender<Conn>>,
     queue: VecDeque<Receiver>,
     err: Option<host::Error>,
     next_id: u64,
@@ -468,7 +438,7 @@ impl Receivers {
             match hdr.code {
                 EventCode::LeConnectionComplete | EventCode::LeEnhancedConnectionComplete => {
                     let e: LeConnectionComplete = evt.get();
-                    let cn = Arc::new(SyncMutex::new(Conn::new(&e)));
+                    let (cn, _) = tokio::sync::watch::channel(Conn::new(&e));
                     let old = self.conns.insert(e.handle, cn);
                     assert!(old.is_none(), "duplicate connection handle");
                 }
@@ -487,6 +457,12 @@ impl Receivers {
         if !received {
             trace!("Ignored event: {evt:?}");
         }
+    }
+
+    /// Returns the receiver with the specified `id`.
+    #[inline(always)]
+    fn get(&mut self, id: u64) -> &mut Receiver {
+        (self.queue.iter_mut().find(|r| r.id == id)).expect("unregistered event receiver")
     }
 }
 
@@ -523,7 +499,7 @@ impl Receiver {
     #[inline]
     fn ready(&mut self, xfer: &Arc<AsyncRwLock<EventTransfer>>) {
         let xfer = Arc::clone(xfer).try_read_owned().unwrap();
-        self.ready = Some(EventRef::inc(xfer, false));
+        self.ready = Some(xfer);
         if let Some(w) = self.waker.take() {
             w.wake();
         }
@@ -542,30 +518,69 @@ pub(crate) struct EventStream {
 impl EventStream {
     /// Returns a future that resolves to the next event.
     #[inline(always)]
-    pub fn next(&mut self) -> NextEvent {
-        NextEvent(self)
+    pub fn next(&mut self) -> NextEvent<Event> {
+        NextEvent(self, PhantomData)
+    }
+
+    /// Returns a future that resolves when the next event is ready. This is
+    /// useful with [`tokio::select`] when it's not possible to use `next()` due
+    /// to `Send` constraints.
+    #[inline(always)]
+    pub fn ready(&mut self) -> NextEvent<()> {
+        NextEvent(self, PhantomData)
+    }
+
+    /// Tries to get the next event without blocking.
+    #[inline(always)]
+    pub fn get(&mut self) -> Option<Result<Event>> {
+        match self.poll(None) {
+            Poll::Ready(r) => Some(r),
+            Poll::Pending => None,
+        }
     }
 
     /// Returns connection information for the specified handle or [`None`] if
     /// the handle is invalid.
     #[inline(always)]
-    pub fn conn(&self, hdl: ConnHandle) -> Option<SyncArcMutexGuard<Conn>> {
+    pub fn conn(&self, hdl: ConnHandle) -> Option<ConnWatch> {
         self.router.conn(hdl)
     }
 
+    /// Calls `f` to update connection parameters. This is a no-op if the handle
+    /// is invalid.
+    #[inline]
+    pub fn update_conn(&self, hdl: ConnHandle, f: impl FnOnce(&mut Conn)) {
+        self.router.update_conn(hdl, f);
+    }
+
     /// Polls for the next event.
-    pub fn poll(&mut self, cx: &mut Context<'_>) -> Poll<<NextEvent as Future>::Output> {
+    pub(super) fn poll(&mut self, cx: Option<&mut Context<'_>>) -> Poll<Result<Event>> {
         let mut rs = self.router.recv.lock();
         if let Some(e) = rs.err {
             return Poll::Ready(Err(Error::Host(e)));
         }
-        let r = (rs.queue.iter_mut().find(|r| r.id == self.id)).expect("unregistered event stream");
+        let r = rs.get(self.id);
         if let Some(xfer) = r.ready.take() {
-            Poll::Ready(Ok(Event(xfer, PhantomData)))
-        } else {
-            r.waker = Some(cx.waker().clone());
-            Poll::Pending
+            return Poll::Ready(Ok(Event(xfer, PhantomData)));
         }
+        if let Some(cx) = cx {
+            r.waker = Some(cx.waker().clone());
+        }
+        Poll::Pending
+    }
+
+    /// Polls for whether the next event is ready.
+    pub(super) fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        let mut rs = self.router.recv.lock();
+        if rs.err.is_some() {
+            return Poll::Ready(());
+        }
+        let mut r = rs.get(self.id);
+        if r.ready.is_some() {
+            return Poll::Ready(());
+        }
+        r.waker = Some(cx.waker().clone());
+        Poll::Pending
     }
 }
 
@@ -583,54 +598,40 @@ impl Drop for EventStream {
 /// Next event future. This future is cancel safe.
 #[derive(Debug)]
 #[repr(transparent)]
-pub(crate) struct NextEvent<'a>(&'a mut EventStream);
+pub(crate) struct NextEvent<'a, T>(&'a mut EventStream, PhantomData<T>);
 
-impl Future for NextEvent<'_> {
+// SAFETY: We don't actually hold T
+unsafe impl<T> Send for NextEvent<'_, T> {}
+
+impl Future for NextEvent<'_, Event> {
     type Output = Result<Event>;
 
     #[inline(always)]
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.0.poll(cx)
+        self.0.poll(Some(cx))
+    }
+}
+
+impl Future for NextEvent<'_, ()> {
+    type Output = ();
+
+    #[inline(always)]
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.0.poll_ready(cx)
+    }
+}
+
+impl<T> Drop for NextEvent<'_, T> {
+    fn drop(&mut self) {
+        let mut rs = self.0.router.recv.lock();
+        if let Some(r) = rs.queue.iter_mut().find(|r| r.id == self.0.id) {
+            r.waker = None;
+        }
     }
 }
 
 /// A read-only event reference.
-#[derive(Debug)]
-#[repr(transparent)]
-struct EventRef(tokio::sync::OwnedRwLockReadGuard<EventTransfer>);
-
-impl EventRef {
-    /// Creates the first event reference.
-    #[inline(always)]
-    fn first(wg: tokio::sync::OwnedRwLockWriteGuard<EventTransfer>) -> Self {
-        let prev = wg.refs.swap(1, Ordering::Relaxed);
-        debug_assert_eq!(prev, usize::MIN);
-        Self(wg.downgrade())
-    }
-
-    /// Increments the reference count and returns a new event reference.
-    #[inline(always)]
-    fn inc(rg: tokio::sync::OwnedRwLockReadGuard<EventTransfer>, zero_ok: bool) -> Self {
-        rg.inc_refs(zero_ok);
-        Self(rg)
-    }
-}
-
-impl Drop for EventRef {
-    #[inline(always)]
-    fn drop(&mut self) {
-        self.dec_refs();
-    }
-}
-
-impl Deref for EventRef {
-    type Target = EventTransfer;
-
-    #[inline(always)]
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
+type EventRef = tokio::sync::OwnedRwLockReadGuard<EventTransfer>;
 
 /// HCI event transfer.
 #[derive(Debug, Default)]
@@ -638,32 +639,9 @@ struct EventTransfer {
     xfer: Option<Box<dyn host::Transfer>>,
     hdr: EventHeader,
     params_off: usize,
-    refs: AtomicUsize,
-    notify: tokio::sync::Notify,
 }
 
 impl EventTransfer {
-    /// Increments the reference count.
-    #[inline(always)]
-    fn inc_refs(&self, zero_ok: bool) {
-        let prev = self.refs.fetch_add(1, Ordering::Relaxed);
-        debug_assert!(
-            (zero_ok || usize::MIN < prev) && prev < usize::MAX,
-            "{prev}"
-        );
-    }
-
-    /// Decrements the reference count and notifies waiters when it reaches 0.
-    #[inline(always)]
-    fn dec_refs(&self) {
-        let prev = self.refs.fetch_sub(1, Ordering::Relaxed);
-        if prev == 1 {
-            self.notify.notify_waiters();
-        } else {
-            debug_assert_ne!(prev, usize::MIN);
-        }
-    }
-
     /// Receives the next event.
     async fn next(&mut self, t: &dyn host::Transport) -> host::Result<()> {
         self.params_off = 0;

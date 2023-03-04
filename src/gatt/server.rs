@@ -9,7 +9,6 @@ use tracing::{debug, error, info, warn};
 use ErrorCode::*;
 
 use crate::gap::{Uuid, UuidType};
-use crate::hci::FromEvent;
 use crate::{hci, le, SyncMutex, SyncMutexGuard};
 
 use super::*;
@@ -93,17 +92,15 @@ impl Server {
     /// for a new connection, which should be the fixed ATT channel, becomes the
     /// sender of all notifications and indications.
     #[inline]
-    pub fn attach(self: &Arc<Self>, host: &hci::Host, br: &Bearer) -> ServerCtx {
-        let peer = br.conn().peer_addr;
+    pub fn attach(self: &Arc<Self>, br: &Bearer) -> ServerCtx {
+        let peer = br.conn().borrow().peer_addr;
         let cc = self.get_client_ctx(peer);
         let ntf = cc.lock().notify_rx();
-        let host = ntf.is_some().then(|| host.clone());
         ServerCtx {
             srv: Arc::clone(self),
             cc,
             notify: ntf,
             peer,
-            host,
             db_oos_sent: false,
         }
     }
@@ -163,7 +160,6 @@ pub struct ServerCtx {
     srv: Arc<Server>,
     cc: ArcClientCtx,
     peer: le::Addr,
-    host: Option<hci::Host>,
     notify: Option<tokio::sync::mpsc::Receiver<NotifyVal>>,
     db_oos_sent: bool,
 }
@@ -191,20 +187,18 @@ impl ServerCtx {
         if let Some(sc) = self.restore_bond(&mut br) {
             self.indicate_service_changed(&mut br, sc).await;
         }
-        let mut ctl = self.host.take().unwrap().events();
-        self.configure_notify(&br);
+        let mut conn = br.conn().clone();
+        let sec = conn.borrow_and_update().sec;
+        self.configure_notify(sec);
         loop {
             tokio::select! {
                 pdu = br.recv() => self.handle(&mut br, &pdu?).await?,
                 // TODO: Allow processing requests while waiting for indication
                 // confirmation?
                 ntf = notify.recv() => ntf.unwrap().exec(&mut br).await,
-                evt = async { ctl.next().await.map(hci::WaitEvent) } => {
-                    let evt = evt.map_err(|e| Error::L2Cap(e.into()))?;
-                    if hci::EncryptionChange::matches(evt.code()) && evt.status().is_ok() {
-                        let _ = evt.handled().await;
-                        self.configure_notify(&br);
-                    }
+                _ = conn.changed(), if conn.has_changed().is_ok() => {
+                    let sec = conn.borrow().sec;
+                    self.configure_notify(sec);
                 }
             }
         }
@@ -215,8 +209,9 @@ impl ServerCtx {
     /// ([Vol 3] Part G, Section 2.5.2 and 7.1).
     fn restore_bond(&mut self, br: &mut Bearer) -> Option<ServiceChanged> {
         self.notify.as_ref()?;
-        // Avoid holding both locks at the same time
-        let bond_id = br.conn().bond_id;
+        // TODO: This assumes that SecDb would've set bond_id while we were
+        // calling exchange_mtu(). It would be better to have a guarantee.
+        let bond_id = br.conn().borrow().bond_id;
         let peer = self.peer;
         let mut cc = self.cc.lock();
         match self.srv.store.load(peer) {
@@ -302,7 +297,7 @@ impl ServerCtx {
         // the characteristic is still the same. Otherwise, we're just hoping
         // that the client will interpret it correctly and invalidate its cache,
         // but we can't be sure.
-        let peer = br.conn().peer_addr;
+        let peer = br.conn().borrow().peer_addr;
         let confirmed = sc.indicate_all(br, peer).await
             && self.srv.sc.map_or(false, |srv| srv.handle == sc.handle);
         let db_hash = self.srv.db.hash();
@@ -338,11 +333,11 @@ impl ServerCtx {
     /// server" ([Vol 3] Part C, Section 10.3.2.2). This resumes all
     /// notifications/indications that are enabled by the client and meet the
     /// connection security parameters, and disables all others.
-    fn configure_notify(&mut self, br: &Bearer) {
+    fn configure_notify(&mut self, sec: hci::ConnSec) {
         if self.notify.is_none() {
             return;
         }
-        let req = Opcode::WriteCmd.request(br.conn().sec);
+        let req = Opcode::WriteCmd.request(sec);
         let mut cc = self.cc.lock();
         // "Except for a Handle Value Indication for the Service Changed
         // characteristic, the server shall not send notifications and
@@ -402,7 +397,8 @@ impl ServerCtx {
                 cc.cache.db_hash = self.srv.db.hash();
                 self.persist(&cc.cache);
                 drop(cc);
-                self.configure_notify(br);
+                let sec = br.conn().borrow().sec;
+                self.configure_notify(sec);
                 None
             }
             _ => None,

@@ -34,7 +34,6 @@ burble-const = { path = "const" }
 burble-crypto = { path = "crypto" }
 futures-core = "0.3.25"
 lazy_static = "1.4.0"
-lock_api = { version = "0.4.9", features = ["arc_lock"] }
 num_enum.workspace = true
 parking_lot = { version = "0.12.1", features = ["arc_lock", "hardware-lock-elision", "send_guard"] }
 paste.workspace = true
