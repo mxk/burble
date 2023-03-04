@@ -525,12 +525,14 @@ impl EventStream {
     /// Returns a future that resolves when the next event is ready. This is
     /// useful with [`tokio::select`] when it's not possible to use `next()` due
     /// to `Send` constraints.
+    #[allow(dead_code)] // TODO: Remove
     #[inline(always)]
     pub fn ready(&mut self) -> NextEvent<()> {
         NextEvent(self, PhantomData)
     }
 
     /// Tries to get the next event without blocking.
+    #[allow(dead_code)] // TODO: Remove
     #[inline(always)]
     pub fn get(&mut self) -> Option<Result<Event>> {
         match self.poll(None) {

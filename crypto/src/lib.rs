@@ -5,7 +5,6 @@
 
 use std::fmt::{Debug, Display, Formatter};
 use std::mem;
-use std::num::NonZeroU128;
 
 use structbuf::{Packer, Unpacker};
 use zeroize::{Zeroize, ZeroizeOnDrop};
@@ -209,22 +208,22 @@ impl MacKey {
 #[must_use]
 #[repr(transparent)]
 #[serde(transparent)]
-pub struct LTK(#[serde(with = "nz_u128_hex")] NonZeroU128);
+pub struct LTK(#[serde(with = "u128ser")] u128);
 
 debug_secret!(LTK);
 
 impl LTK {
     /// Creates a Long Term Key from a `u128` value.
     #[inline(always)]
-    pub fn new(k: u128) -> Self {
-        Self(NonZeroU128::new(k).expect("invalid LTK"))
+    pub const fn new(k: u128) -> Self {
+        Self(k)
     }
 }
 
 impl From<&LTK> for u128 {
     #[inline(always)]
     fn from(k: &LTK) -> Self {
-        k.0.get()
+        k.0
     }
 }
 
@@ -237,35 +236,42 @@ pub struct Check(u128);
 u128_codec!(Check);
 ct_newtype!(Check);
 
-/// Serializer/deserializer for [`NonZeroU128`].
-pub mod nz_u128_hex {
-    use std::num::NonZeroU128;
+/// Serializer/deserializer for `u128` and `NonZeroU128`.
+#[doc(hidden)]
+pub mod u128ser {
+    use std::fmt;
 
     use serde::{de, ser};
 
-    pub fn serialize<S: ser::Serializer>(v: &NonZeroU128, s: S) -> Result<S::Ok, S::Error> {
+    pub fn serialize<T, S>(v: &T, s: S) -> Result<S::Ok, S::Error>
+    where
+        T: Into<u128> + Copy,
+        S: ser::Serializer,
+    {
+        // TODO: Handle non-human-readable formats?
         use std::io::Write;
         let mut b = std::io::Cursor::new([0_u8; 32]);
-        write!(b, "{v:032X}").expect("buffer overflow");
+        write!(b, "{:032X}", (*v).into()).expect("buffer overflow");
         s.serialize_str(std::str::from_utf8(b.get_ref()).expect("invalid string"))
     }
 
-    pub fn deserialize<'de, D: de::Deserializer<'de>>(d: D) -> Result<NonZeroU128, D::Error> {
-        struct NzU128;
-        impl de::Visitor<'_> for NzU128 {
-            type Value = NonZeroU128;
-
-            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-                f.write_str("non-zero 128-bit hex string")
+    pub fn deserialize<'de, T, D>(d: D) -> Result<T, D::Error>
+    where
+        D: de::Deserializer<'de>,
+        T: TryFrom<u128>,
+        T::Error: fmt::Display,
+    {
+        struct U128;
+        impl de::Visitor<'_> for U128 {
+            type Value = u128;
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("128-bit hex string")
             }
-
             fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
-                (u128::from_str_radix(v, 16).map_err(de::Error::custom)).and_then(|v| {
-                    NonZeroU128::new(v).ok_or_else(|| de::Error::custom("invalid zero value"))
-                })
+                u128::from_str_radix(v, 16).map_err(de::Error::custom)
             }
         }
-        d.deserialize_str(NzU128)
+        (d.deserialize_str(U128)).and_then(|v| T::try_from(v).map_err(de::Error::custom))
     }
 }
 

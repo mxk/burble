@@ -154,10 +154,7 @@ impl DHKey {
         let mut m = AesCmac::new(&Key::new(0x6C88_8391_AAF5_A538_6037_0BDB_5A60_83BE));
         m.update(self.0.raw_secret_bytes());
         let mut m = AesCmac::new(&m.finalize_key());
-        (
-            MacKey(half(&mut m, 0)),
-            LTK::new(u128::from(&half(&mut m, 1))),
-        )
+        (MacKey(half(&mut m, 0)), LTK(u128::from(&half(&mut m, 1))))
     }
 }
 
@@ -321,7 +318,7 @@ mod tests {
         let a1 = Addr([0x00, 0x56, 0x12, 0x37, 0x37, 0xbf, 0xce]);
         let a2 = Addr([0x00, 0xa7, 0x13, 0x70, 0x2d, 0xcf, 0xc1]);
         let (mk, ltk) = w.f5(n1, n2, a1, a2);
-        assert_eq!(ltk.0.get(), 0x69867911_69d7cd23_980522b5_94750a38);
+        assert_eq!(ltk.0, 0x69867911_69d7cd23_980522b5_94750a38);
         assert_eq!(u128::from(&mk.0), 0x2965f176_a1084a02_fd3f6a20_ce636e20);
     }
 

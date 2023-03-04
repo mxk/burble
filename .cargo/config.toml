@@ -12,6 +12,7 @@ rustflags = [
     "-Wclippy::cargo",
     "-Aclippy::multiple-crate-versions", # TODO: Remove
     "-Wclippy::nursery",
+    "-Aclippy::significant_drop_in_scrutinee", # TODO: Remove
     "-Aclippy::redundant_pub_crate",
     "-Wclippy::pedantic",
     "-Aclippy::enum_glob_use",

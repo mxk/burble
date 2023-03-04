@@ -56,7 +56,7 @@ impl Keys {
 #[must_use]
 #[repr(transparent)]
 #[serde(transparent)]
-pub(crate) struct BondId(#[serde(with = "burble_crypto::nz_u128_hex")] NonZeroU128);
+pub(crate) struct BondId(#[serde(with = "burble_crypto::u128ser")] NonZeroU128);
 
 impl BondId {
     /// Generates the bond ID for the specified keys.
