@@ -44,6 +44,7 @@ impl Peripheral {
         let Phase1 { a, b, method, sec } = self.phase1(dev, init).await?;
         let (peer, ltk) = self.phase2(dev, method, a.into(), b.into()).await?;
         let mut keys = Keys::new(sec, ltk);
+        // TODO: Save LTK before phase 3 to ensure that SecDb finds it
         (self.phase3(b.initiator_keys, b.responder_keys, &mut keys)).await?;
         if !store.save(peer, &keys) {
             return Err(Error::Io(io::Error::new(
@@ -71,19 +72,12 @@ impl Peripheral {
             );
             return self.fail(Reason::EncryptionKeySize).await;
         }
-        // TODO: Allow pairing without bonding
-        if !a.auth_req.contains(AuthReq::BONDING) {
-            error!("Peer did not request bonding");
-            return self.fail(Reason::UnspecifiedReason).await;
-        }
         let mut b = PairingParams {
             io_cap: dev.io_cap(),
-            auth_req: AuthReq::BONDING.union(AuthReq::SC),
             ..PairingParams::default()
         };
-        if !matches!(b.io_cap, IoCap::NoInputNoOutput) {
-            b.auth_req |= AuthReq::MITM;
-        }
+        (b.auth_req).set(AuthReq::BONDING, a.auth_req.contains(AuthReq::BONDING));
+        (b.auth_req).set(AuthReq::MITM, !matches!(b.io_cap, IoCap::NoInputNoOutput));
         // [Vol 3] Part H, Section 2.3.5.1, Table 2.7
         if a.oob_data | b.oob_data {
             error!("OOB pairing method not implemented"); // TODO: Implement

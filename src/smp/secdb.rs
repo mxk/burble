@@ -4,7 +4,7 @@ use std::mem;
 use std::num::NonZeroU128;
 use std::sync::Arc;
 
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
 use burble_crypto::LTK;
 
@@ -59,7 +59,7 @@ impl Keys {
 pub(crate) struct BondId(#[serde(with = "burble_crypto::u128ser")] NonZeroU128);
 
 impl BondId {
-    /// Generates the bond ID for the specified keys.
+    /// Generates the bond ID for the specified parameters.
     pub fn new(sec: hci::ConnSec, ltk: &LTK) -> Self {
         // TODO: Add a store-specific input to easily invalidate all keys
         let mut h = blake3::Hasher::new_derive_key("secdb v1");
@@ -80,7 +80,6 @@ impl BondId {
 /// (CSRK) keys.
 #[derive(Debug)]
 pub struct SecDb {
-    ctl: hci::EventStream,
     host: hci::Host,
     store: Arc<KeyStore>,
     sec: BTreeMap<hci::ConnHandle, hci::ConnSec>,
@@ -91,7 +90,6 @@ impl SecDb {
     #[inline(always)]
     pub fn new(host: hci::Host, store: Arc<KeyStore>) -> Self {
         Self {
-            ctl: host.events(),
             host,
             store,
             sec: BTreeMap::new(),
@@ -102,9 +100,10 @@ impl SecDb {
     /// method is not cancel safe.
     pub async fn event_loop(&mut self) -> hci::Result<()> {
         use hci::EventCode::*;
+        let mut ctl = self.host.events();
         loop {
             let req = loop {
-                let evt = self.ctl.next().await?;
+                let evt = ctl.next().await?;
                 match evt.code() {
                     LeConnectionComplete | LeEnhancedConnectionComplete => {
                         if evt.status().is_ok() {
@@ -112,7 +111,6 @@ impl SecDb {
                         }
                     }
                     DisconnectionComplete => {
-                        // TODO: Remove temporary keys from store
                         if evt.status().is_ok() {
                             self.sec.remove(&evt.conn_handle().unwrap());
                         }
@@ -137,22 +135,22 @@ impl SecDb {
         };
         match self.store.load(peer) {
             Some(k) if k.is_valid() => {
-                debug!("Found keys for {peer} {hdl}");
                 if k.id.is_some() {
-                    self.host.update_conn(hdl, |cn| cn.bond_id = k.id);
+                    debug!("Found keys for {peer} {hdl}");
                 } else {
-                    debug!("Removing temporary keys for {peer} {hdl}");
+                    debug!("Found single-use keys for {peer} {hdl}");
                     self.store.remove(peer);
                 }
+                self.host.update_conn(hdl, |cn| cn.bond_id = k.id);
                 return Some(k);
             }
             Some(_) => {
                 warn!("Invalidating keys for {peer} {hdl}");
                 self.store.remove(peer);
-                self.host.update_conn(hdl, |cn| cn.bond_id = None);
             }
             None => debug!("No saved keys for {peer} {hdl}"),
         }
+        self.host.update_conn(hdl, |cn| cn.bond_id = None);
         None
     }
 
@@ -181,12 +179,13 @@ impl SecDb {
             return;
         }
         self.host.update_conn(e.handle, |cn| {
-            cn.sec = if let (true, Some(sec)) = (e.enabled, self.sec.remove(&e.handle)) {
-                debug!("Encryption enabled for {peer}: {sec}");
-                // TODO: Should AUTHZ bit ever be kept?
-                sec.difference(hci::ConnSec::AUTHZ)
+            cn.sec = if let (true, Some(mut sec)) = (e.enabled, self.sec.remove(&e.handle)) {
+                // TODO: Should the AUTHZ bit ever be kept?
+                sec.remove(hci::ConnSec::AUTHZ);
+                info!("Encryption enabled for {peer}: {sec}");
+                sec
             } else {
-                debug!("Security reset for {peer}");
+                info!("Security reset for {peer}");
                 hci::ConnSec::empty()
             };
         });
