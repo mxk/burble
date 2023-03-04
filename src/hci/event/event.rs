@@ -2,7 +2,10 @@ use std::collections::VecDeque;
 use std::fmt::Formatter;
 use std::future::Future;
 use std::marker::PhantomData;
+use std::mem;
+use std::ops::Deref;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 use std::time::Duration;
@@ -117,7 +120,7 @@ impl Default for EventHeader {
 #[must_use]
 #[repr(transparent)]
 pub struct Event(
-    tokio::sync::OwnedRwLockReadGuard<EventTransfer>,
+    EventRef,
     PhantomData<*const ()>, // !Send
 );
 
@@ -129,7 +132,7 @@ impl Event {
         let (hdr, params) = EventHeader::unpack(raw)?;
         trace!("{hdr:?} {params:02X?}");
         (t.hdr, t.params_off) = (hdr, raw.len() - params.len());
-        Ok(Self(t.downgrade(), PhantomData))
+        Ok(Self(EventRef::first(t), PhantomData))
     }
 
     /// Returns the event code.
@@ -255,6 +258,45 @@ impl Debug for Event {
     #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:?} {:02X?}", self.0.hdr, self.0.params().as_ref())
+    }
+}
+
+/// `Send`able event that can await handling by other receivers.
+#[allow(clippy::non_send_fields_in_send_ty)]
+#[must_use]
+#[repr(transparent)]
+pub(crate) struct WaitEvent(pub(crate) Event);
+
+// SAFETY: Awaiting WaitEvent::handled() is safe because it waits for completion
+// of synchronous code.
+unsafe impl Send for WaitEvent {}
+
+impl WaitEvent {
+    /// Blocks until the event has been handled and dropped by another receiver.
+    /// Event handling is based on reference counting. The counter is
+    /// decremented for the duration of this call, leaving only active
+    /// references. When all active references are dropped and the counter
+    /// reaches zero, all waiters are notified and become active again.
+    pub(crate) async fn handled(self) -> Event {
+        let xfer: tokio::sync::OwnedRwLockReadGuard<EventTransfer> =
+            // SAFETY: `self` is a repr(transparent) of OwnedRwLockReadGuard
+            unsafe { mem::transmute(self) };
+        let notified = xfer.notify.notified();
+        xfer.dec_refs();
+        // TODO: Remove logging
+        debug!("Waiting for {} event to be handled", xfer.hdr.code);
+        notified.await;
+        debug!("{} event has been handled", xfer.hdr.code);
+        Event(EventRef::inc(xfer, true), PhantomData)
+    }
+}
+
+impl Deref for WaitEvent {
+    type Target = Event;
+
+    #[inline(always)]
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 
@@ -467,7 +509,7 @@ impl Default for Receivers {
 struct Receiver {
     id: u64,
     opcode: Opcode,
-    ready: Option<tokio::sync::OwnedRwLockReadGuard<EventTransfer>>,
+    ready: Option<EventRef>,
     waker: Option<Waker>,
 }
 
@@ -480,7 +522,8 @@ impl Receiver {
     /// another read lock and ensuring that there are no writers waiting.
     #[inline]
     fn ready(&mut self, xfer: &Arc<AsyncRwLock<EventTransfer>>) {
-        self.ready = Some(Arc::clone(xfer).try_read_owned().unwrap());
+        let xfer = Arc::clone(xfer).try_read_owned().unwrap();
+        self.ready = Some(EventRef::inc(xfer, false));
         if let Some(w) = self.waker.take() {
             w.wake();
         }
@@ -551,15 +594,76 @@ impl Future for NextEvent<'_> {
     }
 }
 
+/// A read-only event reference.
+#[derive(Debug)]
+#[repr(transparent)]
+struct EventRef(tokio::sync::OwnedRwLockReadGuard<EventTransfer>);
+
+impl EventRef {
+    /// Creates the first event reference.
+    #[inline(always)]
+    fn first(wg: tokio::sync::OwnedRwLockWriteGuard<EventTransfer>) -> Self {
+        let prev = wg.refs.swap(1, Ordering::Relaxed);
+        debug_assert_eq!(prev, usize::MIN);
+        Self(wg.downgrade())
+    }
+
+    /// Increments the reference count and returns a new event reference.
+    #[inline(always)]
+    fn inc(rg: tokio::sync::OwnedRwLockReadGuard<EventTransfer>, zero_ok: bool) -> Self {
+        rg.inc_refs(zero_ok);
+        Self(rg)
+    }
+}
+
+impl Drop for EventRef {
+    #[inline(always)]
+    fn drop(&mut self) {
+        self.dec_refs();
+    }
+}
+
+impl Deref for EventRef {
+    type Target = EventTransfer;
+
+    #[inline(always)]
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
 /// HCI event transfer.
 #[derive(Debug, Default)]
 struct EventTransfer {
     xfer: Option<Box<dyn host::Transfer>>,
     hdr: EventHeader,
     params_off: usize,
+    refs: AtomicUsize,
+    notify: tokio::sync::Notify,
 }
 
 impl EventTransfer {
+    /// Increments the reference count.
+    #[inline(always)]
+    fn inc_refs(&self, zero_ok: bool) {
+        let prev = self.refs.fetch_add(1, Ordering::Relaxed);
+        debug_assert!(
+            (zero_ok || usize::MIN < prev) && prev < usize::MAX,
+            "{prev}"
+        );
+    }
+
+    /// Decrements the reference count and notifies waiters when it reaches 0.
+    #[inline(always)]
+    fn dec_refs(&self) {
+        let prev = self.refs.fetch_sub(1, Ordering::Relaxed);
+        if prev == 1 {
+            self.notify.notify_waiters();
+        } else {
+            debug_assert_ne!(prev, usize::MIN);
+        }
+    }
+
     /// Receives the next event.
     async fn next(&mut self, t: &dyn host::Transport) -> host::Result<()> {
         self.params_off = 0;
