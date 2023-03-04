@@ -43,9 +43,8 @@ impl Peripheral {
         };
         let Phase1 { a, b, method, sec } = self.phase1(dev, init).await?;
         let (peer, ltk) = self.phase2(dev, method, a.into(), b.into()).await?;
-        let mut keys = Keys { sec, ltk };
+        let mut keys = Keys::new(sec, ltk);
         (self.phase3(b.initiator_keys, b.responder_keys, &mut keys)).await?;
-        // TODO: Don't save if not bonding, provide to SecDb directly
         if !store.save(peer, &keys) {
             return Err(Error::Io(io::Error::new(
                 io::ErrorKind::Other,

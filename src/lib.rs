@@ -47,6 +47,7 @@ pub trait PeerStore: std::fmt::Debug + Send + Sync {
     fn save(&self, peer: le::Addr, v: &Self::Value) -> bool;
 
     /// Loads peer data.
+    #[must_use]
     fn load(&self, peer: le::Addr) -> Option<Self::Value>;
 
     /// Removes peer data.

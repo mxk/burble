@@ -5,6 +5,7 @@
 
 use std::fmt::{Debug, Display, Formatter};
 use std::mem;
+use std::num::NonZeroU128;
 
 use structbuf::{Packer, Unpacker};
 use zeroize::{Zeroize, ZeroizeOnDrop};
@@ -208,22 +209,22 @@ impl MacKey {
 #[must_use]
 #[repr(transparent)]
 #[serde(transparent)]
-pub struct LTK(#[serde(with = "u128_hex")] u128);
+pub struct LTK(#[serde(with = "nz_u128_hex")] NonZeroU128);
 
 debug_secret!(LTK);
 
 impl LTK {
     /// Creates a Long Term Key from a `u128` value.
     #[inline(always)]
-    pub const fn new(k: u128) -> Self {
-        Self(k)
+    pub fn new(k: u128) -> Self {
+        Self(NonZeroU128::new(k).expect("invalid LTK"))
     }
 }
 
 impl From<&LTK> for u128 {
     #[inline(always)]
     fn from(k: &LTK) -> Self {
-        k.0
+        k.0.get()
     }
 }
 
@@ -236,30 +237,35 @@ pub struct Check(u128);
 u128_codec!(Check);
 ct_newtype!(Check);
 
-mod u128_hex {
+/// Serializer/deserializer for [`NonZeroU128`].
+pub mod nz_u128_hex {
+    use std::num::NonZeroU128;
+
     use serde::{de, ser};
 
-    pub(super) fn serialize<S: ser::Serializer>(v: &u128, s: S) -> Result<S::Ok, S::Error> {
+    pub fn serialize<S: ser::Serializer>(v: &NonZeroU128, s: S) -> Result<S::Ok, S::Error> {
         use std::io::Write;
         let mut b = std::io::Cursor::new([0_u8; 32]);
         write!(b, "{v:032X}").expect("buffer overflow");
         s.serialize_str(std::str::from_utf8(b.get_ref()).expect("invalid string"))
     }
 
-    pub(super) fn deserialize<'de, D: de::Deserializer<'de>>(d: D) -> Result<u128, D::Error> {
-        struct U128;
-        impl de::Visitor<'_> for U128 {
-            type Value = u128;
+    pub fn deserialize<'de, D: de::Deserializer<'de>>(d: D) -> Result<NonZeroU128, D::Error> {
+        struct NzU128;
+        impl de::Visitor<'_> for NzU128 {
+            type Value = NonZeroU128;
 
             fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-                f.write_str("128-bit hex string")
+                f.write_str("non-zero 128-bit hex string")
             }
 
             fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
-                u128::from_str_radix(v, 16).map_err(de::Error::custom)
+                (u128::from_str_radix(v, 16).map_err(de::Error::custom)).and_then(|v| {
+                    NonZeroU128::new(v).ok_or_else(|| de::Error::custom("invalid zero value"))
+                })
             }
         }
-        d.deserialize_str(U128)
+        d.deserialize_str(NzU128)
     }
 }
 

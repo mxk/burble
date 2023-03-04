@@ -16,7 +16,7 @@ use tracing::{debug, error};
 
 pub use {adv::*, cmd::*, consts::*, event::*, handle::*};
 
-use crate::{host, le, SyncArcMutexGuard, SyncMutex};
+use crate::{host, le, smp, SyncArcMutexGuard, SyncMutex};
 
 mod adv;
 #[path = "cmd/cmd.rs"]
@@ -258,15 +258,19 @@ pub(crate) type ArcConnInfo = Arc<SyncMutex<Conn>>;
 pub(crate) struct Conn {
     /// Local role.
     pub role: Role,
-    /// Local public or random address. This is needed by the security manager
+    /// Local public or random address. This is used by the security manager
     /// during pairing. [`LeConnectionComplete`] event does not provide this
     /// information, so it must be set by the component that created the
     /// connection.
     pub local_addr: Option<le::Addr>,
     /// Remote public or random address (identity address if IRK is used).
     pub peer_addr: le::Addr,
-    /// Connection security properties.
+    /// Current connection security properties.
     pub sec: ConnSec,
+    /// Bond ID set by the Security Manager when a connection is created to
+    /// indicate the existence of a trusted relationship with the peer. A change
+    /// in the ID invalidates any cached data.
+    pub bond_id: Option<smp::BondId>,
 }
 
 impl Conn {
@@ -278,6 +282,7 @@ impl Conn {
             local_addr: None,
             peer_addr: e.peer_addr,
             sec: ConnSec::empty(),
+            bond_id: None,
         }
     }
 

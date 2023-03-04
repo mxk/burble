@@ -202,11 +202,11 @@ mod tests {
     fn save_load() {
         const PEER: Addr =
             Addr::Public(RawAddr::from_le_bytes([0x55, 0x44, 0x33, 0x22, 0x11, 0x00]));
-        const KEYS: smp::Keys = smp::Keys::test();
         let tmp = (Builder::new().prefix(concat!("burble-test-")).tempdir()).unwrap();
         let db = KeyStore(Dir(tmp.path().to_path_buf()));
-        assert!(db.save(PEER, &KEYS));
+        let keys = smp::Keys::test();
+        assert!(db.save(PEER, &keys));
         assert!(tmp.path().join(Dir::FILE_NAME_FMT).exists());
-        assert_eq!(db.load(PEER).unwrap(), KEYS);
+        assert_eq!(db.load(PEER).unwrap(), keys);
     }
 }
