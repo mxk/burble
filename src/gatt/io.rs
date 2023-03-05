@@ -7,6 +7,7 @@ use std::task::{ready, Context, Poll};
 use pin_project::{pin_project, pinned_drop};
 use structbuf::{Pack, Packer, StructBuf};
 use tokio_util::sync::WaitForCancellationFutureOwned;
+use tracing::debug;
 
 use burble_const::Uuid;
 
@@ -39,7 +40,7 @@ impl Io {
 impl Debug for Io {
     #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.write_str(name_of!(Io))
+        (f.debug_tuple(name_of!(Io)).field(&Arc::as_ptr(&self.0))).finish()
     }
 }
 
@@ -122,7 +123,7 @@ impl ReadReq {
         }
     }
 
-    /// Sets read request parameters.
+    /// Sets request parameters.
     #[inline(always)]
     pub(super) fn with(&mut self, hdl: Handle, uuid: Uuid, off: u16) -> &mut Self {
         self.hdl = hdl;
@@ -130,12 +131,6 @@ impl ReadReq {
         self.off = off;
         self.buf.clear();
         self
-    }
-
-    /// Returns request opcode.
-    #[inline(always)]
-    pub(super) const fn opcode(&self) -> Opcode {
-        self.op
     }
 
     /// Returns the attribute handle.
@@ -172,7 +167,7 @@ impl ReadReq {
     pub fn partial(&mut self, v: impl AsRef<[u8]>) -> IoResult {
         let v = v.as_ref();
         self.buf.clear();
-        // SAFETY: Truncating the value if the MTU is smaller
+        // SAFETY: Truncating the value if `buf` is smaller
         (self.buf).put_at(0, unsafe { v.get_unchecked(..v.len().min(self.buf.lim())) });
         Ok(())
     }
@@ -211,7 +206,7 @@ impl<'a> WriteReq<'a> {
         self.off as _
     }
 
-    /// Returns the value to be written at the requested offset.
+    /// Returns the value to be written at the specified offset.
     #[inline(always)]
     #[must_use]
     pub const fn value(&self) -> &'a [u8] {
@@ -246,7 +241,7 @@ impl<'a> AsRef<[u8]> for WriteReq<'a> {
 /// characteristic value changes.
 #[derive(Debug)]
 pub struct NotifyReq {
-    pub(super) op: Opcode,
+    // TODO: Provide ConnHandle or just peer address?
     pub(super) hdl: Handle,
     pub(super) uuid: Uuid,
     pub(super) mtu: u16,
@@ -255,18 +250,28 @@ pub struct NotifyReq {
     pub(super) ct: tokio_util::sync::CancellationToken,
 }
 
-// TODO: Reset CCCD when NotifyReq is dropped?
-
 impl NotifyReq {
-    /// Returns the request handle.
+    /// Returns the characteristic value handle.
     #[inline(always)]
     #[must_use]
     pub const fn handle(&self) -> Handle {
         self.hdl
     }
 
-    /// Returns a future that sends an updated characteristic value to the
-    /// client. For indications, the future resolves once confirmation is
+    /// Returns the characteristic value UUID.
+    #[inline(always)]
+    #[must_use]
+    pub const fn uuid(&self) -> Uuid {
+        self.uuid
+    }
+
+    // TODO: Implement a barrier for notifications that resolves after the
+    // controller acknowledges the PDUs with NumberOfCompletedPackets?
+
+    /// Calls `f` to provide the updated characteristic value and returns a
+    /// future that resolves when the operation is completed. For notifications,
+    /// the future resolves once the payload is transferred to the controller's
+    /// buffer. For indications, the future resolves after confirmation is
     /// received.
     pub fn notify(&self, f: impl FnOnce(&mut Packer)) -> Notify {
         let mut val = StructBuf::new(usize::from(self.mtu) - 3);
@@ -285,7 +290,8 @@ impl NotifyReq {
         }
     }
 
-    /// Resolves when the notification session is closed.
+    /// Returns when the notification session is closed. This method is cancel
+    /// safe.
     #[inline(always)]
     pub async fn closed(&self) {
         self.ct.cancelled().await;
@@ -296,6 +302,19 @@ impl NotifyReq {
     #[must_use]
     pub fn is_closed(&self) -> bool {
         self.ct.is_cancelled()
+    }
+}
+
+impl Drop for NotifyReq {
+    fn drop(&mut self) {
+        if !self.ct.is_cancelled() {
+            debug!(
+                "Service cancelled notify request for {} {}",
+                self.uuid.typ(),
+                self.hdl
+            );
+            self.ct.cancel();
+        }
     }
 }
 

@@ -75,7 +75,7 @@ impl From<Handle> for usize {
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 #[must_use]
 pub struct HandleRange {
-    start: Handle,
+    start: Handle, // TODO: Switch to tuple?
     end: Handle,
 }
 

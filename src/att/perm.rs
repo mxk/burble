@@ -25,7 +25,7 @@ impl Access {
 
     /// Copies security parameters from HCI connection security properties.
     #[inline]
-    pub(crate) fn copy_from_conn_sec(self, sec: hci::ConnSec) -> Self {
+    pub(crate) fn copy(self, sec: hci::ConnSec) -> Self {
         let mut p = self.0.access_type();
         if sec.contains(hci::ConnSec::AUTHN) {
             p.insert(Perm::AUTHN);

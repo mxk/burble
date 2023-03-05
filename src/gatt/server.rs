@@ -70,7 +70,14 @@ impl Server {
     pub fn new(db: Builder<Db>, store: Arc<CacheStore>) -> Arc<Self> {
         let (db, io) = db.freeze();
         let features = ServerFeature::empty();
-        let sc = Self::sc_hash(&db, features);
+        let sc = ServiceChanged::new(&db, features);
+        // TODO: Move this logic to Builder
+        debug_assert!(
+            db.iter()
+                .filter(|&(_, uuid, _)| uuid == Characteristic::DatabaseHash)
+                .count()
+                <= 1
+        );
         Arc::new(Self {
             db,
             io,
@@ -95,12 +102,12 @@ impl Server {
     pub fn attach(self: &Arc<Self>, br: &Bearer) -> ServerCtx {
         let peer = br.conn().borrow().peer_addr;
         let cc = self.get_client_ctx(peer);
-        let ntf = cc.lock().notify_rx();
+        let notify = cc.lock().notify_rx();
         ServerCtx {
+            peer,
             srv: Arc::clone(self),
             cc,
-            notify: ntf,
-            peer,
+            notify,
             db_oos_sent: false,
         }
     }
@@ -125,31 +132,6 @@ impl Server {
             }),
         }
     }
-
-    /// Returns the Service Changed parameters for `db`
-    /// ([Vol 3] Part G, Section 2.5.2).
-    #[must_use]
-    fn sc_hash(db: &Db, features: ServerFeature) -> Option<ServiceChanged> {
-        let mut vhdl = None;
-        let mut m = burble_crypto::AesCmac::db_hash();
-        m.update([features.bits()]);
-        for (hdl, uuid, _) in db.iter() {
-            if uuid == Characteristic::ServiceChanged {
-                assert_eq!(vhdl, None);
-                vhdl = Some(hdl);
-            }
-            m.update(u16::from(hdl).to_le_bytes());
-            m.update(u128::from(uuid).to_le_bytes());
-        }
-        if vhdl.map_or(false, |hdl| u16::from(hdl) != 3) {
-            warn!("GATT service isn't first, which may result in client compatibility problems");
-        }
-        vhdl.map(|hdl| ServiceChanged {
-            hash: m.finalize(),
-            handle: hdl,
-            cccd: Cccd::empty(),
-        })
-    }
 }
 
 /// Server context used by an ATT bearer to handle client requests and service
@@ -157,9 +139,9 @@ impl Server {
 #[derive(Debug)]
 #[must_use]
 pub struct ServerCtx {
+    peer: le::Addr,
     srv: Arc<Server>,
     cc: ArcClientCtx,
-    peer: le::Addr,
     notify: Option<tokio::sync::mpsc::Receiver<NotifyVal>>,
     db_oos_sent: bool,
 }
@@ -168,7 +150,7 @@ impl ServerCtx {
     // TODO: The same ATT bearer can act both as a server and a client. We
     // provide a simple way of running a server-only event loop via serve(), but
     // we may want to expose some of the helper methods for mixed uses.
-    // Alternatively, EATT support would allow using a separate channel for
+    // Alternatively, EATT support would allow using a dedicated channel for
     // client functionality.
 
     /// Runs a server event loop for the specified bearer.
@@ -176,7 +158,7 @@ impl ServerCtx {
         br.exchange_mtu().await?;
         let Some(mut notify) = self.notify.take() else {
             // Additional bearer for an existing client connection that will not
-            // handle notifications, indications, or HCI events.
+            // handle notifications, indications, or connection events.
             // TODO: This should block until the cache is initialized
             loop {
                 let pdu = br.recv().await?;
@@ -209,13 +191,15 @@ impl ServerCtx {
     /// ([Vol 3] Part G, Section 2.5.2 and 7.1).
     fn restore_bond(&mut self, br: &mut Bearer) -> Option<ServiceChanged> {
         self.notify.as_ref()?;
-        // TODO: This assumes that SecDb would've set bond_id while we were
-        // calling exchange_mtu(). It would be better to have a guarantee.
-        let bond_id = br.conn().borrow().bond_id;
-        let peer = self.peer;
+        // TODO: This assumes that SecDb has set bond_id while we were calling
+        // exchange_mtu(). It would be better to have a guarantee.
+        let (peer, bond_id) = (self.peer, br.conn().borrow().bond_id);
         let mut cc = self.cc.lock();
         match self.srv.store.load(peer) {
-            Some(cache) => cc.cache = cache,
+            Some(mut cache) => {
+                cache.cccd.retain(|_, cccd| !cccd.is_empty());
+                cc.cache = cache;
+            }
             None => cc.cache.bond_id = None,
         }
 
@@ -249,7 +233,7 @@ impl ServerCtx {
         // Check for any changes that may invalidate the cache
         let db_match = cc.cache.db_hash == self.srv.db.hash();
         let sc_match = match (cc.cache.service_changed, self.srv.sc) {
-            (Some(sc), Some(srv)) => sc.hash == srv.hash,
+            (Some(client), Some(server)) => client.hash == server.hash,
             (None, None) => true,
             _ => false,
         };
@@ -265,6 +249,9 @@ impl ServerCtx {
 
         // Let `indicate_service_changed()` finish clean-up, even if the actual
         // Service Changed indication is disabled.
+        if cc.cache.service_changed.is_none() {
+            cc.cache.service_changed = self.srv.sc;
+        }
         let sc = cc.cache.service_changed.unwrap_or_default();
 
         // Only a database hash mismatch invalidates the cache since it captures
@@ -297,7 +284,7 @@ impl ServerCtx {
         // the characteristic is still the same. Otherwise, we're just hoping
         // that the client will interpret it correctly and invalidate its cache,
         // but we can't be sure.
-        let peer = br.conn().borrow().peer_addr;
+        let peer = self.peer;
         let confirmed = sc.indicate_all(br, peer).await
             && self.srv.sc.map_or(false, |srv| srv.handle == sc.handle);
         let db_hash = self.srv.db.hash();
@@ -310,7 +297,7 @@ impl ServerCtx {
         // becomes change-aware when... [it] confirms a Handle Value Indication
         // for the Service Changed characteristic"
         // ([Vol 3] Part G, Section 2.5.2.1).
-        // TODO: Verify exactly one bearer?
+        // TODO: Verify exactly one bearer
         if !confirmed {
             if cc.cache.is_robust() {
                 info!("{} is change-unaware", self.peer);
@@ -330,7 +317,7 @@ impl ServerCtx {
     /// connection parameters. The spec says "When a client reconnects to a
     /// server and expects to receive indications or notifications for which
     /// security is required, the client shall enable encryption with the
-    /// server" ([Vol 3] Part C, Section 10.3.2.2). This resumes all
+    /// server" ([Vol 3] Part C, Section 10.3.1.1). This resumes all
     /// notifications/indications that are enabled by the client and meet the
     /// connection security parameters, and disables all others.
     fn configure_notify(&mut self, sec: hci::ConnSec) {
@@ -344,27 +331,39 @@ impl ServerCtx {
         // indications to such a client until it becomes change-aware"
         // ([Vol 3] Part G, Section 2.5.2.1).
         if !cc.cache.is_change_aware(self.srv.db.hash()) {
-            for ct in cc.notify_cancel.values() {
-                ct.cancel();
-            }
-            cc.notify_cancel.clear();
+            self.disable_notify(&mut cc);
+            return;
         }
         cc.notify_cancel.retain(|&hdl, ct| {
-            if self.srv.db.try_access(req, hdl).is_ok() {
-                return true;
+            let keep = !ct.is_cancelled() && self.srv.db.try_access(req, hdl).is_ok();
+            if !keep {
+                ct.cancel();
             }
-            ct.cancel();
-            false
+            keep
         });
-        let v: Vec<(Handle, Cccd)> = (cc.cache.cccd.iter())
+        let enable: Vec<(Handle, Cccd)> = (cc.cache.cccd.iter())
             .filter_map(|(&hdl, &cccd)| {
                 (!cc.notify_cancel.contains_key(&hdl) && self.srv.db.try_access(req, hdl).is_ok())
                     .then_some((hdl, cccd))
             })
             .collect();
-        for (hdl, cccd) in v {
-            let _ = self.cccd_apply(&mut cc, Opcode::ExecuteWriteReq, hdl, cccd);
+        if enable.is_empty() {
+            return;
         }
+        for (hdl, cccd) in enable {
+            let _ = self.cccd_apply(&mut cc, hdl, cccd, true);
+        }
+        self.persist(&cc.cache);
+    }
+
+    /// Cancels all notification/indication requests.
+    #[inline]
+    fn disable_notify(&self, cc: &mut ClientCtx) {
+        debug!("Disabling all notifications for {}", self.peer);
+        for ct in cc.notify_cancel.values() {
+            ct.cancel();
+        }
+        cc.notify_cancel.clear();
     }
 
     // Handles Robust Caching logic when a new request is received
@@ -393,7 +392,6 @@ impl ServerCtx {
                 // reset when "the client disconnects or the database changes
                 // again before the client becomes change-aware."
                 info!("{} is change-aware", self.peer);
-                cc.db_hash_read = false;
                 cc.cache.db_hash = self.srv.db.hash();
                 self.persist(&cc.cache);
                 drop(cc);
@@ -407,13 +405,11 @@ impl ServerCtx {
 
     /// Returns a [`DatabaseOutOfSync`] error if a Robust Caching client is
     /// change-unaware ([Vol 3] Part G, Section 2.5.2.1).
-    fn require_db_sync(&mut self, op: Opcode, db_hash_read: bool) -> RspResult<()> {
-        let mut cc = self.cc.lock();
+    fn require_db_sync(&mut self, op: Opcode) -> RspResult<()> {
+        let cc = self.cc.lock();
+        // TODO: Use atomics for fast path?
         if cc.cache.is_change_aware(self.srv.db.hash()) {
             return Ok(());
-        }
-        if db_hash_read {
-            cc.db_hash_read = true;
         }
         if self.db_oos_sent {
             Ok(())
@@ -437,7 +433,9 @@ impl ServerCtx {
                 r.complete(trim(v.bits().to_le_bytes().as_ref()))
             }
             UuidType::Characteristic(DatabaseHash) => {
+                // [Vol 3] Part G, Section 7.3
                 if matches!(r.op, Opcode::ReadByTypeReq) {
+                    self.cc.lock().db_hash_read = true;
                     r.complete(self.srv.db.hash().to_le_bytes())
                 } else {
                     error!("Client attempted to read database hash using {}", r.op);
@@ -499,7 +497,9 @@ impl ServerCtx {
             return Err(ValueNotAllowed);
         };
         let mut cc = self.cc.lock();
-        let r = self.cccd_apply(&mut cc, w.op, w.hdl, new);
+        // TODO: Should the write be allowed for a change-unaware client?
+        let is_change_aware = cc.cache.is_change_aware(self.srv.db.hash());
+        let r = self.cccd_apply(&mut cc, w.hdl, new, is_change_aware);
         self.persist(&cc.cache);
         r
     }
@@ -508,14 +508,13 @@ impl ServerCtx {
     fn cccd_apply(
         &self,
         cc: &mut SyncMutexGuard<ClientCtx>,
-        op: Opcode,
         hdl: Handle,
         new: Cccd,
+        is_change_aware: bool,
     ) -> IoResult {
-        let char = (self.srv.db.get_characteristic(hdl)).expect("invalid CCCD handle");
-        let vhdl = char.vhdl;
-        let vtyp = char.uuid.typ();
-        if !char.props.cccd_mask().contains(new) {
+        let ch = (self.srv.db.get_characteristic(hdl)).expect("invalid CCCD handle");
+        let (vhdl, vtyp) = (ch.vhdl, ch.uuid.typ());
+        if !ch.props.cccd_mask().contains(new) {
             warn!("Invalid CCCD value for {vtyp} {vhdl}: {new:?}");
             return Err(CccdImproperlyConfigured);
         }
@@ -526,36 +525,36 @@ impl ServerCtx {
         }
         // A CCCD write always resets any existing notification session
         if let Some(ct) = cc.notify_cancel.remove(&hdl) {
+            debug!("Disabling notifications for {vtyp} {vhdl}");
             ct.cancel();
-            debug!("Disabled notifications for {vtyp} {vhdl}");
         }
         if new.is_empty() {
             cc.cache.cccd.remove(&hdl);
             return Ok(());
         }
-        // TODO: No notifications if the client is change-unaware
+        if !is_change_aware {
+            // [Vol 3] Part G, Section 2.5.2.1
+            cc.cache.cccd.insert(hdl, new);
+            return Ok(());
+        }
         let ct = CancellationToken::new();
         // TODO: Drop cc during this call?
+        debug_assert_ne!(cc.notify_mtu, 0);
+        debug!("Enabling notifications for {vtyp} {vhdl}");
         let r = self.srv.io.notify(NotifyReq {
-            op,
             hdl: vhdl,
-            uuid: char.uuid,
+            uuid: ch.uuid,
             mtu: cc.notify_mtu,
             ind: new.contains(Cccd::INDICATE),
             tx: cc.tx.clone(),
             ct: ct.clone(),
         });
-        match r {
-            Ok(_) => {
-                debug!("Enabled notifications for {vtyp} {vhdl}");
-                cc.cache.cccd.insert(hdl, new);
-                cc.notify_cancel.insert(hdl, ct);
-            }
-            Err(e) => {
-                cc.cache.cccd.remove(&hdl);
-                ct.cancel();
-                warn!("Failed to enable notifications for {vtyp} {vhdl}: {e}",);
-            }
+        if let Err(e) = r {
+            ct.cancel();
+            warn!("Failed to enable notifications for {vtyp} {vhdl}: {e}");
+        } else {
+            cc.cache.cccd.insert(hdl, new);
+            cc.notify_cancel.insert(hdl, ct);
         }
         r
     }
@@ -615,19 +614,28 @@ impl ServerCtx {
     }
 
     /// Handles `ATT_READ_BY_TYPE_REQ` PDUs.
-    fn handle_read_by_type_req(&self, br: &mut Bearer, pdu: &Pdu) -> RspResult<Rsp> {
+    fn handle_read_by_type_req(&mut self, br: &mut Bearer, pdu: &Pdu) -> RspResult<Rsp> {
         let (hdls, typ) = pdu.read_by_type_req()?;
         match typ.typ() {
             UuidType::Declaration(Declaration::Include) => self.find_included_services(br, hdls),
             UuidType::Declaration(Declaration::Characteristic) => {
                 self.discover_service_characteristics(br, hdls)
             }
-            // TODO: Remove Characteristic-only restriction?
-            UuidType::Characteristic(_) | UuidType::NonSig => self.read_by_type(
-                br,
-                hdls.start(),
-                (self.srv.db).try_range_access(br.access_req(pdu), hdls, typ)?,
-            ),
+            UuidType::Characteristic(_) | UuidType::NonSig => {
+                // DatabaseOutOfSync error requires "Attribute Type other than
+                // Include or Characteristic and an Attribute Handle range other
+                // than 0x0001 to 0xFFFF" ([Vol 3] Part G, Section 2.5.2.1).
+                // This implies that a database hash read will always succeed,
+                // which is shown in Figure 2.7.
+                if hdls != HandleRange::ALL {
+                    self.require_db_sync(pdu.opcode())?;
+                }
+                self.read_by_type(
+                    br,
+                    hdls.start(),
+                    (self.srv.db).try_range_access(br.access_req(pdu), hdls, typ)?,
+                )
+            }
             _ => pdu.err(RequestNotSupported),
         }
     }
@@ -671,7 +679,8 @@ impl ServerCtx {
     }
 
     /// Handles "Discover All Characteristics of a Service" and "Discover
-    /// Characteristics by UUID" sub-procedures ([Vol 3] Part G, Section 4.6.1).
+    /// Characteristics by UUID" sub-procedures
+    /// ([Vol 3] Part G, Section 4.6.1 and 4.6.2).
     fn discover_service_characteristics(
         &self,
         br: &mut Bearer,
@@ -691,7 +700,8 @@ impl ServerCtx {
 
     /// Handles "Read Characteristic Value" sub-procedure
     /// ([Vol 3] Part G, Section 4.8.1).
-    fn read(&self, br: &mut Bearer, pdu: &Pdu) -> RspResult<Rsp> {
+    fn read(&mut self, br: &mut Bearer, pdu: &Pdu) -> RspResult<Rsp> {
+        self.require_db_sync(pdu.opcode())?;
         let hdl = (self.srv.db).try_access(br.access_req(pdu), pdu.read_req()?)?;
         let mut r = ReadReq::new(pdu.opcode(), br.mtu());
         br.read_rsp(self.do_read(r.with(hdl, self.uuid(hdl), 0))?)
@@ -706,7 +716,8 @@ impl ServerCtx {
 
     /// Handles "Read Long Characteristic Values" and "Read Long Characteristic
     /// Descriptors" sub-procedures ([Vol 3] Part G, Section 4.8.3 and 4.12.2).
-    fn read_blob(&self, br: &mut Bearer, pdu: &Pdu) -> RspResult<Rsp> {
+    fn read_blob(&mut self, br: &mut Bearer, pdu: &Pdu) -> RspResult<Rsp> {
+        self.require_db_sync(pdu.opcode())?;
         let (hdl, off) = pdu.read_blob_req()?;
         let hdl = self.srv.db.try_access(br.access_req(pdu), hdl)?;
         let mut r = ReadReq::new(pdu.opcode(), br.mtu());
@@ -715,7 +726,8 @@ impl ServerCtx {
 
     /// Handles "Read Multiple Characteristic Values" sub-procedure
     /// ([Vol 3] Part G, Section 4.8.4).
-    fn read_multiple(&self, br: &mut Bearer, pdu: &Pdu) -> RspResult<Rsp> {
+    fn read_multiple(&mut self, br: &mut Bearer, pdu: &Pdu) -> RspResult<Rsp> {
+        self.require_db_sync(pdu.opcode())?;
         let hdls = (self.srv.db).try_multi_access(br.access_req(pdu), pdu.read_multiple_req()?)?;
         let req = ReadReq::new(pdu.opcode(), br.mtu());
         br.read_multiple_rsp(Reader::new(self, req, hdls))
@@ -723,7 +735,8 @@ impl ServerCtx {
 
     /// Handles "Read Multiple Variable Length Characteristic Values"
     /// sub-procedure ([Vol 3] Part G, Section 4.8.5).
-    fn read_multiple_variable(&self, br: &mut Bearer, pdu: &Pdu) -> RspResult<Rsp> {
+    fn read_multiple_variable(&mut self, br: &mut Bearer, pdu: &Pdu) -> RspResult<Rsp> {
+        self.require_db_sync(pdu.opcode())?;
         let hdls = (self.srv.db)
             .try_multi_access(br.access_req(pdu), pdu.read_multiple_variable_req()?)?;
         let req = ReadReq::new(pdu.opcode(), br.mtu());
@@ -732,7 +745,8 @@ impl ServerCtx {
 
     /// Handles "Write Without Response" and "Write Characteristic Value"
     /// sub-procedures ([Vol 3] Part G, Section 4.9.1 and 4.9.3).
-    fn write(&self, br: &mut Bearer, pdu: &Pdu) -> RspResult<Option<Rsp>> {
+    fn write(&mut self, br: &mut Bearer, pdu: &Pdu) -> RspResult<Option<Rsp>> {
+        self.require_db_sync(pdu.opcode())?;
         let (hdl, val) = pdu.write_req()?;
         let hdl = self.srv.db.try_access(br.access_req(pdu), hdl)?;
         if val.len() > MAX_VAL_LEN {
@@ -757,7 +771,8 @@ impl ServerCtx {
     /// Handles the first phase of "Write Long Characteristic Values" and
     /// "Reliable Writes" sub-procedures
     /// ([Vol 3] Part G, Section 4.9.4 and 4.9.5).
-    fn prepare_write(&self, br: &mut Bearer, pdu: &Pdu) -> RspResult<Rsp> {
+    fn prepare_write(&mut self, br: &mut Bearer, pdu: &Pdu) -> RspResult<Rsp> {
+        self.require_db_sync(pdu.opcode())?;
         let (hdl, off, v) = pdu.prepare_write_req()?;
         let hdl = self.srv.db.try_access(br.access_req(pdu), hdl)?;
         if off as usize + v.len() > MAX_VAL_LEN {
@@ -798,12 +813,7 @@ impl ServerCtx {
 impl Drop for ServerCtx {
     fn drop(&mut self) {
         if self.notify.is_some() {
-            let mut cc = self.cc.lock();
-            for ct in cc.notify_cancel.values() {
-                ct.cancel();
-            }
-            cc.notify_cancel.clear();
-            debug!("Disabled all notifications for {}", self.peer);
+            self.disable_notify(&mut self.cc.lock());
         }
     }
 }

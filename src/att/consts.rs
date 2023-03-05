@@ -79,9 +79,7 @@ impl Opcode {
     /// Panics if the opcode is not a read/write request.
     #[inline]
     pub(crate) fn request(self, sec: hci::ConnSec) -> Request {
-        let ac = (self.access_type())
-            .expect("not a read/write request")
-            .copy_from_conn_sec(sec);
+        let ac = (self.access_type().expect("not a read/write request")).copy(sec);
         Request { op: self, ac }
     }
 
