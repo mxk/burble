@@ -155,10 +155,7 @@ impl Bearer {
         let rsp = match r {
             Ok(r) => r.0,
             Err(e) => {
-                warn!(
-                    "Opcode {:#04X} for {:?} failed with {}",
-                    e.req, e.hdl, e.err
-                );
+                warn!("{e}");
                 if Opcode::is_cmd(e.req) {
                     return Ok(());
                 }

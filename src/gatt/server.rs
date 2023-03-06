@@ -4,7 +4,7 @@ use std::vec;
 
 use structbuf::Unpack;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use ErrorCode::*;
 
@@ -673,8 +673,18 @@ impl ServerCtx {
         }
         let mut it = (self.srv.db)
             .primary_services(hdls.start(), None)
-            .map(|v| (v.handle_range(), v.value()));
-        br.read_by_group_type_rsp(hdls.start(), ValueFn::new(|| it.next()))
+            .map(|v| (v.handle_range(), v.uuid(), v.value()));
+        br.read_by_group_type_rsp(
+            hdls.start(),
+            ValueFn::new(|| {
+                let (hdls, uuid, val) = it.next()?;
+                trace!(
+                    "Primary service discovery: {} at {hdls} {val:02X?}",
+                    uuid.typ()
+                );
+                Some((hdls, val))
+            }),
+        )
     }
 
     /// Handles "Discover Primary Service by Service UUID" sub-procedure
@@ -687,15 +697,28 @@ impl ServerCtx {
         let (Ok(uuid), true) = (Uuid::try_from(uuid), hdls.end() == Handle::MAX) else {
             return pdu.hdl_err(AttributeNotFound, hdls.start());
         };
-        let it = (self.srv.db.primary_services(hdls.start(), Some(uuid)))
-            .map(|v| (v.handle(), Some(v.handle_range().end())));
-        br.find_by_type_value_rsp(it)
+        let it = (self.srv.db.primary_services(hdls.start(), Some(uuid))).map(|v| {
+            let hdls = v.handle_range();
+            trace!(
+                "Primary service by UUID discovery: {} at {hdls}",
+                uuid.typ()
+            );
+            (hdls.start(), Some(hdls.end()))
+        });
+        br.find_by_type_value_rsp(hdls.start(), it)
     }
 
     /// Handles "Find Included Services" sub-procedure
     /// ([Vol 3] Part G, Section 4.5.1).
     fn find_included_services(&self, br: &mut Bearer, hdls: HandleRange) -> RspResult<Rsp> {
-        let mut it = self.srv.db.includes(hdls).map(|v| (v.handle(), v.value()));
+        let mut it = self.srv.db.includes(hdls).map(|v| {
+            trace!(
+                "Included service discovery: {} {:02X?}",
+                v.handle(),
+                v.value()
+            );
+            (v.handle(), v.value())
+        });
         br.read_by_type_rsp(hdls.start(), ValueFn::new(|| it.next()))
     }
 
@@ -707,7 +730,14 @@ impl ServerCtx {
         br: &mut Bearer,
         hdls: HandleRange,
     ) -> RspResult<Rsp> {
-        let mut it = (self.srv.db.characteristics(hdls)).map(|v| (v.handle(), v.value()));
+        let mut it = (self.srv.db.characteristics(hdls)).map(|v| {
+            trace!(
+                "Service characteristic discovery: {} at {}",
+                v.uuid().typ(),
+                v.handle()
+            );
+            (v.handle(), v.value())
+        });
         br.read_by_type_rsp(hdls.start(), ValueFn::new(|| it.next()))
     }
 
@@ -715,7 +745,14 @@ impl ServerCtx {
     /// ([Vol 3] Part G, Section 4.7.1).
     fn discover_characteristic_descriptors(&self, br: &mut Bearer, pdu: &Pdu) -> RspResult<Rsp> {
         let hdls = pdu.find_information_req()?;
-        let it = (self.srv.db.descriptors(hdls)).map(|at| (at.handle(), at.uuid()));
+        let it = (self.srv.db.descriptors(hdls)).map(|v| {
+            trace!(
+                "Characteristic descriptor discovery: {} at {}",
+                v.uuid().typ(),
+                v.handle()
+            );
+            (v.handle(), v.uuid())
+        });
         br.find_information_rsp(hdls.start(), it)
     }
 

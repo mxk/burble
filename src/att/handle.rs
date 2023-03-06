@@ -72,10 +72,10 @@ impl From<Handle> for usize {
 
 /// Inclusive range of attribute handles. This is a `Copy` version of
 /// `RangeInclusive<Handle>`.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
 #[must_use]
 pub struct HandleRange {
-    start: Handle, // TODO: Switch to tuple?
+    start: Handle,
     end: Handle,
 }
 
@@ -134,6 +134,26 @@ impl Default for HandleRange {
     #[inline(always)]
     fn default() -> Self {
         Self::ALL
+    }
+}
+
+impl Debug for HandleRange {
+    #[allow(clippy::use_self)]
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}({:#06X}..={:#06X})",
+            name_of!(HandleRange),
+            self.start.0,
+            self.end.0
+        )
+    }
+}
+
+impl Display for HandleRange {
+    #[inline]
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        Debug::fmt(self, f)
     }
 }
 

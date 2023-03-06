@@ -40,7 +40,7 @@ impl Pdu {
         debug_assert_eq!(self.opcode(), op);
         let p = self.0.unpack().split_at(1).1; // Skip opcode
         p.map_or(self.err(InvalidPdu), f).map(|r| {
-            trace!("{op}: {r:?}");
+            trace!("{op}: {r:02X?}");
             r
         })
     }
@@ -135,8 +135,13 @@ impl Bearer {
     /// ([Vol 3] Part F, Section 3.4.3.4).
     pub fn find_by_type_value_rsp(
         &self,
+        start: Handle,
         it: impl Iterator<Item = (Handle, Option<Handle>)>,
     ) -> RspResult<Rsp> {
+        let mut it = it.peekable();
+        if it.peek().is_none() {
+            return FindByTypeValueRsp.hdl_err(AttributeNotFound, start);
+        }
         self.rsp(FindByTypeValueRsp, |p| {
             for (hdl, group_end) in it.take(p.remaining() / (2 + 2)) {
                 p.u16(hdl).u16(group_end.unwrap_or(hdl));
