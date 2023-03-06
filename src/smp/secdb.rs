@@ -18,8 +18,8 @@ pub(crate) type KeyStore = dyn crate::PeerStore<Value = Keys>;
 #[must_use]
 #[serde(deny_unknown_fields)]
 pub struct Keys {
-    pub(super) id: Option<BondId>,
     pub(super) sec: hci::ConnSec,
+    pub(super) id: Option<BondId>,
     pub(super) ltk: LTK,
 }
 
@@ -29,7 +29,7 @@ impl Keys {
     #[inline(always)]
     pub(super) fn new(sec: hci::ConnSec, ltk: LTK) -> Self {
         let id = (sec.contains(hci::ConnSec::BOND)).then(|| BondId::new(sec, &ltk));
-        Self { id, sec, ltk }
+        Self { sec, id, ltk }
     }
 
     /// Returns unit test keys.

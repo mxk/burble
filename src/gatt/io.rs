@@ -265,8 +265,11 @@ impl NotifyReq {
         self.uuid
     }
 
-    // TODO: Implement a barrier for notifications that resolves after the
-    // controller acknowledges the PDUs with NumberOfCompletedPackets?
+    // TODO: Add a robust version of notifications that places a barrier in the
+    // send queue and doesn't return until the PDU is acknowledged with
+    // NumberOfCompletedPackets? We don't want to do this unconditionally
+    // because it would prevent us from submitting multiple notifications to the
+    // controller at the same time, potentially harming throughput.
 
     /// Calls `f` to provide the updated characteristic value and returns a
     /// future that resolves when the operation is completed. For notifications,

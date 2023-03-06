@@ -156,7 +156,7 @@ impl ServerCtx {
     /// Runs a server event loop for the specified bearer.
     pub async fn serve(mut self, mut br: Bearer) -> Result<()> {
         br.exchange_mtu().await?;
-        let Some(mut notify) = self.notify.take() else {
+        if self.notify.is_none() {
             // Additional bearer for an existing client connection that will not
             // handle notifications, indications, or connection events.
             // TODO: This should block until the cache is initialized
@@ -177,7 +177,7 @@ impl ServerCtx {
                 pdu = br.recv() => self.handle(&mut br, &pdu?).await?,
                 // TODO: Allow processing requests while waiting for indication
                 // confirmation?
-                ntf = notify.recv() => ntf.unwrap().exec(&mut br).await,
+                ntf = self.notify.as_mut().unwrap().recv() => ntf.unwrap().exec(&mut br).await,
                 _ = conn.changed(), if conn.has_changed().is_ok() => {
                     let (bond_id, sec) = {
                         // Avoid holding the lock
