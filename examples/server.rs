@@ -77,7 +77,7 @@ fn read_input(srv: Arc<hid::HidService>) {
             let mut tok = ln.split_ascii_whitespace();
             let Some(cmd) = tok.next() else { continue };
             let inp = match (cmd, tok.collect::<Vec<&str>>().join(" ")) {
-                ("click", params) => {
+                ("click", params) | ("c", params) => {
                     if params.is_empty() {
                         Mouse(Click(0))
                     } else {
@@ -85,7 +85,7 @@ fn read_input(srv: Arc<hid::HidService>) {
                         Mouse(Click(v))
                     }
                 }
-                ("move", params) => {
+                ("move", params) | ("m", params) => {
                     let Ok(v) = sscanf!(params, "{i32} {i32}") else { continue };
                     Mouse(MoveRel { dx: v.0, dy: v.1 })
                 }
