@@ -1,7 +1,5 @@
 //! Generic Attribute Profile ([Vol 3] Part G).
 
-#![allow(dead_code)] // TODO: Remove
-
 use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::time::Duration;

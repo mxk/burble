@@ -815,7 +815,6 @@ impl ServerCtx {
             hdl,
             uuid: self.uuid(hdl),
             off: 0,
-            mtu: br.mtu(),
             val,
         };
         self.do_write(&w)?;
@@ -857,7 +856,6 @@ impl ServerCtx {
             hdl: Handle::MAX,
             uuid: Uuid::MAX,
             off: 0,
-            mtu: br.mtu(),
             val: &[],
         };
         for (hdl, off, val) in cc.write_queue.iter() {

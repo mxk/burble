@@ -343,7 +343,7 @@ impl Db {
             ext_props,
             vhdl: at.hdl,
             uuid: self.typ(at),
-            desc,
+            _desc: desc,
         })
     }
 
@@ -555,7 +555,7 @@ pub(super) struct CharInfo<'a> {
     pub ext_props: Option<ExtProp>,
     pub vhdl: Handle,
     pub uuid: Uuid,
-    desc: &'a [Attr],
+    _desc: &'a [Attr], // TODO: Remove
 }
 
 /// Attribute entry. `val` contains start and end indices of the attribute value

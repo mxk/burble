@@ -180,7 +180,6 @@ pub struct WriteReq<'a> {
     pub(super) hdl: Handle,
     pub(super) uuid: Uuid,
     pub(super) off: u16,
-    pub(super) mtu: u16,
     pub(super) val: &'a [u8],
 }
 
