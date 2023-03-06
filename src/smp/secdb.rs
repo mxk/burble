@@ -17,7 +17,6 @@ pub(crate) type KeyStore = dyn crate::PeerStore<Value = Keys>;
 #[derive(Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 #[must_use]
 #[serde(deny_unknown_fields)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub struct Keys {
     pub(super) id: Option<BondId>,
     pub(super) sec: hci::ConnSec,

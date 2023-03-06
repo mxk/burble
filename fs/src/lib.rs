@@ -120,7 +120,7 @@ impl Dir {
 
     /// Saves peer data to the file system.
     fn save(&self, peer: Addr, v: &impl serde::ser::Serialize) -> bool {
-        let s = toml::to_string(v).expect("failed to serialize peer data");
+        let s = serde_json::to_string_pretty(v).expect("failed to serialize peer data");
         if let Err(e) = fs::create_dir_all(&self.0) {
             warn!(
                 "Failed to create database directory: {} ({e})",
@@ -153,7 +153,7 @@ impl Dir {
                 return None;
             }
         };
-        toml::from_str(&s)
+        serde_json::from_str(&s)
             .map_err(|e| {
                 error!("Invalid file contents: {} ({e})", path.display());
                 Err::<T, ()>(())

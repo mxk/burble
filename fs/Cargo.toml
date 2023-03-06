@@ -13,7 +13,7 @@ dirs = "4.0.0"
 burble = { path = ".." }
 burble-crypto = { path = "../crypto" }
 serde.workspace = true
-toml = "0.7.2"
+serde_json = "1.0.94"
 tracing.workspace = true
 
 [dev-dependencies]
