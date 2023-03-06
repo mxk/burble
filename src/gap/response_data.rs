@@ -94,6 +94,11 @@ impl ResponseDataMut {
     }
 
     /// Appends peripheral connection interval range (\[CSS\] Part A, Section 1.9).
+    ///
+    /// # Panics
+    ///
+    /// Panics if either interval cannot be represented as a 16-bit count of
+    /// 1.25ms.
     pub fn peripheral_connection_interval(
         &mut self,
         min: Option<Duration>,
@@ -113,6 +118,10 @@ impl ResponseDataMut {
     }
 
     /// Appends advertising Interval (\[CSS\] Part A, Section 1.15).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the interval cannot be represented as a 24-bit count of 625us.
     pub fn adv_interval(&mut self, v: Duration) -> &mut Self {
         let v: [u8; 4] = ticks_625us(v).unwrap().to_le_bytes();
         match v {

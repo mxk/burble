@@ -1,3 +1,4 @@
+#![allow(unused_crate_dependencies)]
 #![allow(clippy::print_stdout)]
 #![allow(clippy::print_stderr)]
 

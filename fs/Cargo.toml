@@ -11,7 +11,6 @@ publish.workspace = true
 [dependencies]
 dirs = "4.0.0"
 burble = { path = ".." }
-burble-crypto = { path = "../crypto" }
 serde.workspace = true
 serde_json = "1.0.94"
 tracing.workspace = true

@@ -293,6 +293,10 @@ impl Builder<CharacteristicDef> {
     ///
     /// This descriptor will be added automatically if the characteristic
     /// properties contain `EXT_PROPS` flag.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the characteristic cannot have or already has this descriptor.
     pub fn ext_props(&mut self, props: ExtProp) {
         assert!(
             self.flag.contains(Bld::NEED_EXT_PROPS),
@@ -306,6 +310,10 @@ impl Builder<CharacteristicDef> {
 
     /// Declares a Client Characteristic Configuration descriptor
     /// ([Vol 3] Part G, Section 3.3.3.3).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the characteristic already has this descriptor.
     #[inline]
     pub fn cccd(&mut self, perms: impl Into<Perms>) -> Handle {
         assert!(
@@ -341,6 +349,10 @@ impl Builder<CharacteristicDef> {
     ///
     /// This descriptor will be added automatically when more than one
     /// Presentation Format descriptor is present.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the characteristic already has this descriptor.
     pub fn aggregate_fmt(&mut self, hdls: impl AsRef<[Handle]>) {
         assert!(
             !self.flag.contains(Bld::HAVE_AGGREGATE_FMT),

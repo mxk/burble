@@ -115,6 +115,10 @@ impl Perms {
     }
 
     /// Creates a permission set from two types of access.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `a` and `b` are the same read/write access type.
     #[inline]
     pub const fn allow(a: Access, b: Access) -> Self {
         let (i, j) = (a.index(), b.index());

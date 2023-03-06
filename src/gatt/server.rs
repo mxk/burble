@@ -173,11 +173,15 @@ impl ServerCtx {
         let sec = conn.borrow_and_update().sec;
         self.configure_notify(sec);
         loop {
+            let notify = self.notify.as_mut().expect("lost notification channel");
             tokio::select! {
                 pdu = br.recv() => self.handle(&mut br, &pdu?).await?,
                 // TODO: Allow processing requests while waiting for indication
                 // confirmation?
-                ntf = self.notify.as_mut().unwrap().recv() => ntf.unwrap().exec(&mut br).await,
+                ntf = notify.recv() => {
+                    // ClientCtx holds a Sender, so this should never panic
+                    ntf.expect("notification channel closed").exec(&mut br).await;
+                }
                 _ = conn.changed(), if conn.has_changed().is_ok() => {
                     let (bond_id, sec) = {
                         // Avoid holding the lock

@@ -79,6 +79,10 @@ impl HandleRange {
     };
 
     /// Creates a new handle range `start..=end`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `end < start`.
     #[inline]
     pub const fn new(start: Handle, end: Handle) -> Self {
         assert!(start.0.get() <= end.0.get());

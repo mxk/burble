@@ -3,26 +3,26 @@ rustflags = [
     "-Wmissing_debug_implementations",
     "-Wnon_ascii_idents",
     "-Wsingle_use_lifetimes",
-    # "-Wunused_crate_dependencies", # Doesn't work for dev dependencies used in examples
+    "-Wunused_crate_dependencies",
     "-Wunused_extern_crates",
     "-Wunused_import_braces",
     "-Wunused_lifetimes",
     "-Wunused_qualifications",
     "-Wvariant_size_differences",
     "-Wclippy::cargo",
-    "-Aclippy::multiple-crate-versions", # TODO: Remove
     "-Wclippy::nursery",
     "-Aclippy::significant_drop_in_scrutinee", # TODO: Remove
     "-Aclippy::redundant_pub_crate",
     "-Wclippy::pedantic",
     "-Aclippy::enum_glob_use",
     "-Aclippy::inline_always",
-    "-Aclippy::missing_errors_doc", # TODO: Remove
-    "-Aclippy::missing_panics_doc", # TODO: Remove
+    "-Aclippy::missing_errors_doc",
     "-Aclippy::module_name_repetitions",
     "-Aclippy::similar_names",
     "-Aclippy::wildcard_imports",
     # "-Wclippy::restriction",
+    "-Wclippy::alloc_instead_of_core",
+    #"-Wclippy::arithmetic_side_effects", # TODO: Review
     "-Wclippy::assertions_on_result_states",
     "-Wclippy::clone_on_ref_ptr",
     "-Wclippy::dbg_macro",
@@ -47,7 +47,9 @@ rustflags = [
     "-Wclippy::rc_buffer",
     "-Wclippy::rc_mutex",
     "-Wclippy::rest_pat_in_fully_bound_structs",
-    # "-Wclippy::semicolon_outside_block", # Unknown???
+    #"-Wclippy::semicolon_outside_block", # TODO: Enable in 1.68.0
+    #"-Wclippy::std_instead_of_alloc", # TODO: Enable
+    #"-Wclippy::std_instead_of_core", # TODO: Enable
     "-Wclippy::str_to_string",
     "-Wclippy::string_add",
     "-Wclippy::string_to_string",

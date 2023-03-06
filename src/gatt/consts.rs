@@ -198,6 +198,10 @@ pub enum Description {
 
 impl Description {
     /// Creates a description for the `N`th item, where `N > 0`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `n == 0`.
     #[inline]
     #[must_use]
     pub const fn nth(n: u8) -> Self {

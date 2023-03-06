@@ -123,12 +123,12 @@ impl UsbController {
     /// Issues a USB reset command.
     pub fn reset(&mut self) -> Result<()> {
         // TODO: Take shared reference: https://github.com/a1ien/rusb/issues/148
-        Ok(Arc::get_mut(&mut self.dev).unwrap().reset()?)
+        Ok((Arc::get_mut(&mut self.dev).expect("device is shared")).reset()?)
     }
 
     /// Configures the controller for HCI access.
     pub fn init(&mut self) -> Result<()> {
-        let dev = Arc::get_mut(&mut self.dev).unwrap();
+        let dev = Arc::get_mut(&mut self.dev).expect("device is shared");
         if rusb::supports_detach_kernel_driver() {
             // Not supported on Windows
             debug!("Enabling automatic kernel driver detachment");
@@ -342,10 +342,11 @@ mod libusb {
     use std::task::{Poll, Waker};
     use std::time::Duration;
 
-    use crate::{SyncMutex, SyncMutexGuard};
     use rusb::{constants::*, ffi::*, *};
     use structbuf::{Pack, Packer, StructBuf};
     use tracing::{debug, error, info, trace, warn};
+
+    use crate::{SyncMutex, SyncMutexGuard};
 
     macro_rules! check {
         ($x:expr) => {

@@ -168,6 +168,10 @@ impl Db {
     }
 
     /// Logs database contents.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the database structure is invalid.
     pub fn dump(&self) {
         use Declaration::*;
         macro_rules! log {
@@ -511,7 +515,8 @@ impl<T: Group> DbEntry<'_, T> {
     #[must_use]
     pub fn uuid(&self) -> Uuid {
         // SAFETY: Attribute value contains the UUID at UUID_OFF.
-        Uuid::try_from(unsafe { self.val.get_unchecked(T::UUID_OFF..) }).unwrap()
+        Uuid::try_from(unsafe { self.val.get_unchecked(T::UUID_OFF..) })
+            .map_or_else(|_| unreachable!("corrupt database"), |u| u)
     }
 }
 

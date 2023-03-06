@@ -5,7 +5,7 @@
 //!
 //! [libusb]: https://github.com/libusb/libusb
 
-#![cfg_attr(not(test), warn(unused_crate_dependencies))]
+#![cfg_attr(test, allow(unused_crate_dependencies))]
 
 pub use profile::*;
 

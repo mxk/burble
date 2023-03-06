@@ -63,6 +63,10 @@ impl Kbd {
     }
 
     /// Converts string s into a sequence of key presses.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `s` contains invalid characters for the current keyboard map.
     pub fn write(&mut self, s: &str) {
         for (i, c) in s.chars().enumerate() {
             self.map.key(c).map_or_else(

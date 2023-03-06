@@ -33,6 +33,11 @@ impl Host {
     /// Replies to an `HCI_LE_Long_Term_Key_Request` event from the controller,
     /// specifying the Long Term Key for the connection, if one is available
     /// ([Vol 4] Part E, Section 7.8.25 and 7.8.26).
+    ///
+    /// # Panics
+    ///
+    /// Panics if there is a connection handle mismatch with the return
+    /// parameters.
     pub async fn le_long_term_key_request_reply(
         &self,
         cn: ConnHandle,
@@ -106,7 +111,8 @@ impl Host {
     ) -> Result<()> {
         let r = self.exec_params(Opcode::LeSetExtendedAdvertisingData, |cmd| {
             cmd.u8(h).u8(op).bool(dont_frag);
-            cmd.u8(u8::try_from(data.len()).unwrap()).put(data);
+            cmd.u8(u8::try_from(data.len()).expect("data too long"));
+            cmd.put(data);
         });
         r.await?.ok()
     }
@@ -122,7 +128,8 @@ impl Host {
     ) -> Result<()> {
         let r = self.exec_params(Opcode::LeSetExtendedScanResponseData, |cmd| {
             cmd.u8(h).u8(op).bool(dont_frag);
-            cmd.u8(u8::try_from(data.len()).unwrap()).put(data);
+            cmd.u8(u8::try_from(data.len()).expect("data too long"));
+            cmd.put(data);
         });
         r.await?.ok()
     }
@@ -136,7 +143,7 @@ impl Host {
     ) -> Result<()> {
         let r = self.exec_params(Opcode::LeSetExtendedAdvertisingEnable, |cmd| {
             cmd.bool(enable);
-            cmd.u8(u8::try_from(cfg.len()).unwrap());
+            cmd.u8(u8::try_from(cfg.len()).expect("too many parameters"));
             for c in cfg {
                 cmd.u8(c.handle);
                 cmd.u16(ticks_10ms(c.duration).expect("invalid advertising duration"));
@@ -203,10 +210,9 @@ impl Host {
         data: &[u8],
     ) -> Result<()> {
         let r = self.exec_params(Opcode::LeSetPeriodicAdvertisingData, |cmd| {
-            cmd.u8(h)
-                .u8(op)
-                .u8(u8::try_from(data.len()).unwrap())
-                .put(data);
+            cmd.u8(h).u8(op);
+            cmd.u8(u8::try_from(data.len()).expect("data too long"));
+            cmd.put(data);
         });
         r.await?.ok()
     }

@@ -16,14 +16,14 @@ impl Addr {
     /// Constructs a peer address from type and raw components.
     #[inline]
     #[must_use]
-    pub fn peer(typ: u8, raw: RawAddr) -> Self {
+    pub(super) fn peer(typ: u8, raw: RawAddr) -> Self {
         // [Vol 4] Part E, Sections 7.7.65.1 and 7.7.65.10
         match typ {
             // Public Device Address or Public Identity Address
             0x00 | 0x02 => Self::Public(raw),
             // Random Device Address or Random (Static) Identity Address
             0x01 | 0x03 => Self::Random(raw),
-            _ => panic!("Unknown peer address type {typ:#04X}"),
+            _ => unreachable!("unknown peer address type {typ:#04X}"),
         }
     }
 

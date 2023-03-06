@@ -20,10 +20,16 @@ pub struct GapService {
 
 impl GapService {
     /// Creates a new GAP service.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `device_name` is longer than 248 bytes.
     #[inline]
     pub fn new(device_name: impl Into<String>, appearance: Appearance) -> Self {
+        let device_name = device_name.into();
+        assert!(device_name.len() <= 248);
         Self {
-            device_name: device_name.into(),
+            device_name,
             appearance,
         }
     }
@@ -33,7 +39,6 @@ impl GapService {
         let p = perms.into();
         db.primary_service(Service::GenericAccess, [], |db| {
             use Characteristic::*;
-            assert!(self.device_name.len() <= 248);
             db.ro_characteristic(DeviceName, p, &self.device_name, |_| {});
             db.ro_characteristic(
                 Appearance,

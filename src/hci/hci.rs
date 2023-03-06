@@ -225,7 +225,7 @@ impl EventLoop {
     #[inline]
     pub async fn stop(self) -> Result<()> {
         self.c.cancel();
-        self.h.await.unwrap()
+        self.h.await.expect("event loop panic")
     }
 
     /// Receives HCI events until cancellation.

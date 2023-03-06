@@ -106,12 +106,12 @@ impl SecDb {
                 match evt.code() {
                     LeConnectionComplete | LeEnhancedConnectionComplete => {
                         if evt.status().is_ok() {
-                            self.load_keys(evt.conn_handle().unwrap());
+                            self.load_keys(evt.conn_handle().expect("invalid event"));
                         }
                     }
                     DisconnectionComplete => {
                         if evt.status().is_ok() {
-                            self.sec.remove(&evt.conn_handle().unwrap());
+                            self.sec.remove(&evt.conn_handle().expect("invalid event"));
                         }
                     }
                     LeLongTermKeyRequest => break evt.get(),
