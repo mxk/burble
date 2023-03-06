@@ -64,14 +64,7 @@ impl KeyGenMethod {
 
 /// Command code ([Vol 3] Part H, Section 3.3).
 #[derive(
-    Clone,
-    Copy,
-    Debug,
-    Eq,
-    PartialEq,
-    num_enum::IntoPrimitive,
-    num_enum::TryFromPrimitive,
-    strum::Display,
+    Clone, Copy, Debug, Eq, PartialEq, num_enum::IntoPrimitive, num_enum::TryFromPrimitive,
 )]
 #[non_exhaustive]
 #[repr(u8)]
@@ -94,15 +87,7 @@ pub enum Code {
 
 /// IO capability ([Vol 3] Part H, Section 3.5.1).
 #[derive(
-    Clone,
-    Copy,
-    Debug,
-    Default,
-    Eq,
-    PartialEq,
-    num_enum::IntoPrimitive,
-    num_enum::TryFromPrimitive,
-    strum::Display,
+    Clone, Copy, Debug, Default, Eq, PartialEq, num_enum::IntoPrimitive, num_enum::TryFromPrimitive,
 )]
 #[non_exhaustive]
 #[repr(u8)]
@@ -176,7 +161,6 @@ bitflags! {
     PartialEq,
     num_enum::IntoPrimitive,
     num_enum::TryFromPrimitive,
-    strum::Display,
     thiserror::Error,
 )]
 #[non_exhaustive]
@@ -224,14 +208,7 @@ pub enum Reason {
 
 /// Keypress notification type ([Vol 3] Part H, Section 3.5.8).
 #[derive(
-    Clone,
-    Copy,
-    Debug,
-    Eq,
-    PartialEq,
-    num_enum::IntoPrimitive,
-    num_enum::TryFromPrimitive,
-    strum::Display,
+    Clone, Copy, Debug, Eq, PartialEq, num_enum::IntoPrimitive, num_enum::TryFromPrimitive,
 )]
 #[non_exhaustive]
 #[repr(u8)]
@@ -242,3 +219,5 @@ pub enum PasskeyEntry {
     Cleared = 3,
     Completed = 4,
 }
+
+crate::impl_display_via_debug! { Code, IoCap, Reason, PasskeyEntry }

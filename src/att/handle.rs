@@ -1,4 +1,4 @@
-use std::fmt::{Debug, Display, Formatter};
+use std::fmt::{Debug, Formatter};
 use std::num::NonZeroU16;
 use std::ops::{Bound, RangeBounds};
 
@@ -46,13 +46,6 @@ impl Debug for Handle {
     #[allow(clippy::use_self)]
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}({:#06X})", name_of!(Handle), self.0.get())
-    }
-}
-
-impl Display for Handle {
-    #[inline]
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        Debug::fmt(self, f)
     }
 }
 
@@ -144,18 +137,13 @@ impl Debug for HandleRange {
             f,
             "{}({:#06X}..={:#06X})",
             name_of!(HandleRange),
-            self.start.0,
-            self.end.0
+            self.start.0.get(),
+            self.end.0.get()
         )
     }
 }
 
-impl Display for HandleRange {
-    #[inline]
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        Debug::fmt(self, f)
-    }
-}
+crate::impl_display_via_debug! { Handle, HandleRange }
 
 #[cfg(test)]
 mod tests {

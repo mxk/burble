@@ -144,8 +144,10 @@ impl Debug for Uuid {
 impl Display for Uuid {
     #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        // TODO: Translate
-        Debug::fmt(self, f)
+        match self.typ() {
+            UuidType::NonSig => Debug::fmt(self, f),
+            typ => Debug::fmt(&typ, f),
+        }
     }
 }
 
@@ -215,9 +217,9 @@ impl Debug for Uuid16 {
 }
 
 impl Display for Uuid16 {
-    #[inline]
+    #[inline(always)]
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        Debug::fmt(self, f)
+        Debug::fmt(&self.typ(), f)
     }
 }
 
@@ -315,7 +317,7 @@ impl Debug for UuidType {
 }
 
 impl Display for UuidType {
-    #[inline]
+    #[inline(always)]
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         Debug::fmt(self, f)
     }

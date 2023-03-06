@@ -12,14 +12,7 @@ pub(crate) const MAX_VAL_LEN: usize = 512;
 /// Attribute opcode ([Vol 3] Part F, Section 3.3.1 and
 /// [Vol 3] Part F, Section 3.4.8).
 #[derive(
-    Clone,
-    Copy,
-    Debug,
-    Eq,
-    PartialEq,
-    num_enum::IntoPrimitive,
-    num_enum::TryFromPrimitive,
-    strum::Display,
+    Clone, Copy, Debug, Eq, PartialEq, num_enum::IntoPrimitive, num_enum::TryFromPrimitive,
 )]
 #[non_exhaustive]
 #[repr(u8)]
@@ -206,7 +199,6 @@ pub(crate) enum PduType {
     PartialEq,
     num_enum::IntoPrimitive,
     num_enum::TryFromPrimitive,
-    strum::Display,
     thiserror::Error,
 )]
 #[non_exhaustive]
@@ -263,3 +255,5 @@ pub enum ErrorCode {
     /// Attribute value is out of range.
     OutOfRange = 0xFF,
 }
+
+crate::impl_display_via_debug! { Opcode, ErrorCode }

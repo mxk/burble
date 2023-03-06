@@ -11,8 +11,8 @@ use std::sync::Arc;
 use structbuf::{Pack, Packer, StructBuf};
 use tracing::debug;
 
-pub(crate) use chan::*;
-pub use {consts::*, handle::*};
+pub use handle::*;
+pub(crate) use {chan::*, consts::*};
 
 use crate::hci::ACL_HDR;
 use crate::{att, hci, host, smp, SyncMutex};

@@ -1,3 +1,4 @@
+use std::fmt::Debug;
 use std::num::NonZeroU8;
 
 use bitflags::bitflags;
@@ -106,14 +107,7 @@ bitflags! {
 
 /// Characteristic presentation format types ([Assigned Numbers] Section 2.4.1).
 #[derive(
-    Clone,
-    Copy,
-    Debug,
-    Eq,
-    PartialEq,
-    num_enum::IntoPrimitive,
-    num_enum::TryFromPrimitive,
-    strum::Display,
+    Clone, Copy, Debug, Eq, PartialEq, num_enum::IntoPrimitive, num_enum::TryFromPrimitive,
 )]
 #[non_exhaustive]
 #[repr(u8)]
@@ -178,7 +172,7 @@ pub enum Format {
 
 /// Characteristic presentation format description
 /// ([Assigned Numbers] Section 2.4.2.1).
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, strum::Display)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 #[non_exhaustive]
 pub enum Description {
     Unknown,

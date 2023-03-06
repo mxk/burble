@@ -1,4 +1,4 @@
-use std::fmt::{Debug, Display, Formatter};
+use std::fmt::{Debug, Formatter};
 use std::num::{NonZeroU16, NonZeroU8};
 
 use crate::name_of;
@@ -38,13 +38,6 @@ impl Debug for ConnHandle {
     }
 }
 
-impl Display for ConnHandle {
-    #[inline]
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        Debug::fmt(self, f)
-    }
-}
-
 /// Advertising set handle ([Vol 4] Part E, Section 7.8.53).
 #[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[repr(transparent)]
@@ -79,9 +72,4 @@ impl Debug for AdvHandle {
     }
 }
 
-impl Display for AdvHandle {
-    #[inline]
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        Debug::fmt(self, f)
-    }
-}
+crate::impl_display_via_debug! { ConnHandle, AdvHandle }

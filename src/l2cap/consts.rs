@@ -8,18 +8,11 @@ pub(super) const L2CAP_LE_MIN_MTU: u16 = 23;
 
 /// C-frame command type ([Vol 3] Part A, Section 4).
 #[derive(
-    Clone,
-    Copy,
-    Debug,
-    Eq,
-    PartialEq,
-    num_enum::IntoPrimitive,
-    num_enum::TryFromPrimitive,
-    strum::Display,
+    Clone, Copy, Debug, Eq, PartialEq, num_enum::IntoPrimitive, num_enum::TryFromPrimitive,
 )]
 #[non_exhaustive]
 #[repr(u16)]
-pub enum SigCode {
+pub(crate) enum SigCode {
     CommandRejectRsp = 0x01,
     DisconnectionReq = 0x06,
     DisconnectionRsp = 0x07,
@@ -33,3 +26,5 @@ pub enum SigCode {
     CreditBasedReconfigureReq = 0x19,
     CreditBasedReconfigureRsp = 0x1A,
 }
+
+crate::impl_display_via_debug! { SigCode }

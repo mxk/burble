@@ -331,13 +331,13 @@ impl Display for ConnSec {
         let mut t = f.debug_tuple("Encrypted");
         t.field(&format_args!("{k}-bit"));
         if self.contains(Self::AUTHN) {
-            t.field(&"AUTHN");
+            t.field(&format_args!("AUTHN"));
         }
         if self.contains(Self::AUTHZ) {
-            t.field(&"AUTHZ");
+            t.field(&format_args!("AUTHZ"));
         }
         if self.contains(Self::BOND) {
-            t.field(&"BOND");
+            t.field(&format_args!("BOND"));
         }
         t.finish()
     }

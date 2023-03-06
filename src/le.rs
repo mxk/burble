@@ -1,12 +1,12 @@
 //! LE-specific types.
 
-use std::fmt::{Debug, Display, Formatter};
+use std::fmt::{Debug, Formatter};
 
 use structbuf::{Packer, Unpacker};
 
 /// Bluetooth device address ([Vol 6] Part B, Section 1.3).
 #[allow(clippy::exhaustive_enums)]
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, strum::Display)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum Addr {
     Public(RawAddr),
     Random(RawAddr),
@@ -114,12 +114,6 @@ impl Debug for RawAddr {
     }
 }
 
-impl Display for RawAddr {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        Debug::fmt(self, f)
-    }
-}
-
 /// Transmission power level in dBm.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 #[repr(transparent)]
@@ -154,3 +148,5 @@ impl From<TxPower> for i8 {
         p.0
     }
 }
+
+crate::impl_display_via_debug! { Addr, RawAddr }

@@ -1,4 +1,4 @@
-use std::fmt::{Debug, Display, Formatter, Write};
+use std::fmt::{Debug, Formatter, Write};
 use std::num::NonZeroU16;
 
 use crate::{hci, name_of};
@@ -43,13 +43,6 @@ impl Debug for LeU {
     #[allow(clippy::use_self)]
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}({:#05X})", name_of!(LeU), u16::from(*self))
-    }
-}
-
-impl Display for LeU {
-    #[inline]
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        Debug::fmt(self, f)
     }
 }
 
@@ -126,13 +119,6 @@ impl Debug for Cid {
     }
 }
 
-impl Display for Cid {
-    #[inline]
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        Debug::fmt(self, f)
-    }
-}
-
 /// Channel identifier for an established LE-U logical link.
 #[derive(Clone, Copy, Eq, Hash, PartialEq)]
 pub struct LeCid {
@@ -149,9 +135,4 @@ impl Debug for LeCid {
     }
 }
 
-impl Display for LeCid {
-    #[inline]
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        Debug::fmt(self, f)
-    }
-}
+crate::impl_display_via_debug! { LeU, Cid, LeCid }

@@ -1,6 +1,6 @@
 #![allow(clippy::use_self)]
 
-use std::fmt::Debug;
+use std::fmt::{Debug, Formatter};
 
 use bitflags::bitflags;
 
@@ -31,7 +31,6 @@ pub(crate) const EVT_BUF: usize = EVT_HDR + u8::MAX as usize;
     PartialOrd,
     num_enum::FromPrimitive,
     num_enum::IntoPrimitive,
-    strum::Display,
 )]
 #[non_exhaustive]
 #[repr(u16)]
@@ -114,9 +113,7 @@ impl OpcodeGroup {
 }
 
 /// HCI event codes ([Vol 4] Part E, Section 7.7).
-#[derive(
-    Clone, Copy, Debug, Eq, PartialEq, num_enum::TryFromPrimitive, strum::Display, strum::EnumIter,
-)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, num_enum::TryFromPrimitive, strum::EnumIter)]
 #[non_exhaustive]
 #[repr(u16)]
 pub enum EventCode {
@@ -493,9 +490,7 @@ bitflags! {
 }
 
 /// HCI status codes ([Vol 1] Part F, Section 1.3).
-#[derive(
-    Clone, Copy, Debug, Eq, PartialEq, num_enum::FromPrimitive, strum::Display, thiserror::Error,
-)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, num_enum::FromPrimitive, thiserror::Error)]
 #[non_exhaustive]
 #[repr(u8)]
 pub enum Status {
@@ -699,7 +694,6 @@ pub enum AdvDataOp {
 #[derive(
     Clone,
     Copy,
-    Debug,
     Default,
     Eq,
     Ord,
@@ -707,12 +701,11 @@ pub enum AdvDataOp {
     PartialOrd,
     num_enum::FromPrimitive,
     num_enum::IntoPrimitive,
-    strum::Display,
 )]
 #[non_exhaustive]
 #[repr(u8)]
 pub enum CoreVersion {
-    V1_0b = 0x00,
+    V1_0 = 0x00,
     V1_1 = 0x01,
     V1_2 = 0x02,
     V2_0 = 0x03,
@@ -725,6 +718,31 @@ pub enum CoreVersion {
     V5_1 = 0x0A,
     V5_2 = 0x0B,
     V5_3 = 0x0C,
+    V5_4 = 0x0D,
     #[default]
     Unknown = 0xFF,
 }
+
+impl Debug for CoreVersion {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match *self {
+            CoreVersion::V1_0 => "v1.0b",
+            CoreVersion::V1_1 => "v1.1",
+            CoreVersion::V1_2 => "v1.2",
+            CoreVersion::V2_0 => "v2.0+EDR",
+            CoreVersion::V2_1 => "v2.1+EDR",
+            CoreVersion::V3_0 => "v3.0+HS",
+            CoreVersion::V4_0 => "v4.0",
+            CoreVersion::V4_1 => "v4.1",
+            CoreVersion::V4_2 => "v4.2",
+            CoreVersion::V5_0 => "v5.0",
+            CoreVersion::V5_1 => "v5.1",
+            CoreVersion::V5_2 => "v5.2",
+            CoreVersion::V5_3 => "v5.3",
+            CoreVersion::V5_4 => "v5.4",
+            CoreVersion::Unknown => "<unknown version>",
+        })
+    }
+}
+
+crate::impl_display_via_debug! { Opcode, EventCode, Status, CoreVersion }

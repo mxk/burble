@@ -678,10 +678,7 @@ impl ServerCtx {
             hdls.start(),
             ValueFn::new(|| {
                 let (hdls, uuid, val) = it.next()?;
-                trace!(
-                    "Primary service discovery: {} at {hdls} {val:02X?}",
-                    uuid.typ()
-                );
+                trace!("Primary service discovery: {uuid} at {hdls} {val:02X?}");
                 Some((hdls, val))
             }),
         )
@@ -699,10 +696,7 @@ impl ServerCtx {
         };
         let it = (self.srv.db.primary_services(hdls.start(), Some(uuid))).map(|v| {
             let hdls = v.handle_range();
-            trace!(
-                "Primary service by UUID discovery: {} at {hdls}",
-                uuid.typ()
-            );
+            trace!("Primary service by UUID discovery: {uuid} at {hdls}");
             (hdls.start(), Some(hdls.end()))
         });
         br.find_by_type_value_rsp(hdls.start(), it)
@@ -733,7 +727,7 @@ impl ServerCtx {
         let mut it = (self.srv.db.characteristics(hdls)).map(|v| {
             trace!(
                 "Service characteristic discovery: {} at {}",
-                v.uuid().typ(),
+                v.uuid(),
                 v.handle()
             );
             (v.handle(), v.value())
@@ -748,7 +742,7 @@ impl ServerCtx {
         let it = (self.srv.db.descriptors(hdls)).map(|v| {
             trace!(
                 "Characteristic descriptor discovery: {} at {}",
-                v.uuid().typ(),
+                v.uuid(),
                 v.handle()
             );
             (v.handle(), v.uuid())

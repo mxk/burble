@@ -53,6 +53,19 @@ pub trait PeerStore: std::fmt::Debug + Send + Sync {
     fn remove(&self, peer: le::Addr);
 }
 
+/// Forwards [`std::fmt::Display`] implementation to [`std::fmt::Debug`].
+macro_rules! impl_display_via_debug {
+    ($($t:ty),*$(,)?) => {$(
+        impl ::std::fmt::Display for $t {
+            #[inline(always)]
+            fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+                ::std::fmt::Debug::fmt(self, f)
+            }
+        }
+    )*};
+}
+pub(crate) use impl_display_via_debug;
+
 /// Returns a string representation of the specified type.
 macro_rules! name_of {
     ($t:ty) => {{

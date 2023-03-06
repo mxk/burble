@@ -83,7 +83,6 @@ bitflags! {
     PartialOrd,
     num_enum::FromPrimitive,
     num_enum::IntoPrimitive,
-    strum::Display,
 )]
 #[non_exhaustive]
 #[repr(u16)]

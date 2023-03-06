@@ -101,8 +101,9 @@ impl UsbControllerInfo {
 }
 
 impl Display for UsbControllerInfo {
+    #[inline(always)]
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        self.dev.fmt(f)
+        Debug::fmt(&self.dev, f)
     }
 }
 
