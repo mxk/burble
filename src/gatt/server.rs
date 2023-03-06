@@ -179,7 +179,12 @@ impl ServerCtx {
                 // confirmation?
                 ntf = notify.recv() => ntf.unwrap().exec(&mut br).await,
                 _ = conn.changed(), if conn.has_changed().is_ok() => {
-                    let sec = conn.borrow().sec;
+                    let (bond_id, sec) = {
+                        // Avoid holding the lock
+                        let cn = conn.borrow();
+                        (cn.bond_id, cn.sec)
+                    };
+                    self.handle_bond_change(bond_id);
                     self.configure_notify(sec);
                 }
             }
@@ -364,6 +369,22 @@ impl ServerCtx {
             ct.cancel();
         }
         cc.notify_cancel.clear();
+    }
+
+    /// Handles bond ID changes.
+    fn handle_bond_change(&self, new: Option<BondId>) {
+        let mut cc = self.cc.lock();
+        if cc.cache.bond_id == new {
+            return;
+        }
+        cc.cache.bond_id = new;
+        if new.is_some() {
+            info!("Bond established for {}", self.peer);
+            self.persist(&cc.cache);
+        } else {
+            info!("Bond lost for {}", self.peer);
+            self.srv.store.remove(self.peer);
+        }
     }
 
     // Handles Robust Caching logic when a new request is received
