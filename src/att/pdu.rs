@@ -140,7 +140,7 @@ impl Bearer {
     ) -> RspResult<Rsp> {
         let mut it = it.peekable();
         if it.peek().is_none() {
-            return FindByTypeValueRsp.hdl_err(AttributeNotFound, start);
+            return FindByTypeValueReq.hdl_err(AttributeNotFound, start);
         }
         self.rsp(FindByTypeValueRsp, |p| {
             for (hdl, group_end) in it.take(p.remaining() / (2 + 2)) {
