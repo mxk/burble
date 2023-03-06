@@ -1,5 +1,3 @@
-#![allow(clippy::use_self)]
-
 use std::fmt::{Debug, Formatter};
 
 use bitflags::bitflags;
@@ -113,7 +111,9 @@ impl OpcodeGroup {
 }
 
 /// HCI event codes ([Vol 4] Part E, Section 7.7).
-#[derive(Clone, Copy, Debug, Eq, PartialEq, num_enum::TryFromPrimitive, strum::EnumIter)]
+#[derive(
+    Clone, Copy, Debug, Eq, PartialEq, enum_iterator::Sequence, num_enum::TryFromPrimitive,
+)]
 #[non_exhaustive]
 #[repr(u16)]
 pub enum EventCode {
@@ -568,7 +568,7 @@ impl Status {
     #[inline(always)]
     #[must_use]
     pub const fn is_ok(self) -> bool {
-        matches!(self, Status::Success)
+        matches!(self, Self::Success)
     }
 }
 
@@ -726,21 +726,21 @@ pub enum CoreVersion {
 impl Debug for CoreVersion {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.write_str(match *self {
-            CoreVersion::V1_0 => "v1.0b",
-            CoreVersion::V1_1 => "v1.1",
-            CoreVersion::V1_2 => "v1.2",
-            CoreVersion::V2_0 => "v2.0+EDR",
-            CoreVersion::V2_1 => "v2.1+EDR",
-            CoreVersion::V3_0 => "v3.0+HS",
-            CoreVersion::V4_0 => "v4.0",
-            CoreVersion::V4_1 => "v4.1",
-            CoreVersion::V4_2 => "v4.2",
-            CoreVersion::V5_0 => "v5.0",
-            CoreVersion::V5_1 => "v5.1",
-            CoreVersion::V5_2 => "v5.2",
-            CoreVersion::V5_3 => "v5.3",
-            CoreVersion::V5_4 => "v5.4",
-            CoreVersion::Unknown => "<unknown version>",
+            Self::V1_0 => "v1.0b",
+            Self::V1_1 => "v1.1",
+            Self::V1_2 => "v1.2",
+            Self::V2_0 => "v2.0+EDR",
+            Self::V2_1 => "v2.1+EDR",
+            Self::V3_0 => "v3.0+HS",
+            Self::V4_0 => "v4.0",
+            Self::V4_1 => "v4.1",
+            Self::V4_2 => "v4.2",
+            Self::V5_0 => "v5.0",
+            Self::V5_1 => "v5.1",
+            Self::V5_2 => "v5.2",
+            Self::V5_3 => "v5.3",
+            Self::V5_4 => "v5.4",
+            Self::Unknown => "<unknown version>",
         })
     }
 }

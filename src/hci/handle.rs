@@ -32,7 +32,6 @@ impl From<ConnHandle> for u16 {
 }
 
 impl Debug for ConnHandle {
-    #[allow(clippy::use_self)]
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}({:#05X})", name_of!(ConnHandle), u16::from(*self))
     }
@@ -66,7 +65,6 @@ impl From<AdvHandle> for u8 {
 }
 
 impl Debug for AdvHandle {
-    #[allow(clippy::use_self)]
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}({:#04X})", name_of!(AdvHandle), u8::from(*self))
     }

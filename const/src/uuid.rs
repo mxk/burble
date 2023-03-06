@@ -402,9 +402,8 @@ macro_rules! uuid16_enum {
             PartialOrd,
             ::num_enum::IntoPrimitive,
             ::num_enum::TryFromPrimitive,
-            ::strum::Display,
         )]
-        #[cfg_attr(test, derive(strum::EnumIter))]
+        #[cfg_attr(test, derive(enum_iterator::Sequence))]
         #[non_exhaustive]
         #[repr(u16)]
         $vis enum $typ {
@@ -428,6 +427,13 @@ macro_rules! uuid16_enum {
             #[must_use]
             pub const fn uuid16(self) -> $crate::Uuid16 {
                 uuid16(self as _)
+            }
+        }
+
+        impl ::core::fmt::Display for $typ {
+            #[inline(always)]
+            fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+                ::core::fmt::Debug::fmt(self, f)
             }
         }
 
@@ -490,36 +496,32 @@ include!("uuid16.rs");
 
 #[cfg(test)]
 mod tests {
-    use strum::IntoEnumIterator;
+    use enum_iterator::all;
 
     use super::*;
 
     #[test]
     fn uuid_type() {
-        use UuidType::*;
-        assert_eq!(uuid16(0x0001).typ(), Protocol(0x0001));
-        for v in super::ServiceClass::iter() {
-            assert_eq!(v.uuid16().typ(), ServiceClass(v));
+        assert_eq!(uuid16(0x0001).typ(), UuidType::Protocol(0x0001));
+        for v in all::<ServiceClass>() {
+            assert_eq!(v.uuid16().typ(), UuidType::ServiceClass(v));
         }
-        for v in super::Service::iter() {
-            assert_eq!(v.uuid16().typ(), Service(v));
+        for v in all::<Service>() {
+            assert_eq!(v.uuid16().typ(), UuidType::Service(v));
         }
-        for v in super::Unit::iter() {
-            assert_eq!(v.uuid16().typ(), Unit(v));
+        for v in all::<Unit>() {
+            assert_eq!(v.uuid16().typ(), UuidType::Unit(v));
         }
-        for v in super::Declaration::iter() {
-            assert_eq!(v.uuid16().typ(), Declaration(v));
+        for v in all::<Declaration>() {
+            assert_eq!(v.uuid16().typ(), UuidType::Declaration(v));
         }
-        for v in super::Descriptor::iter() {
-            assert_eq!(v.uuid16().typ(), Descriptor(v));
+        for v in all::<Descriptor>() {
+            assert_eq!(v.uuid16().typ(), UuidType::Descriptor(v));
         }
-        for v in super::Characteristic::iter() {
-            assert_eq!(v.uuid16().typ(), Characteristic(v));
+        for v in all::<Characteristic>() {
+            assert_eq!(v.uuid16().typ(), UuidType::Characteristic(v));
         }
-        for v in super::Characteristic::iter() {
-            assert_eq!(v.uuid16().typ(), Characteristic(v));
-        }
-        assert_eq!(uuid16(0xFEFF).typ(), Member(0xFEFF));
-        assert_eq!(uuid16(0xFFFF).typ(), Unknown(0xFFFF));
+        assert_eq!(uuid16(0xFEFF).typ(), UuidType::Member(0xFEFF));
+        assert_eq!(uuid16(0xFFFF).typ(), UuidType::Unknown(0xFFFF));
     }
 }

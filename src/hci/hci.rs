@@ -10,7 +10,6 @@ use std::time::Duration;
 
 use bitflags::bitflags;
 use structbuf::{Pack, Packer};
-use strum::IntoEnumIterator;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error};
 
@@ -135,7 +134,7 @@ impl Host {
         self.reset().await?;
 
         // Unmask all events.
-        let all = EventCode::iter().collect();
+        let all = enum_iterator::all().collect();
         self.set_event_mask(&all).await?;
         let _ignore_unknown = self.set_event_mask_page_2(&all).await;
         self.le_set_event_mask(&all).await?;

@@ -1,5 +1,3 @@
-#![allow(clippy::use_self)]
-
 use std::fmt::Debug;
 
 use crate::hci;

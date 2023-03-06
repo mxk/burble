@@ -40,7 +40,6 @@ impl From<LeU> for hci::ConnHandle {
 }
 
 impl Debug for LeU {
-    #[allow(clippy::use_self)]
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}({:#05X})", name_of!(LeU), u16::from(*self))
     }
@@ -110,7 +109,6 @@ impl From<Cid> for u16 {
 }
 
 impl Debug for Cid {
-    #[allow(clippy::use_self)]
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.write_str(name_of!(Cid))?;
         f.write_char('(')?;
@@ -127,7 +125,6 @@ pub struct LeCid {
 }
 
 impl Debug for LeCid {
-    #[allow(clippy::use_self)]
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}({:#05X}, ", name_of!(LeCid), u16::from(self.link),)?;
         self.chan.write_fmt(f)?;

@@ -53,13 +53,13 @@ pub trait PeerStore: std::fmt::Debug + Send + Sync {
     fn remove(&self, peer: le::Addr);
 }
 
-/// Forwards [`std::fmt::Display`] implementation to [`std::fmt::Debug`].
+/// Forwards [`core::fmt::Display`] implementation to [`core::fmt::Debug`].
 macro_rules! impl_display_via_debug {
     ($($t:ty),*$(,)?) => {$(
-        impl ::std::fmt::Display for $t {
+        impl ::core::fmt::Display for $t {
             #[inline(always)]
-            fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-                ::std::fmt::Debug::fmt(self, f)
+            fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+                ::core::fmt::Debug::fmt(self, f)
             }
         }
     )*};
@@ -69,7 +69,7 @@ pub(crate) use impl_display_via_debug;
 /// Returns a string representation of the specified type.
 macro_rules! name_of {
     ($t:ty) => {{
-        // TODO: Switch to `std::any::type_name` when stabilized
+        // TODO: Switch to `core::any::type_name` when stabilized
         type _T = $t; // Allows $t to be recognized as a type for refactoring
         stringify!($t)
     }};

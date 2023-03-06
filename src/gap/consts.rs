@@ -1,5 +1,3 @@
-#![allow(clippy::use_self)]
-
 use bitflags::bitflags;
 
 /// Response data types ([Assigned Numbers] Section 2.3).

@@ -43,7 +43,6 @@ impl Handle {
 }
 
 impl Debug for Handle {
-    #[allow(clippy::use_self)]
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}({:#06X})", name_of!(Handle), self.0.get())
     }
@@ -131,7 +130,6 @@ impl Default for HandleRange {
 }
 
 impl Debug for HandleRange {
-    #[allow(clippy::use_self)]
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
