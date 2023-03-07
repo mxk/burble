@@ -54,6 +54,7 @@ impl Dev for Mouse {
 
     #[rustfmt::skip]
     fn report_descriptor(&self, report_id: u8) -> Items {
+        use Item::*;
         Items::from([
             GUsagePage(0x01), // Generic Desktop Page
             LUsage(0x02),     // Mouse

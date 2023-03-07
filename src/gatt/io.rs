@@ -92,8 +92,8 @@ impl IoMap {
 }
 
 /// Characteristic or descriptor I/O request.
-#[allow(clippy::exhaustive_enums)]
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum IoReq<'a> {
     Read(&'a mut ReadReq),
     Write(&'a WriteReq<'a>),

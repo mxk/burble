@@ -1,5 +1,3 @@
-pub(crate) use Item::*;
-
 #[repr(u8)]
 enum ItemType {
     Main = 0 << 2,
@@ -7,10 +5,10 @@ enum ItemType {
     Local = 2 << 2,
 }
 
-/// HID report descriptor items.
+/// HID report descriptor items ([HID] Section 5.2).
 #[allow(dead_code)]
 #[derive(Clone, Debug)]
-pub(crate) enum Item {
+pub(super) enum Item {
     // Main
     MInput(Attr),
     MOutput(Attr),
@@ -107,6 +105,7 @@ impl<const N: usize> From<[Item; N]> for Items {
 
 impl Item {
     fn append(&self, b: &mut Vec<u8>) {
+        use Item::*;
         match *self {
             MInput(v) => append_main(b, 0b1000, v.bits),
             MOutput(v) => append_main(b, 0b1001, v.bits),
@@ -213,6 +212,7 @@ mod tests {
 
     #[test]
     fn e10_mouse_report_descriptor() {
+        use Item::*;
         // https://www.usb.org/sites/default/files/hid1_11.pdf E.10
         #[rustfmt::skip]
         assert_eq!(vec![
@@ -281,6 +281,7 @@ mod tests {
 
     #[test]
     fn items() {
+        use Item::*;
         let all = Items::from([
             // Main
             MInput(Attr::CONST),

@@ -17,8 +17,8 @@ impl BatteryService {
     /// Creates a battery service.
     #[inline(always)]
     #[must_use]
-    pub fn new() -> Self {
-        Self::default()
+    pub const fn new() -> Self {
+        Self
     }
 
     /// Defines the service structure.

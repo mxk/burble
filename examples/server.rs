@@ -18,6 +18,7 @@ use burble::gatt::Db;
 use burble::hci::AdvEvent;
 use burble::hid::{Input, MouseIn};
 use burble::*;
+use burble_const::ServiceClass;
 use burble_crypto::NumCompare;
 
 #[derive(Debug, clap::Parser)]
@@ -98,15 +99,17 @@ fn read_input(srv: Arc<hid::HidService>) {
 }
 
 async fn serve(host: hci::Host) -> Result<()> {
+    // [HOGP] Section 6.1
+    const SEC: Access = Access::READ.authn().encrypt();
     let mut db = Db::build();
     gatt::Server::define_service(&mut db);
-    gap::GapService::new("Burble", Appearance::GenericHumanInterfaceDevice)
-        .define(&mut db, Access::READ);
+    gap::GapService::new("Burble", Appearance::GenericHumanInterfaceDevice).define(&mut db);
     dis::DeviceInfoService::new()
         .with_manufacturer_name("Blackrock Neurotech")
+        // [HOGP] Section 3.3.2
         .with_pnp_id(dis::PnpId::new(dis::VendorId::USB(0x1209), 0x0001, (1, 0, 0)).unwrap())
-        .define(&mut db, Access::READ);
-    bas::BatteryService::new().define(&mut db, Access::READ);
+        .define(&mut db, SEC);
+    bas::BatteryService::new().define(&mut db, SEC);
     let hid = hid::HidService::new();
     //#[cfg(debug_assertions)]
     //db.morph_next();
@@ -172,7 +175,11 @@ async fn advertise(host: hci::Host) -> hci::Result<AdvEvent> {
     let (h, power) = adv.create(params).await?;
     let mut data = gap::ResponseDataMut::new();
     data.flags(gap::AdvFlag::LE_GENERAL | gap::AdvFlag::NO_BREDR)
+        // [HOGP] Section 3.1.3
+        .service_class(true, [ServiceClass::HumanInterfaceDeviceService])
+        // [HOGP] Section 3.1.4
         .local_name(true, "Burble")
+        // [HOGP] Section 3.1.5
         .appearance(Appearance::GenericHumanInterfaceDevice)
         .tx_power(power);
     adv.set_data(h, data.get()).await?;

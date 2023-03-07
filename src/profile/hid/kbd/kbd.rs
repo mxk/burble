@@ -113,6 +113,7 @@ impl Dev for Kbd {
 
     #[rustfmt::skip]
     fn report_descriptor(&self, report_id: u8) -> Items {
+        use Item::*;
         Items::from([
             GUsagePage(0x01), // Generic Desktop Page
             LUsage(0x06),     // Keyboard

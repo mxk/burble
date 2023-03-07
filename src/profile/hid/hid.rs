@@ -1,10 +1,18 @@
-//! A library for simulating human interface devices (HIDs).
+//! HID-over-GATT profile ([HOGP]).
 //!
-//! See [HID v1.11](https://www.usb.org/sites/default/files/hid1_11.pdf) and
-//! [Usage Tables v1.22](https://www.usb.org/sites/default/files/hut1_22.pdf)
-//! for official documentation.
-
-#![warn(missing_docs)]
+//! This profile defines how a device with Bluetooth low energy wireless
+//! communications can support HID services over the Bluetooth low energy
+//! protocol stack using the Generic Attribute Profile. See [HID] and
+//! [Usage Tables] for HID documentation.
+//!
+//! As of 2023-03-06, the GATT Specification Supplement does not describe HID
+//! characteristics and descriptors, and the official XML-based spec has also
+//! been taken offline. For now, we rely on a [mirror].
+//!
+//! [HOGP]: https://www.bluetooth.com/specifications/specs/hid-over-gatt-profile-1-0/
+//! [HID]: https://www.usb.org/sites/default/files/hid1_11.pdf
+//! [HUT]: https://www.usb.org/sites/default/files/hut1_4.pdf
+//! [mirror]: https://github.com/oesmith/gatt-xml
 
 use std::collections::VecDeque;
 

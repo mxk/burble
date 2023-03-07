@@ -4,7 +4,7 @@ use burble_const::{Characteristic, Service};
 pub use burble_const::{Uuid, Uuid16, UuidType, UuidVec};
 pub use {consts::*, response_data::*};
 
-use crate::att::Perms;
+use crate::att::Access;
 use crate::gatt::{Builder, Db};
 
 mod consts;
@@ -35,14 +35,13 @@ impl GapService {
     }
 
     /// Defines the service structure.
-    pub fn define(&self, db: &mut Builder<Db>, perms: impl Into<Perms>) {
-        let p = perms.into();
+    pub fn define(&self, db: &mut Builder<Db>) {
         db.primary_service(Service::GenericAccess, [], |db| {
             use Characteristic::*;
-            db.ro_characteristic(DeviceName, p, &self.device_name, |_| {});
+            db.ro_characteristic(DeviceName, Access::READ, &self.device_name, |_| {});
             db.ro_characteristic(
                 Appearance,
-                p,
+                Access::READ,
                 (self.appearance as u16).to_le_bytes(),
                 |_| {},
             );

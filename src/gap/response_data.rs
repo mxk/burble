@@ -43,8 +43,9 @@ impl ResponseDataMut {
     pub fn service_class<T: Copy + Into<Uuid>>(
         &mut self,
         complete: bool,
-        uuids: &[T],
+        uuids: impl AsRef<[T]>,
     ) -> &mut Self {
+        let uuids = uuids.as_ref();
         let typ = u8::from(ResponseDataType::IncompleteServiceClass16) + u8::from(complete);
         self.maybe_put(complete, typ, |b| {
             (uuids.iter().filter_map(|&u| u.into().as_u16())).for_each(|v| {
@@ -182,7 +183,7 @@ mod tests {
         let mut eir = ResponseDataMut::new();
         eir.local_name(true, "Phone").service_class(
             true,
-            &[ServiceClass::Panu, ServiceClass::HandsfreeAudioGateway],
+            [ServiceClass::Panu, ServiceClass::HandsfreeAudioGateway],
         );
         let want = &[
             0x06, // Length of this Data
