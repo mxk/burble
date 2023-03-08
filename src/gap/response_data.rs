@@ -10,9 +10,10 @@
 
 use std::time::Duration;
 
+use enum_iterator::Sequence;
 use structbuf::{Pack, Packer, StructBuf};
 
-use burble_const::Uuid;
+use burble_const::{Service, Uuid};
 
 use crate::gap::consts::ResponseDataType;
 use crate::gap::{AdvFlag, Appearance};
@@ -38,26 +39,45 @@ impl ResponseDataMut {
         self.0
     }
 
-    /// Appends service class UUIDs (\[CSS\] Part A, Section 1.1). Each UUID is
+    /// Appends service UUIDs (\[CSS\] Part A, Section 1.1). Each UUID is
     /// encoded in the optimal format.
-    pub fn service_class<T: Copy + Into<Uuid>>(
+    pub fn service<T: Into<Uuid> + Copy>(
         &mut self,
         complete: bool,
         uuids: impl AsRef<[T]>,
     ) -> &mut Self {
         let uuids = uuids.as_ref();
-        let typ = u8::from(ResponseDataType::IncompleteServiceClass16) + u8::from(complete);
+        let typ = if complete {
+            ResponseDataType::CompleteServiceClass16
+        } else {
+            ResponseDataType::IncompleteServiceClass16
+        };
         self.maybe_put(complete, typ, |b| {
-            (uuids.iter().filter_map(|&u| u.into().as_u16())).for_each(|v| {
+            for v in uuids.iter().filter_map(|&u| match u.into().as_uuid16() {
+                // "GAP and GATT service UUIDs should not be included in a
+                // Service UUIDs AD type, for either a complete or incomplete
+                // list."
+                None | Some(Service::GENERIC_ACCESS | Service::GENERIC_ATTRIBUTE) => None,
+                Some(u) => Some(u16::from(u)),
+            }) {
                 b.u16(v);
-            });
+            }
         });
-        self.maybe_put(complete, typ + 2, |b| {
+        // iOS 16 refuses to enumerate devices with empty complete service class
+        // lists. This goes against the spec, which says: "If a device has no
+        // Service UUIDs of a certain size... the corresponding field in the
+        // extended inquiry response or advertising data packet shall be marked
+        // as complete with no Service UUIDs. An omitted Service UUID data type
+        // shall be interpreted as an empty incomplete-list." We force these two
+        // lists to be omitted if they are empty to make iOS happy.
+        let typ = typ.next().next().flatten().expect("invalid type");
+        self.maybe_put(false, typ, |b| {
             (uuids.iter().filter_map(|&u| u.into().as_u32())).for_each(|v| {
                 b.u32(v);
             });
         });
-        self.maybe_put(complete, typ + 4, |b| {
+        let typ = typ.next().next().flatten().expect("invalid type");
+        self.maybe_put(false, typ, |b| {
             (uuids.iter().filter_map(|&u| u.into().as_u128())).for_each(|v| {
                 b.u128(v);
             });
@@ -67,7 +87,11 @@ impl ResponseDataMut {
     /// Appends either shortened or complete local device name
     /// (\[CSS\] Part A, Section 1.2).
     pub fn local_name<T: AsRef<str>>(&mut self, complete: bool, v: T) -> &mut Self {
-        let typ = u8::from(ResponseDataType::ShortLocalName) + u8::from(complete);
+        let typ = if complete {
+            ResponseDataType::CompleteLocalName
+        } else {
+            ResponseDataType::ShortLocalName
+        };
         self.put(typ, |b| {
             b.put(v.as_ref().as_bytes());
         })
@@ -141,21 +165,21 @@ impl ResponseDataMut {
     /// Appends a length-type-data field to the buffer, calling `f` to provide
     /// the data.
     #[inline]
-    fn put<T: Into<u8>>(&mut self, typ: T, f: impl Fn(&mut Packer)) -> &mut Self {
+    fn put(&mut self, typ: ResponseDataType, f: impl Fn(&mut Packer)) -> &mut Self {
         self.maybe_put(true, typ, f)
     }
 
     /// Append a length-type-data field to the buffer, calling `f` to provide
     /// the data. If the data is empty and `keep_empty` is `false`, then nothing
     /// gets appended.
-    fn maybe_put<T: Into<u8>>(
+    fn maybe_put(
         &mut self,
         keep_empty: bool,
-        typ: T,
+        typ: ResponseDataType,
         f: impl Fn(&mut Packer),
     ) -> &mut Self {
         let i = self.0.len();
-        f(self.0.append().put([0, typ.into()]));
+        f(self.0.append().put([0, u8::from(typ)]));
         let n = u8::try_from(self.0.len().wrapping_sub(i + 1)).expect("response data overflow");
         self.0[i] = n;
         if !keep_empty && n < 2 {
@@ -181,7 +205,7 @@ mod tests {
     #[test]
     fn css_example_2_1_1() {
         let mut eir = ResponseDataMut::new();
-        eir.local_name(true, "Phone").service_class(
+        eir.local_name(true, "Phone").service(
             true,
             [ServiceClass::Panu, ServiceClass::HandsfreeAudioGateway],
         );
@@ -204,6 +228,7 @@ mod tests {
             0x01, // Length of this data
             0x07, // <Complete list of 128-bit Service UUIDs>
         ];
+        let want = &want[..want.len() - 4]; // iOS workaround
         assert_eq!(eir.get().as_ref(), want);
     }
 

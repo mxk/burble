@@ -18,18 +18,22 @@ use burble::gatt::Db;
 use burble::hci::AdvEvent;
 use burble::hid::{Input, MouseIn};
 use burble::*;
-use burble_const::ServiceClass;
+use burble_const::Service;
 use burble_crypto::NumCompare;
 
-#[derive(Debug, clap::Parser)]
+#[derive(Clone, Copy, Debug, clap::Parser)]
 struct Args {
-    /// Vendor ID of the Bluetooth USB device
+    /// Vendor ID of the Bluetooth USB device.
     #[arg(short, long, value_parser=hex16)]
     vid: Option<u16>,
 
-    /// Product ID of the Bluetooth USB device
+    /// Product ID of the Bluetooth USB device.
     #[arg(short, long, value_parser=hex16)]
     pid: Option<u16>,
+
+    /// Use legacy advertising.
+    #[arg(short, long)]
+    legacy: bool,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -52,7 +56,9 @@ async fn main() -> Result<()> {
     host.init().await?;
     info!("Local version: {:?}", host.read_local_version().await?);
     info!("Device address: {:?}", host.read_bd_addr().await?);
-    let r = serve(host).await;
+    host.le_set_default_phy(Some(hci::PhyMask::LE_2M), Some(hci::PhyMask::LE_2M))
+        .await?;
+    let r = serve(args, host).await;
     event_loop.stop().await?;
     r
 }
@@ -98,7 +104,7 @@ fn read_input(srv: Arc<hid::HidService>) {
     });
 }
 
-async fn serve(host: hci::Host) -> Result<()> {
+async fn serve(args: Args, host: hci::Host) -> Result<()> {
     // [HOGP] Section 6.1
     const SEC: Access = Access::READ.authn().encrypt();
     let mut db = Db::build();
@@ -130,7 +136,7 @@ async fn serve(host: hci::Host) -> Result<()> {
     loop {
         if srv_task.is_none() && adv_task.is_none() {
             info!("Enabling advertisements");
-            adv_task = Some(tokio::task::spawn(advertise(host.clone())));
+            adv_task = Some(tokio::task::spawn(advertise(args, host.clone())));
         }
         tokio::select! {
             adv = async { adv_task.as_mut().unwrap().await }, if adv_task.is_some() => {
@@ -164,19 +170,27 @@ async fn serve(host: hci::Host) -> Result<()> {
     }
 }
 
-async fn advertise(host: hci::Host) -> hci::Result<AdvEvent> {
+async fn advertise(args: Args, host: hci::Host) -> hci::Result<AdvEvent> {
     let mut adv = hci::Advertiser::new(&host).await?;
-    let params = hci::AdvParams {
-        props: hci::AdvProp::CONNECTABLE | hci::AdvProp::INCLUDE_TX_POWER,
-        pri_interval: (Duration::from_millis(20), Duration::from_millis(25)),
-        sec_phy: hci::AdvPhy::Le2M,
-        ..hci::AdvParams::default()
+    let params = if args.legacy {
+        hci::AdvParams {
+            props: hci::AdvProp::CONNECTABLE | hci::AdvProp::SCANNABLE | hci::AdvProp::LEGACY,
+            pri_interval: (Duration::from_millis(20), Duration::from_millis(25)),
+            ..hci::AdvParams::default()
+        }
+    } else {
+        hci::AdvParams {
+            props: hci::AdvProp::CONNECTABLE | hci::AdvProp::INCLUDE_TX_POWER,
+            pri_interval: (Duration::from_millis(20), Duration::from_millis(25)),
+            sec_phy: hci::Phy::Le2M,
+            ..hci::AdvParams::default()
+        }
     };
     let (h, power) = adv.create(params).await?;
     let mut data = gap::ResponseDataMut::new();
     data.flags(gap::AdvFlag::LE_GENERAL | gap::AdvFlag::NO_BREDR)
         // [HOGP] Section 3.1.3
-        .service_class(true, [ServiceClass::HumanInterfaceDeviceService])
+        .service(false, [Service::HumanInterfaceDevice])
         // [HOGP] Section 3.1.4
         .local_name(true, "Burble")
         // [HOGP] Section 3.1.5

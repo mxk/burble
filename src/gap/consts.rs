@@ -2,7 +2,14 @@ use bitflags::bitflags;
 
 /// Response data types ([Assigned Numbers] Section 2.3).
 #[derive(
-    Clone, Copy, Debug, Eq, PartialEq, num_enum::IntoPrimitive, num_enum::TryFromPrimitive,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    PartialEq,
+    enum_iterator::Sequence,
+    num_enum::IntoPrimitive,
+    num_enum::TryFromPrimitive,
 )]
 #[non_exhaustive]
 #[repr(u8)]
