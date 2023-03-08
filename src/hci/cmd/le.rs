@@ -36,30 +36,61 @@ impl Host {
     ///
     /// # Panics
     ///
-    /// Panics if there is a connection handle mismatch with the return
-    /// parameters.
+    /// Panics if there is a mismatch with the returned connection handle
+    /// parameter.
     pub async fn le_long_term_key_request_reply(
         &self,
-        cn: ConnHandle,
+        h: ConnHandle,
         k: Option<&LTK>,
     ) -> Result<()> {
         let r = if let Some(k) = k {
             let r = self.exec_params(Opcode::LeLongTermKeyRequestReply, |cmd| {
-                cmd.u16(cn).u128(k);
+                cmd.u16(h).u128(k);
             });
             r.await?
         } else {
             let r = self.exec_params(Opcode::LeLongTermKeyRequestNegativeReply, |cmd| {
-                cmd.u16(cn);
+                cmd.u16(h);
             });
             r.await?
         };
-        assert_eq!(r.map_ok(|_, p| ConnHandle::new(p.u16()))?, Some(cn));
+        assert_eq!(r.map_ok(|_, p| ConnHandle::new(p.u16()))?, Some(h));
         Ok(())
     }
 
+    /// Reads the current transmitter and receiver PHY for the specified
+    /// connection ([Vol 4] Part E, Section 7.8.47).
+    ///
+    /// # Panics
+    ///
+    /// Panics if there is a mismatch with the returned connection handle
+    /// parameter.
+    pub async fn le_read_phy(&self, h: ConnHandle) -> Result<(Phy, Phy)> {
+        let r = self.exec_params(Opcode::LeReadPhy, |cmd| {
+            cmd.u16(h);
+        });
+        r.await?.map_ok(|_, p| {
+            assert_eq!(ConnHandle::new(p.u16()), Some(h),);
+            (
+                Phy::try_from(p.u8()).expect("invalid phy"),
+                Phy::try_from(p.u8()).expect("invalid phy"),
+            )
+        })
+    }
+
+    /// Sets the preferred transmitter and receiver PHY for all subsequent
+    /// connections ([Vol 4] Part E, Section 7.8.48).
+    pub async fn le_set_default_phy(&self, tx: Option<PhyMask>, rx: Option<PhyMask>) -> Result<()> {
+        let r = self.exec_params(Opcode::LeSetDefaultPhy, |cmd| {
+            cmd.u8(u8::from(tx.is_none()) | (u8::from(rx.is_none()) << 1))
+                .u8(tx.unwrap_or_default().bits())
+                .u8(rx.unwrap_or_default().bits());
+        });
+        r.await?.ok()
+    }
+
     /// Sets the random device address for an advertising set
-    /// ([Vol 4] Part E, Section 7.8.4).
+    /// ([Vol 4] Part E, Section 7.8.52).
     pub async fn le_set_advertising_set_random_address(
         &self,
         h: AdvHandle,
@@ -264,9 +295,9 @@ pub struct AdvParams {
     pub peer_addr: Addr,
     pub filter_policy: AdvFilterPolicy,
     pub tx_power: Option<TxPower>,
-    pub pri_phy: AdvPhy,
+    pub pri_phy: Phy,
     pub sec_max_skip: u8,
-    pub sec_phy: AdvPhy,
+    pub sec_phy: Phy,
     pub sid: u8,
     pub scan_request_notify: bool,
 }

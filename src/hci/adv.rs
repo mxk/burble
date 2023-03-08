@@ -60,6 +60,20 @@ impl Advertiser {
         Ok(())
     }
 
+    /// Sets scan response data.
+    pub async fn set_scan_response<V>(&mut self, h: AdvHandle, d: V) -> Result<()>
+    where
+        V: AsRef<[u8]> + Send + Sync,
+    {
+        // [Vol 4] Part E, Section 7.8.55
+        for (op, chunk) in Self::op_chunks(d.as_ref(), 31) {
+            self.host
+                .le_set_extended_scan_response_data(h, op, true, chunk)
+                .await?;
+        }
+        Ok(())
+    }
+
     /// Enable advertising.
     pub async fn enable(&mut self, p: impl Into<AdvEnableParams> + Send) -> Result<AdvFuture> {
         let p = p.into();

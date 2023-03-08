@@ -58,6 +58,9 @@ pub enum Opcode {
     LeReadBufferSizeV2 = Le.ocf(0x0060),
     LeLongTermKeyRequestReply = Le.ocf(0x001A),
     LeLongTermKeyRequestNegativeReply = Le.ocf(0x001B),
+    LeReadPhy = Le.ocf(0x0030),
+    LeSetDefaultPhy = Le.ocf(0x0031),
+    LeSetPhy = Le.ocf(0x0032),
     LeSetAdvertisingSetRandomAddress = Le.ocf(0x0035),
     LeSetExtendedAdvertisingParameters = Le.ocf(0x0036),
     LeSetExtendedAdvertisingData = Le.ocf(0x0037),
@@ -583,6 +586,31 @@ pub enum Role {
     Peripheral = 0x01,
 }
 
+/// Physical layer transmitter/receiver ([Vol 4] Part E, Section 7.8.47). For
+/// advertising, LE Coded assumes S=8.
+#[derive(
+    Clone, Copy, Debug, Default, Eq, PartialEq, num_enum::IntoPrimitive, num_enum::TryFromPrimitive,
+)]
+#[non_exhaustive]
+#[repr(u8)]
+pub enum Phy {
+    #[default]
+    Le1M = 0x01,
+    Le2M = 0x02,
+    LeCoded = 0x03,
+}
+
+bitflags! {
+    /// PHY preference mask ([Vol 4] Part E, Section 7.8.48).
+    #[derive(Default)]
+    #[repr(transparent)]
+    pub struct PhyMask: u8 {
+        const LE_1M = 1 << 0;
+        const LE_2M = 1 << 1;
+        const LE_CODED = 1 << 2;
+    }
+}
+
 bitflags! {
     /// Basic properties of an advertising event
     /// ([Vol 4] Part E, Section 7.8.53).
@@ -658,18 +686,6 @@ pub enum AdvFilterPolicy {
     /// Process scan and connection requests only from devices in the Filter
     /// Accept List.
     FilterAll = 0x03,
-}
-
-/// Physical layer for advertising. LE Coded assumes S=8
-/// ([Vol 4] Part E, Section 7.8.53).
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, num_enum::IntoPrimitive)]
-#[non_exhaustive]
-#[repr(u8)]
-pub enum AdvPhy {
-    #[default]
-    Le1M = 0x01,
-    Le2M = 0x02,
-    LeCoded = 0x03,
 }
 
 /// Defines the interpretation of advertising data
