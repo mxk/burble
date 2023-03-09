@@ -1,11 +1,11 @@
 Blackrock User-Mode Bluetooth LE Library
 ========================================
 
-A user-mode BLE stack implementation starting from the USB transport layer via [libusb]. Tested on Windows and Linux.
+A cross-platform user-mode BLE stack implementation starting from the USB transport layer via [libusb].
 
 [libusb]: https://github.com/libusb/libusb
 
-**Status:** Under development
+**Project status:** Under active development. Tested on Windows and Linux. Not accepting external contributions at this time. The library implements all components for a BLE GATT server (peripheral role) and LE Secure Connections pairing. Minimum supported Bluetooth version is 5.0. All APIs are subject to change prior to v1.0.
 
 Reference documents:
 
@@ -23,16 +23,16 @@ Profiles and services:
 
 * [Battery Service][BAS]
 * [Device Information Service][DIS]
+* [HID over GATT Profile][HOGP]
 
 [BAS]: https://www.bluetooth.com/specifications/specs/battery-service/
 [DIS]: https://www.bluetooth.com/specifications/specs/device-information-service-1-1/
+[HOGP]: https://www.bluetooth.com/specifications/specs/hid-over-gatt-profile-1-0/
 
 Example Server
 --------------
 
-The [server](examples/server.rs) example brings up a demo GATT server to test controller functionality. Currently, the server can only be tested by a client application that does not require pairing, such as [nRF Connect for Mobile][nRF].
-
-[nRF]: https://play.google.com/store/apps/details?id=no.nordicsemi.android.mcp
+The [server](examples/server.rs) example brings up a demo GATT server to test controller functionality.
 
 ### Listing available Bluetooth controllers
 
@@ -45,10 +45,14 @@ Bus 002 Device 003: ID 8087:0033
 
 ### Running the server
 
-* Linux users need to either configure `udev` permissions or run the example binary via `sudo` to give `libusb` device write access.
+* Linux users need to either configure `udev` permissions or run the example binary via `sudo` to give `libusb` device write access to the USB device.
 * Windows users need to follow driver installation instructions from the section below.
 
-Look for "Burble" device on the client.
+Look for "Burble" Bluetooth device on the client. You can use [nRF Connect for Mobile][nRF] to get more details about the server advertisements and GATT services.
+
+Some clients may not support extended LE advertising. Use the `--legacy` option to switch to legacy advertising PDUs.
+
+[nRF]: https://play.google.com/store/apps/details?id=no.nordicsemi.android.mcp
 
 ```
 $ RUST_LOG=info cargo run --example server -- --vid 7392 --pid c611
@@ -114,8 +118,18 @@ Tested Controllers
 
 Below is a list of Bluetooth controllers that have been tested with this library.
 
+### Server
+
 | Device         | VID:PID   | BLE Version | Chip       | ACL Buffers |
 | -------------- | --------- |:-----------:|:----------:|:-----------:|
 | Edimax BT-8500 | 7392:C611 | 5.1         | RTL8761BUV | 8 * 251B    |
 | Intel AX210    | 8087:0032 | 5.3         | -          | 3 * 251B    |
 | Intel AX211    | 8087:0033 | 5.3         | -          | 3 * 251B    |
+
+### Client
+
+| Device         | VID:PID   | BLE Version | Chip       |
+| -------------- | --------- |:-----------:|:----------:|
+| Edimax BT-8500 | 7392:C611 | 5.1         | RTL8761BUV |
+| Intel AX210    | 8087:0032 | 5.3         | -          |
+| Intel AX211    | 8087:0033 | 5.3         | -          |
