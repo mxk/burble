@@ -47,7 +47,7 @@ rustflags = [
     "-Wclippy::rc_buffer",
     "-Wclippy::rc_mutex",
     "-Wclippy::rest_pat_in_fully_bound_structs",
-    #"-Wclippy::semicolon_outside_block", # TODO: Enable in 1.68.0
+    "-Wclippy::semicolon_outside_block",
     #"-Wclippy::std_instead_of_alloc", # TODO: Enable
     #"-Wclippy::std_instead_of_core", # TODO: Enable
     "-Wclippy::str_to_string",
@@ -63,3 +63,6 @@ rustflags = [
     "-Wclippy::unneeded_field_pattern",
     "-Wclippy::unseparated_literal_suffix",
 ]
+
+[registries.crates-io]
+protocol = "sparse"
