@@ -133,3 +133,10 @@ Below is a list of Bluetooth controllers that have been tested with this library
 | Edimax BT-8500 | 7392:C611 | 5.1         | RTL8761BUV |
 | Intel AX210    | 8087:0032 | 5.3         | -          |
 | Intel AX211    | 8087:0033 | 5.3         | -          |
+
+Legal
+-----
+
+Copyright 2023 Blackrock Neurotech. Licensed under the Mozilla Public License 2.0.
+
+**This is not an officially supported Blackrock Neurotech product.**
