@@ -1,3 +1,16 @@
+//! HID-over-GATT profile ([HOGP]).
+//!
+//! This profile defines how a device with Bluetooth low energy wireless
+//! communications can support HID services over the Bluetooth low energy
+//! protocol stack using the Generic Attribute Profile.
+//!
+//! As of 2023-03-06, the GATT Specification Supplement does not describe HID
+//! characteristics and descriptors, and the official XML-based spec has also
+//! been taken offline. For now, we rely on a [mirror].
+//!
+//! [HOGP]: https://www.bluetooth.com/specifications/specs/hid-over-gatt-profile-1-0/
+//! [mirror]: https://github.com/oesmith/gatt-xml
+
 use std::sync::Arc;
 
 use tracing::warn;
@@ -6,9 +19,10 @@ use burble_const::{Characteristic, Descriptor, Service};
 
 use crate::att::{Access, ErrorCode};
 use crate::gatt::{Builder, Db, Io, IoReq, IoResult, Notify, NotifyReq, Prop};
-use crate::hid::kbd::{Kbd, Key};
-use crate::hid::mouse::Mouse;
-use crate::hid::{Dev, InputDev, OutputDev, ReportDescriptor};
+use crate::hid::kbd::*;
+use crate::hid::mouse::*;
+use crate::hid::ReportDescriptor;
+use crate::hid::{Dev, InputDev, OutputDev};
 use crate::{att, SyncMutex};
 
 /// HID input event.
@@ -48,7 +62,7 @@ pub enum MouseIn {
     VScroll(i32),
 }
 
-/// HID GATT service.
+/// HID-over-GATT service.
 #[derive(Debug)]
 pub struct HidService {
     srv: SyncMutex<HidInner>,

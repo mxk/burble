@@ -1,33 +1,20 @@
-//! HID-over-GATT profile ([HOGP]).
+//! Human Interface Device API ([HID]).
 //!
-//! This profile defines how a device with Bluetooth low energy wireless
-//! communications can support HID services over the Bluetooth low energy
-//! protocol stack using the Generic Attribute Profile. See [HID] and
-//! [Usage Tables] for HID documentation.
+//! See [HID] and [HUT] for official documentation.
 //!
-//! As of 2023-03-06, the GATT Specification Supplement does not describe HID
-//! characteristics and descriptors, and the official XML-based spec has also
-//! been taken offline. For now, we rely on a [mirror].
-//!
-//! [HOGP]: https://www.bluetooth.com/specifications/specs/hid-over-gatt-profile-1-0/
 //! [HID]: https://www.usb.org/sites/default/files/hid1_11.pdf
 //! [HUT]: https://www.usb.org/sites/default/files/hut1_4.pdf
-//! [mirror]: https://github.com/oesmith/gatt-xml
 
 use std::collections::VecDeque;
 
-pub use service::*;
-
-mod descriptor;
+pub mod descriptor;
+pub mod kbd;
+pub mod mouse;
+pub mod usage;
 
 /// Collection of HID report descriptor items that can be converted to a byte
 /// vector.
 pub type ReportDescriptor = descriptor::Items;
-
-#[path = "kbd/kbd.rs"]
-pub mod kbd;
-pub mod mouse;
-mod service;
 
 /// Basic HID.
 pub trait Dev {

@@ -1,8 +1,6 @@
-pub use KeyUsage::*;
+use super::kbd::{KbdMap, Key};
 
-use super::{KbdMap, Key};
-
-/// Keyboard/keypad usage IDs.
+/// Keyboard/keypad usage page ([HUT] Section 10).
 #[derive(
     Clone,
     Copy,
@@ -392,6 +390,7 @@ pub(super) struct USKbd;
 impl KbdMap for USKbd {
     #[allow(clippy::too_many_lines)]
     fn key(&self, c: char) -> Option<Key> {
+        use KeyUsage::*;
         Some(match c {
             // Row 1
             '`' => Key::from(KeyBackquote),

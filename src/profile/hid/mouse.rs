@@ -1,6 +1,6 @@
 //! Mouse HID device.
 
-use crate::hid::{descriptor::*, Dev, InputBuf, InputDev};
+use super::{descriptor::*, Dev, InputBuf, InputDev};
 
 /// HID mouse.
 #[derive(Debug, Default)]

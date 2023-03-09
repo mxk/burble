@@ -72,6 +72,7 @@ pub struct Items(Vec<Item>);
 
 impl Items {
     /// Creates an empty report descriptor.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -83,6 +84,7 @@ impl Items {
     }
 
     /// Converts contained items to a byte vector.
+    #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut b = Vec::with_capacity(128);
         self.append(&mut b);
@@ -320,6 +322,6 @@ mod tests {
             LStringMax(0xFFFF),
             LDelim(Items::default()),
         ]);
-        all.to_bytes();
+        let _ = all.to_bytes();
     }
 }

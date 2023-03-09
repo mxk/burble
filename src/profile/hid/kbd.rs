@@ -1,13 +1,9 @@
 //! Keyboard HID device.
 
-pub use usage::*;
-
-use crate::hid::{descriptor::*, Dev, InputBuf, InputDev, OutputDev};
-
-mod usage;
+use super::{descriptor::*, usage::*, Dev, InputBuf, InputDev, OutputDev};
 
 /// An interface for converting characters into keyboard usage codes.
-trait KbdMap {
+pub(super) trait KbdMap {
     /// Converts a character into a [`Key`]. This is the inverse of what the
     /// host does when it receives an input report, so the maps on both sides
     /// have to match.
@@ -114,6 +110,7 @@ impl Dev for Kbd {
     #[rustfmt::skip]
     fn report_descriptor(&self, report_id: u8) -> Items {
         use Item::*;
+        use super::usage::KeyUsage::*;
         Items::from([
             GUsagePage(0x01), // Generic Desktop Page
             LUsage(0x06),     // Keyboard
@@ -307,6 +304,7 @@ mod tests {
 
     #[test]
     fn input() {
+        use KeyUsage::*;
         let mut b = Kbd::new();
         b.write("Hello!\n");
 

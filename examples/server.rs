@@ -16,7 +16,7 @@ use burble::att::Access;
 use burble::gap::Appearance;
 use burble::gatt::Db;
 use burble::hci::AdvEvent;
-use burble::hid::{Input, MouseIn};
+use burble::hogp::{Input, MouseIn};
 use burble::*;
 use burble_const::Service;
 use burble_crypto::NumCompare;
@@ -63,7 +63,7 @@ async fn main() -> Result<()> {
     r
 }
 
-fn read_input(srv: Arc<hid::HidService>) {
+fn read_input(srv: Arc<hogp::HidService>) {
     let (tx, mut rx) = tokio::sync::mpsc::channel(1);
     std::thread::spawn(move || {
         // https://github.com/tokio-rs/tokio/issues/2466
@@ -116,7 +116,7 @@ async fn serve(args: Args, host: hci::Host) -> Result<()> {
         .with_pnp_id(dis::PnpId::new(dis::VendorId::USB(0x1209), 0x0001, (1, 0, 0)).unwrap())
         .define(&mut db, SEC);
     bas::BatteryService::new().define(&mut db, SEC);
-    let hid = hid::HidService::new();
+    let hid = hogp::HidService::new();
     //#[cfg(debug_assertions)]
     //db.morph_next();
     hid.define(&mut db);
