@@ -54,7 +54,7 @@ tracing.workspace = true
 
 [dev-dependencies]
 anyhow = "1.0.69"
-burble-fs = { path = "fs", version = "0.1.0" }
+burble-fs = { path = "fs" }
 clap = { version = "4.1.8", features = ["derive"] }
 matches = "0.1.10"
 sscanf = "0.4.0"
