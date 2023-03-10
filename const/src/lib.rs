@@ -1,4 +1,4 @@
-//! Database of Bluetooth assigned numbers.
+//! Bluetooth LE assigned numbers.
 
 #![warn(unused_crate_dependencies)]
 
