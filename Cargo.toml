@@ -2,7 +2,6 @@
 members = ["fs"]
 
 [workspace.package]
-version = "0.1.1"
 authors = ["Maxim Khitrov <mkhitrov@blackrockneuro.com>"]
 edition = "2021"
 rust-version = "1.65"
@@ -13,8 +12,8 @@ categories = ["api-bindings", "embedded", "hardware-support", "network-programmi
 
 [package]
 name = "burble"
+version = "0.1.2"
 description = "A cross-platform user-mode Bluetooth LE library"
-version.workspace = true
 authors.workspace = true
 edition.workspace = true
 rust-version.workspace = true
