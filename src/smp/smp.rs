@@ -5,7 +5,7 @@ use std::io;
 
 use futures_core::future::BoxFuture;
 
-use burble_crypto::NumCompare;
+pub use burble_crypto::NumCompare;
 pub(self) use cmd::*;
 pub use {consts::*, peripheral::*, secdb::*};
 
