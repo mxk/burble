@@ -1,6 +1,6 @@
 [package]
 name = "burble-fs"
-version = "0.1.1"
+version = "0.1.2"
 description = "Bluetooth LE file system storage backend"
 authors.workspace = true
 edition.workspace = true
