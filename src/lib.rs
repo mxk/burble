@@ -22,14 +22,21 @@ pub mod host;
 #[path = "l2cap/l2cap.rs"]
 pub mod l2cap;
 pub mod le;
-#[path = "profile/profile.rs"]
-mod profile;
 #[path = "smp/smp.rs"]
 pub mod smp;
 
 /// Service Discovery Protocol constants ([Vol 3] Part B).
 pub mod sdp {
     pub use burble_const::ServiceClass;
+}
+
+/// Independent Bluetooth profile and service implementations.
+mod profile {
+    pub mod bas;
+    pub mod dis;
+    #[path = "hid/hid.rs"]
+    pub mod hid;
+    pub mod hogp;
 }
 
 type SyncMutex<T> = parking_lot::Mutex<T>;
