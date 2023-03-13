@@ -91,8 +91,8 @@ impl RawAddr {
     /// Returns the device address as a little-endian byte array.
     #[inline(always)]
     #[must_use]
-    pub const fn as_le_bytes(&self) -> &[u8; 6] {
-        &self.0
+    pub const fn as_le_bytes(self) -> [u8; 6] {
+        self.0
     }
 }
 
