@@ -186,46 +186,46 @@ impl Db {
         for at in self.attr.iter() {
             let v = self.value(at);
             let mut v = v.unpack();
-            if let Some(typ) = at.typ {
-                match typ.typ() {
+            if let Some(uuid16) = at.typ {
+                match uuid16.typ() {
                     UuidType::Declaration(d) => match d {
                         PrimaryService | SecondaryService => {
                             last_char_hdl = (self.service_group(at.hdl).unwrap().attr.iter())
                                 .rfind(|at| at.is_char())
                                 .map_or(Handle::MIN, |at| at.hdl);
-                            let sec = ((!at.is_primary_service()).then_some("(Secondary) "))
+                            let sec = ((!at.is_primary_service()).then_some("Secondary"))
                                 .unwrap_or_default();
                             let uuid = Uuid::try_from(v.as_ref()).unwrap();
-                            if let UuidType::Service(s) = uuid.typ() {
-                                log!(at, "{sec}{s} <{uuid}>");
+                            if let UuidType::Service(_) = uuid.typ() {
+                                log!(at, "{sec}{uuid} <{uuid:?}>");
                             } else {
-                                log!(at, "{sec}Service <{uuid}>");
+                                log!(at, "{sec}Service <{uuid:?}>");
                             }
                         }
                         Include => log!(at, "|__ [Include {:#06X}..={:#06X}]", v.u16(), v.u16()),
                         Characteristic => {
                             cont = if at.hdl < last_char_hdl { '|' } else { ' ' };
-                            let _prop = Prop::from_bits(v.u8()).unwrap();
+                            let _prop = Prop::from_bits(v.u8()).unwrap(); // TODO
                             vhdl = Handle::new(v.u16()).unwrap();
                             let uuid = Uuid::try_from(v.as_ref()).unwrap();
-                            if let UuidType::Characteristic(c) = uuid.typ() {
-                                log!(at, "|__ {c} <{uuid}>");
+                            if let UuidType::Characteristic(_) = uuid.typ() {
+                                log!(at, "|__ {uuid} <{uuid:?}>");
                             } else {
-                                log!(at, "|__ Characteristic <{uuid}>");
+                                log!(at, "|__ Characteristic <{uuid:?}>");
                             }
                         }
-                        t => log!(at, "Unexpected {t}"),
+                        _ => unreachable!(),
                     },
-                    UuidType::Characteristic(_) => log!(at, "{cont}   |__ [Value <{typ}>]"),
-                    UuidType::Descriptor(d) => log!(at, "{cont}   |__ {d} <{typ}>"),
-                    t => log!(at, "Unexpected {t}"),
+                    UuidType::Characteristic(_) => log!(at, "{cont}   |__ [Value <{uuid16:?}>]"),
+                    UuidType::Descriptor(_) => log!(at, "{cont}   |__ {uuid16} <{uuid16:?}>"),
+                    typ => log!(at, "Unexpected {typ}"),
                 }
             } else {
-                let typ = self.typ(at);
+                let uuid = self.typ(at);
                 if at.hdl <= vhdl {
-                    log!(at, "{cont}   |__ [Value <{typ}>]");
+                    log!(at, "{cont}   |__ [Value <{uuid:?}>]");
                 } else {
-                    log!(at, "{cont}   |__ Descriptor <{typ}>");
+                    log!(at, "{cont}   |__ Descriptor <{uuid:?}>");
                 }
             }
         }
