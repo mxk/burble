@@ -122,10 +122,11 @@ async fn serve(args: Args, host: hci::Host) -> Result<()> {
     hid.define(&mut db);
     read_input(hid);
 
-    let srv = gatt::Server::new(db, Arc::new(burble_fs::GattServerStore::new()));
+    let srv = gatt::Server::new(db, Arc::new(burble_fs::GattServerStore::per_user("burble")));
     srv.db().dump();
 
-    let mut secdb = smp::SecDb::new(host.clone(), Arc::new(burble_fs::KeyStore::new()));
+    let key_store: Arc<smp::KeyStore> = Arc::new(burble_fs::KeyStore::per_user("burble"));
+    let mut secdb = smp::SecDb::new(host.clone(), Arc::clone(&key_store));
     tokio::task::spawn(async move { secdb.event_loop().await });
 
     // TODO: Redesign ChanManager for easier integration with advertisements
@@ -151,9 +152,10 @@ async fn serve(args: Args, host: hci::Host) -> Result<()> {
                 };
                 info!("Serving {link}");
                 let mut smp = cm.smp_chan(link).unwrap();
+                let key_store = Arc::clone(&key_store);
                 tokio::task::spawn(async move {
                     let mut dev = smp::Device::new().with_display(Box::new(Dev)).with_confirm(Box::new(Dev));
-                    smp.respond(&mut dev, &burble_fs::KeyStore::new()).await
+                    smp.respond(&mut dev, key_store.as_ref()).await
                 });
                 let br = cm.att_chan(link).unwrap();
                 srv_task = Some(tokio::task::spawn(srv.attach(&br).serve(br)));

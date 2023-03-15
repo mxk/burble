@@ -14,23 +14,26 @@ use burble::{gatt, smp};
 pub struct KeyStore(Dir);
 
 impl KeyStore {
-    /// Creates a security database store in the current user's local data
+    const NAME: &'static str = "keys";
+
+    /// Creates or opens a security database store in the specified root
     /// directory.
+    #[inline(always)]
+    #[must_use]
+    pub fn open(root: impl AsRef<Path>) -> Self {
+        Self(Dir::open(root, Self::NAME))
+    }
+
+    /// Creates or opens a security database store in the current user's local
+    /// data directory.
     ///
     /// # Panics
     ///
     /// Panics if it cannot determine the user directory.
     #[inline(always)]
     #[must_use]
-    pub fn new() -> Self {
-        Self(Dir::new("keys"))
-    }
-}
-
-impl Default for KeyStore {
-    #[inline(always)]
-    fn default() -> Self {
-        Self::new()
+    pub fn per_user(app: impl AsRef<Path>) -> Self {
+        Self(Dir::per_user(app, Self::NAME))
     }
 }
 
@@ -51,6 +54,11 @@ impl burble::PeerStore for KeyStore {
     fn remove(&self, peer: Addr) {
         self.0.remove(peer);
     }
+
+    #[inline(always)]
+    fn clear(&self) {
+        self.0.clear();
+    }
 }
 
 /// GATT server database stored in a file system directory.
@@ -58,23 +66,26 @@ impl burble::PeerStore for KeyStore {
 pub struct GattServerStore(Dir);
 
 impl GattServerStore {
-    /// Creates a GATT server database store in the current user's local data
+    const NAME: &'static str = "gatts";
+
+    /// Creates or opens a GATT server database store in the specified root
     /// directory.
+    #[inline(always)]
+    #[must_use]
+    pub fn open(root: impl AsRef<Path>) -> Self {
+        Self(Dir::open(root, Self::NAME))
+    }
+
+    /// Creates or opens a GATT server database store in the current user's
+    /// local data directory.
     ///
     /// # Panics
     ///
     /// Panics if it cannot determine the user directory.
     #[inline(always)]
     #[must_use]
-    pub fn new() -> Self {
-        Self(Dir::new("gatts"))
-    }
-}
-
-impl Default for GattServerStore {
-    #[inline(always)]
-    fn default() -> Self {
-        Self::new()
+    pub fn per_user(app: impl AsRef<Path>) -> Self {
+        Self(Dir::per_user(app, Self::NAME))
     }
 }
 
@@ -95,25 +106,39 @@ impl burble::PeerStore for GattServerStore {
     fn remove(&self, peer: Addr) {
         self.0.remove(peer);
     }
+
+    #[inline(always)]
+    fn clear(&self) {
+        self.0.clear();
+    }
 }
 
 /// Database in a file system directory.
 #[derive(Clone, Debug)]
+#[repr(transparent)]
 struct Dir(PathBuf);
 
 impl Dir {
     const FILE_NAME_FMT: &'static str = "P-001122334455";
 
-    /// Creates a database store in the current user's local data directory.
+    /// Creates or opens a database store in the specified root directory.
+    #[inline(always)]
+    #[must_use]
+    fn open(root: impl AsRef<Path>, name: impl AsRef<Path>) -> Self {
+        Self(root.as_ref().join(name))
+    }
+
+    /// Creates or opens a database store in the current user's local data
+    /// directory.
     ///
     /// # Panics
     ///
     /// Panics if it cannot determine the user directory.
     #[must_use]
-    fn new(name: impl AsRef<Path>) -> Self {
+    fn per_user(app: impl AsRef<Path>, name: impl AsRef<Path>) -> Self {
         let dir = dirs::data_local_dir()
             .expect("user directory not available")
-            .join("burble")
+            .join(app.as_ref())
             .join(name);
         Self(dir)
     }
@@ -128,6 +153,7 @@ impl Dir {
             );
         }
         let path = self.path(peer);
+        // TODO: Make atomic?
         match fs::File::create(&path)
             .and_then(|mut f| f.write_all(s.as_bytes()).and_then(|_| f.sync_data()))
         {
@@ -168,6 +194,15 @@ impl Dir {
             Ok(_) => {}
             Err(e) if matches!(e.kind(), io::ErrorKind::NotFound) => {}
             Err(e) => error!("Failed to remove: {} ({e})", path.display()),
+        }
+    }
+
+    /// Removes all peer data from the file system.
+    fn clear(&self) {
+        match fs::remove_dir_all(&self.0) {
+            Ok(_) => {}
+            Err(e) if matches!(e.kind(), io::ErrorKind::NotFound) => {}
+            Err(e) => error!("Failed to remove: {} ({e})", self.0.display()),
         }
     }
 

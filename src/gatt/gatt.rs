@@ -19,7 +19,7 @@ mod io;
 mod server;
 
 /// Interface to persistent GATT cache storage.
-type CacheStore = dyn crate::PeerStore<Value = Cache>;
+pub type CacheStore = dyn crate::PeerStore<Value = Cache>;
 
 /// Per-device cache ([Vol 3] Part G, Section 2.5.2). For bonded devices
 /// (`bond_id` is [`Some`]), the cache persists across connections.

@@ -58,6 +58,9 @@ pub trait PeerStore: std::fmt::Debug + Send + Sync {
 
     /// Removes peer data.
     fn remove(&self, peer: le::Addr);
+
+    /// Removes all peer data.
+    fn clear(&self);
 }
 
 /// Forwards [`core::fmt::Display`] implementation to [`core::fmt::Debug`].

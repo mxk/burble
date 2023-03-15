@@ -11,7 +11,7 @@ use burble_crypto::LTK;
 use crate::hci;
 
 /// Interface to persistent security database storage.
-pub(crate) type KeyStore = dyn crate::PeerStore<Value = Keys>;
+pub type KeyStore = dyn crate::PeerStore<Value = Keys>;
 
 /// Security keys for a peer device.
 #[derive(Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
