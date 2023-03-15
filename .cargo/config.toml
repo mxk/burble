@@ -10,6 +10,7 @@ rustflags = [
     "-Wunused_qualifications",
     "-Wvariant_size_differences",
     "-Wclippy::cargo",
+    "-Aclippy::multiple_crate_versions", # bitflags v1 and v2
     "-Wclippy::nursery",
     "-Aclippy::significant_drop_in_scrutinee", # TODO: Remove
     "-Aclippy::redundant_pub_crate",

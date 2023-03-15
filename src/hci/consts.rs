@@ -1,7 +1,5 @@
 use std::fmt::{Debug, Formatter};
 
-use bitflags::bitflags;
-
 pub use burble_const::CompanyId;
 use OpcodeGroup::*;
 
@@ -471,10 +469,11 @@ impl EventCode {
     }
 }
 
-bitflags! {
+bitflags::bitflags! {
     /// Event parameter format.
-    #[repr(transparent)]
+    #[derive(Clone, Copy, Debug)]
     #[must_use]
+    #[repr(transparent)]
     pub(super) struct EventFmt: u8 {
         /// Event contains a status parameter.
         const STATUS = 1 << 0;
@@ -487,8 +486,8 @@ bitflags! {
         /// Event contains a BIG handle.
         const BIG_HANDLE = 1 << 4;
         /// Handle type mask ([Vol 4] Part E, Section 5.3.1)
-        const HANDLE = Self::CONN_HANDLE.bits | Self::SYNC_HANDLE.bits |
-                       Self::ADV_HANDLE.bits | Self::BIG_HANDLE.bits;
+        const HANDLE = Self::CONN_HANDLE.bits() | Self::SYNC_HANDLE.bits() |
+                       Self::ADV_HANDLE.bits() | Self::BIG_HANDLE.bits();
     }
 }
 
@@ -600,9 +599,9 @@ pub enum Phy {
     LeCoded = 0x03,
 }
 
-bitflags! {
+bitflags::bitflags! {
     /// PHY preference mask ([Vol 4] Part E, Section 7.8.48).
-    #[derive(Default)]
+    #[derive(Clone, Copy, Debug, Default)]
     #[repr(transparent)]
     pub struct PhyMask: u8 {
         const LE_1M = 1 << 0;
@@ -611,10 +610,10 @@ bitflags! {
     }
 }
 
-bitflags! {
+bitflags::bitflags! {
     /// Basic properties of an advertising event
     /// ([Vol 4] Part E, Section 7.8.53).
-    #[derive(Default)]
+    #[derive(Clone, Copy, Debug, Default)]
     #[repr(transparent)]
     pub struct AdvProp: u16 {
         const CONNECTABLE = 1 << 0;
@@ -627,9 +626,10 @@ bitflags! {
     }
 }
 
-bitflags! {
+bitflags::bitflags! {
     /// Channels used for transmitting advertising packets
     /// ([Vol 4] Part E, Section 7.8.53).
+    #[derive(Clone, Copy, Debug)]
     #[repr(transparent)]
     pub struct AdvChanMap: u8 {
         const CH37 = 1 << 0;
@@ -639,7 +639,7 @@ bitflags! {
 }
 
 impl Default for AdvChanMap {
-    #[inline]
+    #[inline(always)]
     fn default() -> Self {
         Self::all()
     }

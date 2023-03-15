@@ -62,9 +62,10 @@ impl Access {
             Perm::KEY_MIN <= n && n <= Perm::KEY_MAX && n % 8 == 0 || n == 0,
             "invalid encryption key length"
         );
-        let n = n.saturating_sub(Perm::KEY_OFF) & Perm::KEY_LEN.bits;
-        // SAFETY: All bits are valid
-        Self(unsafe { Perm::from_bits_unchecked(self.0.difference(Perm::KEY_LEN).bits | n) })
+        let n = n.saturating_sub(Perm::KEY_OFF) & Perm::KEY_LEN.bits();
+        Self(Perm::from_bits_retain(
+            self.0.difference(Perm::KEY_LEN).bits() | n,
+        ))
     }
 
     /// Returns the type of access (read and/or write).
@@ -77,7 +78,7 @@ impl Access {
     #[inline]
     #[must_use]
     const fn index(self) -> usize {
-        self.0.access_type().bits as usize
+        self.0.access_type().bits() as usize
     }
 }
 
@@ -91,7 +92,7 @@ impl BitOr for Access {
 }
 
 /// Server attribute access request.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug)]
 #[must_use]
 pub struct Request {
     pub(crate) op: Opcode,
@@ -170,7 +171,7 @@ impl From<Access> for Perms {
 
 bitflags::bitflags! {
     /// Attribute permissions ([Vol 3] Part F, Section 3.2.5).
-    #[derive(Default)]
+    #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
     #[must_use]
     #[repr(transparent)]
     struct Perm: u8 {
@@ -179,7 +180,7 @@ bitflags::bitflags! {
         /// Write access.
         const WRITE = 1 << 1;
         /// Read/write access.
-        const READ_WRITE = Self::READ.bits | Self::WRITE.bits;
+        const READ_WRITE = Self::READ.bits() | Self::WRITE.bits();
 
         /// Authentication flag.
         const AUTHN = 1 << 2;
@@ -231,7 +232,7 @@ impl Perm {
     #[inline]
     #[must_use]
     const fn key_len(self) -> u8 {
-        match self.intersection(Self::KEY_LEN).bits {
+        match self.intersection(Self::KEY_LEN).bits() {
             0 => 0,
             n => n + Self::KEY_OFF,
         }

@@ -278,6 +278,7 @@ impl RawChan {
 
 bitflags::bitflags! {
     /// Channel status flags.
+    #[derive(Clone, Copy, Debug)]
     #[repr(transparent)]
     pub(super) struct Status: u8 {
         /// Channel is closed.

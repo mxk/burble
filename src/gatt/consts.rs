@@ -1,13 +1,11 @@
 use std::fmt::Debug;
 use std::num::NonZeroU8;
 
-use bitflags::bitflags;
-
 pub use burble_const::{Characteristic, Declaration, Descriptor, Service, Unit};
 
-bitflags! {
+bitflags::bitflags! {
     /// Characteristic properties ([Vol 3] Part G, Section 3.3.1.1).
-    #[derive(Default)]
+    #[derive(Clone, Copy, Debug, Default)]
     #[repr(transparent)]
     pub struct Prop: u8 {
         /// Permits broadcasts of the Characteristic Value using Server
@@ -41,14 +39,13 @@ impl Prop {
     /// Returns a mask of valid CCCD bits.
     #[inline(always)]
     pub(super) const fn cccd_mask(self) -> Cccd {
-        // SAFETY: All bits are valid
-        unsafe { Cccd::from_bits_unchecked((self.bits >> 4) as u16 & Cccd::NOTIFY_MASK.bits) }
+        Cccd::from_bits_retain((self.bits() >> 4) as u16 & Cccd::NOTIFY_MASK.bits())
     }
 }
 
-bitflags! {
+bitflags::bitflags! {
     /// Characteristic extended properties ([Vol 3] Part G, Section 3.3.3.1).
-    #[derive(Default)]
+    #[derive(Clone, Copy, Debug, Default)]
     #[repr(transparent)]
     pub struct ExtProp: u16 {
         /// Permits reliable writes of the Characteristic Value.
@@ -58,11 +55,10 @@ bitflags! {
     }
 }
 
-bitflags! {
+bitflags::bitflags! {
     /// Client Characteristic Configuration descriptor value
     /// ([Vol 3] Part G, Section 3.3.3.3).
-    #[allow(clippy::unsafe_derive_deserialize)]
-    #[derive(Default, serde::Deserialize, serde::Serialize)]
+    #[derive(Clone, Copy, Debug, Default, serde::Deserialize, serde::Serialize)]
     #[repr(transparent)]
     #[serde(transparent)]
     pub struct Cccd: u16 {
@@ -73,15 +69,14 @@ bitflags! {
         /// set if the characteristic's properties have the `INDICATE` bit set.
         const INDICATE = 1 << 1;
         /// Notify or indicate bit mask.
-        const NOTIFY_MASK = Self::NOTIFY.bits | Self::INDICATE.bits;
+        const NOTIFY_MASK = Self::NOTIFY.bits() | Self::INDICATE.bits();
     }
 }
 
-bitflags! {
+bitflags::bitflags! {
     /// Client Supported Features characteristic value
     /// ([Vol 3] Part G, Section 7.2).
-    #[allow(clippy::unsafe_derive_deserialize)]
-    #[derive(Default, serde::Deserialize, serde::Serialize)]
+    #[derive(Clone, Copy, Debug, Default, serde::Deserialize, serde::Serialize)]
     #[repr(transparent)]
     #[serde(transparent)]
     pub(super) struct ClientFeature: u8 {
@@ -94,10 +89,10 @@ bitflags! {
     }
 }
 
-bitflags! {
+bitflags::bitflags! {
     /// Server Supported Features characteristic value
     /// ([Vol 3] Part G, Section 7.4).
-    #[derive(Default)]
+    #[derive(Clone, Copy, Debug, Default)]
     #[repr(transparent)]
     pub(super) struct ServerFeature: u8 {
         /// The server supports Enhanced ATT bearer.

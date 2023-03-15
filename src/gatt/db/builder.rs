@@ -1,6 +1,5 @@
 use std::ops::{Deref, DerefMut};
 
-use bitflags::bitflags;
 use smallvec::SmallVec;
 use structbuf::{Pack, Packer, StructBuf};
 
@@ -383,9 +382,9 @@ impl Builder<CharacteristicDef> {
     }
 }
 
-bitflags! {
+bitflags::bitflags! {
     /// Builder flags.
-    #[derive(Default)]
+    #[derive(Clone, Copy, Debug, Default)]
     #[repr(transparent)]
     pub struct Bld: u8 {
         const MORPH = 1 << 0;

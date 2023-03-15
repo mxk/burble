@@ -8,7 +8,6 @@ use std::sync::Arc;
 use std::task::{ready, Context, Poll};
 use std::time::Duration;
 
-use bitflags::bitflags;
 use structbuf::{Pack, Packer};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error};
@@ -293,10 +292,9 @@ impl Conn {
     }
 }
 
-bitflags! {
+bitflags::bitflags! {
     /// Connection security properties.
-    #[allow(clippy::unsafe_derive_deserialize)]
-    #[derive(Default, serde::Deserialize, serde::Serialize)]
+    #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
     #[repr(transparent)]
     #[serde(transparent)]
     pub(crate) struct ConnSec: u8 {
@@ -306,24 +304,24 @@ bitflags! {
         const AUTHZ = 1 << 1;
         /// Trusted relationship flag ([Vol 3] Part C, Section 9.4).
         const BOND = 1 << 2;
-        /// Encryption key length mask.
-        const KEY_LEN = 0x1F << 3;
     }
 }
 
 impl ConnSec {
+    /// Encryption key length mask.
+    pub const KEY_LEN: Self = Self::from_bits_retain(0x1F << 3);
+
     /// Creates a key length property.
     #[inline(always)]
     pub const fn key_len(n: u8) -> Self {
         assert!(56 <= n && n <= 128 && n % 8 == 0);
-        // SAFETY: All bits are valid
-        unsafe { Self::from_bits_unchecked(n) }
+        Self::from_bits_retain(n)
     }
 }
 
 impl Display for ConnSec {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let k = self.intersection(Self::KEY_LEN).bits;
+        let k = self.intersection(Self::KEY_LEN).bits();
         if k == 0 {
             return f.write_str("Unencrypted");
         }

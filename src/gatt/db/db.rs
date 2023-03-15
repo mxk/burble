@@ -333,8 +333,8 @@ impl Db {
             .expect("invalid characteristic");
         // SAFETY: 0 < val < end <= self.attr.len()
         let desc = unsafe { self.attr.get_unchecked(val + 1..end) };
-        // SAFETY: All bits are valid and a valid handle is at indices 1-2
-        let props = unsafe { Prop::from_bits_unchecked(*dval.get_unchecked(0)) };
+        // SAFETY: A valid handle is at indices 1-2
+        let props = Prop::from_bits_retain(unsafe { *dval.get_unchecked(0) });
         let ext_props = props.contains(Prop::EXT_PROPS).then(|| {
             (desc.iter().find(|&at| Attr::is_ext_props(at))).map_or(ExtProp::empty(), |at| {
                 ExtProp::from_bits_truncate(self.value(at).unpack().u16())
@@ -525,8 +525,7 @@ impl DbEntry<'_, CharacteristicDef> {
     #[inline]
     #[must_use]
     pub fn properties(&self) -> Prop {
-        // SAFETY: All bits are valid
-        unsafe { Prop::from_bits_unchecked(self.val.unpack().u8()) }
+        Prop::from_bits_retain(self.val.unpack().u8())
     }
 
     /// Returns the handle of the value attribute.

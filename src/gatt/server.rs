@@ -500,8 +500,7 @@ impl ServerCtx {
     fn csf_write(&self, w: &WriteReq) -> IoResult {
         let mut v = ClientFeature::empty().bits().to_le_bytes();
         w.update(&mut v)?;
-        // SAFETY: We allow the client to set unknown feature bits
-        let new = unsafe { ClientFeature::from_bits_unchecked(v[0]) };
+        let new = ClientFeature::from_bits_retain(v[0]);
         let mut cc = self.cc.lock();
         if !new.contains(cc.cache.client_features) {
             // The client is not allowed to clear any bits

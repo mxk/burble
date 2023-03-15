@@ -52,6 +52,7 @@ pub(super) enum Item {
 
 bitflags::bitflags! {
     /// Input, output, and feature item attribute flags.
+    #[derive(Clone, Copy, Debug)]
     pub(crate) struct Attr: u32 {
         const CONST        = 1 << 0; // Data / constant
         const VAR          = 1 << 1; // Array / variable
@@ -109,9 +110,9 @@ impl Item {
     fn append(&self, b: &mut Vec<u8>) {
         use Item::*;
         match *self {
-            MInput(v) => append_main(b, 0b1000, v.bits),
-            MOutput(v) => append_main(b, 0b1001, v.bits),
-            MFeature(v) => append_main(b, 0b1011, v.bits),
+            MInput(v) => append_main(b, 0b1000, v.bits()),
+            MOutput(v) => append_main(b, 0b1001, v.bits()),
+            MFeature(v) => append_main(b, 0b1011, v.bits()),
 
             MPhysical(ref v) => append_collection(b, 0x00, v),
             MApplication(ref v) => append_collection(b, 0x01, v),

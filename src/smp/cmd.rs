@@ -9,7 +9,7 @@ use crate::le;
 use super::*;
 
 /// SMP command ([Vol 3] Part H, Section 3.3).
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug)]
 pub(super) enum Command {
     PairingRequest(PairingParams),
     PairingResponse(PairingParams),
@@ -103,7 +103,7 @@ impl TryFrom<Payload> for Command {
 }
 
 /// Pairing request/response command ([Vol 3] Part H, Section 3.5.1).
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug)]
 pub(super) struct PairingParams {
     /// IO capabilities.
     pub io_cap: IoCap,

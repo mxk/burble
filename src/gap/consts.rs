@@ -1,5 +1,3 @@
-use bitflags::bitflags;
-
 /// Response data types ([Assigned Numbers] Section 2.3).
 #[derive(
     Clone,
@@ -55,9 +53,9 @@ pub(super) enum ResponseDataType {
     ManufacturerData = 0xFF,                  // [CSS] Part A, Section 1.4
 }
 
-bitflags! {
+bitflags::bitflags! {
     /// Advertising response data flags ([CSS] Part A, Section 1.3).
-    #[derive(Default)]
+    #[derive(Clone, Copy, Debug, Default)]
     #[repr(transparent)]
     pub struct AdvFlag: u8 {
         /// LE Limited Discoverable Mode.

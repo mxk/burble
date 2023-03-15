@@ -193,7 +193,7 @@ impl OutputDev for Kbd {
 
 bitflags::bitflags! {
     /// Key modifier flags.
-    #[derive(Default)]
+    #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
     pub struct KeyMod: u8 {
         /// Left Ctrl
         const LCTRL = 1 << 0;
@@ -264,13 +264,13 @@ impl From<In> for Key {
 
 impl From<Key> for In {
     fn from(k: Key) -> Self {
-        [k.m.bits, k.u.into()]
+        [k.m.bits(), k.u.into()]
     }
 }
 
 bitflags::bitflags! {
     /// Keyboard indicator flags.
-    #[derive(Default)]
+    #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
     struct KbdInd: u8 {
         const NUM_LOCK = 1 << 0;
         const CAPS_LOCK = 1 << 1;
@@ -288,7 +288,7 @@ impl From<Out> for KbdInd {
 
 impl From<KbdInd> for Out {
     fn from(v: KbdInd) -> Self {
-        [v.bits]
+        [v.bits()]
     }
 }
 

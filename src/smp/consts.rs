@@ -1,5 +1,3 @@
-use bitflags::bitflags;
-
 // TODO: Remove Eq and PartialEq from types that don't need them
 
 /// User input capabilities ([Vol 3] Part H, Section 2.3.2, Table 2.3).
@@ -118,9 +116,9 @@ impl IoCap {
     }
 }
 
-bitflags! {
+bitflags::bitflags! {
     /// Requested security properties ([Vol 3] Part H, Section 3.5.1).
-    #[derive(Default)]
+    #[derive(Clone, Copy, Debug, Default)]
     #[repr(transparent)]
     pub struct AuthReq: u8 {
         /// Bonding requested.
@@ -136,9 +134,9 @@ bitflags! {
     }
 }
 
-bitflags! {
+bitflags::bitflags! {
     /// LE Key Distribution parameter ([Vol 3] Part H, Section 3.6.1).
-    #[derive(Default)]
+    #[derive(Clone, Copy, Debug, Default)]
     #[repr(transparent)]
     pub struct KeyDist: u8 {
         /// Ignored in LE Secure Connections pairing.

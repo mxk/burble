@@ -286,7 +286,7 @@ impl FromEvent for LeBufferSize {
 
 /// `HCI_LE_Set_Extended_Advertising_Parameters` command parameters
 /// ([Vol 4] Part E, Section 7.8.53).
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct AdvParams {
     pub props: AdvProp,
     pub pri_interval: (Duration, Duration),
