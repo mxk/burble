@@ -304,13 +304,12 @@ bitflags::bitflags! {
         const AUTHZ = 1 << 1;
         /// Trusted relationship flag ([Vol 3] Part C, Section 9.4).
         const BOND = 1 << 2;
+        /// Encryption key length mask.
+        const KEY_LEN = 0x1F << 3;
     }
 }
 
 impl ConnSec {
-    /// Encryption key length mask.
-    pub const KEY_LEN: Self = Self::from_bits_retain(0x1F << 3);
-
     /// Creates a key length property.
     #[inline(always)]
     pub const fn key_len(n: u8) -> Self {
