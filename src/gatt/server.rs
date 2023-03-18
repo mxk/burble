@@ -458,8 +458,14 @@ impl ServerCtx {
                 r.complete(trim(v.bits().to_le_bytes().as_ref()))
             }
             UuidType::Characteristic(DatabaseHash) => {
-                // [Vol 3] Part G, Section 7.3
-                if matches!(r.op, Opcode::ReadByTypeReq) {
+                // "In order to read the value of this characteristic the client
+                // shall always use the GATT Read Using Characteristic UUID
+                // sub-procedure. The Starting Handle should be set to 0x0001
+                // and the Ending Handle should be set to 0xFFFF"
+                // ([Vol 3] Part G, Section 7.3). Windows violates the spec by
+                // using `ReadReq`, so we allow this exception, and we also
+                // don't check the handle range.
+                if matches!(r.op, Opcode::ReadByTypeReq | Opcode::ReadReq) {
                     self.cc.lock().db_hash_read = true;
                     r.complete(self.srv.db.hash().to_le_bytes())
                 } else {
