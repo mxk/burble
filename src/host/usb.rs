@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use rusb::UsbContext;
 use structbuf::{Pack, Packer};
-use tracing::{debug, error, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::hci;
 
@@ -18,7 +18,8 @@ use super::*;
 type Device = rusb::Device<rusb::Context>;
 type DeviceHandle = rusb::DeviceHandle<rusb::Context>;
 
-/// Provides access to USB Bluetooth controllers.
+/// Provides access to USB Bluetooth controllers. Dropping this value stops the
+/// event processing thread, which stops all transfers.
 #[derive(Debug)]
 pub struct Usb {
     ctx: rusb::Context,
@@ -29,7 +30,7 @@ pub struct Usb {
 impl Usb {
     /// Creates an interface for accessing USB Bluetooth controllers.
     pub fn new() -> Result<Self> {
-        let ctx = libusb::new_ctx()?;
+        let ctx = libusb::new_ctx(libusb::LIBUSB_LOG_LEVEL_INFO)?;
         let run = Arc::new(AtomicBool::new(true));
         let thr = {
             let (ctx, run) = (ctx.clone(), Arc::clone(&run));
@@ -45,13 +46,15 @@ impl Usb {
             .collect())
     }
 
-    /// Convenience function for opening the first device with matching
+    /// Convenience function for opening the first device with the matching
     /// Vendor/Product ID.
     pub fn open_first(&self, vid: u16, pid: u16) -> Result<UsbController> {
-        debug!("Opening ID {:04X}:{:04X}", vid, pid);
-        let dev = (self.ctx.open_device_with_vid_pid(vid, pid)).ok_or(rusb::Error::NotFound)?;
-        let ep = Endpoints::discover(&dev.device()).ok_or(rusb::Error::NotSupported)?;
-        Ok(UsbController::new(dev, ep))
+        info!("Opening device ID {:04X}:{:04X}", vid, pid);
+        let hdl = libusb::reset(
+            (self.ctx.open_device_with_vid_pid(vid, pid)).ok_or(rusb::Error::NotFound)?,
+        )?;
+        let ep = Endpoints::discover(&hdl.device()).ok_or(rusb::Error::NotSupported)?;
+        Ok(UsbController::new(hdl, ep))
     }
 
     /// Dedicated thread for async transfer and hotplug events.
@@ -93,10 +96,13 @@ impl UsbControllerInfo {
 
     /// Opens the controller for HCI communication.
     pub fn open(&self) -> Result<UsbController> {
-        debug!("Opening {:?}", self.dev);
+        info!("Opening {:?}", self.dev);
         // BUG: This may hang for two minutes on Windows when UsbDk enters some
         // bad state.
-        Ok(UsbController::new(self.dev.open()?, self.ep))
+        Ok(UsbController::new(
+            libusb::reset(self.dev.open()?)?,
+            self.ep,
+        ))
     }
 }
 
@@ -110,38 +116,32 @@ impl Display for UsbControllerInfo {
 /// Opened USB Bluetooth controller.
 #[derive(Clone, Debug)]
 pub struct UsbController {
-    dev: Arc<DeviceHandle>,
+    hdl: Arc<DeviceHandle>,
     ep: Endpoints,
 }
 
 impl UsbController {
-    fn new(dev: DeviceHandle, ep: Endpoints) -> Self {
-        let dev = Arc::new(dev);
-        Self { dev, ep }
-    }
-
-    /// Issues a USB reset command.
-    pub fn reset(&mut self) -> Result<()> {
-        // TODO: Take shared reference: https://github.com/a1ien/rusb/issues/148
-        Ok((Arc::get_mut(&mut self.dev).expect("device is shared")).reset()?)
+    fn new(hdl: DeviceHandle, ep: Endpoints) -> Self {
+        let hdl = Arc::new(hdl);
+        Self { hdl, ep }
     }
 
     /// Configures the controller for HCI access.
     pub fn init(&mut self) -> Result<()> {
-        let dev = Arc::get_mut(&mut self.dev).expect("device is shared");
+        let hdl = Arc::get_mut(&mut self.hdl).expect("device is shared");
         if rusb::supports_detach_kernel_driver() {
             // Not supported on Windows
             debug!("Enabling automatic kernel driver detachment");
-            dev.set_auto_detach_kernel_driver(true)?;
+            hdl.set_auto_detach_kernel_driver(true)?;
         }
         debug!("Claiming main interface");
-        dev.claim_interface(self.ep.main_iface)?;
+        hdl.claim_interface(self.ep.main_iface)?;
         if let Some(isoch) = self.ep.isoch_iface {
             // Do not reserve any bandwidth for the isochronous interface
             debug!("Claiming isochronous interface");
-            dev.claim_interface(isoch)?;
+            hdl.claim_interface(isoch)?;
             debug!("Setting isochronous interface alt setting to 0");
-            dev.set_alternate_setting(isoch, 0)?;
+            hdl.set_alternate_setting(isoch, 0)?;
         }
         Ok(())
     }
@@ -149,7 +149,7 @@ impl UsbController {
 
 impl Transport for UsbController {
     fn command(&self) -> Box<dyn Transfer> {
-        let mut t = libusb::Transfer::new_control(&self.dev, hci::CMD_BUF);
+        let mut t = libusb::Transfer::new_control(&self.hdl, hci::CMD_BUF);
         // [Vol 4] Part B, Section 2.2.2
         t.control_setup(
             libusb::CMD_REQUEST_TYPE,      // bmRequestType
@@ -165,7 +165,7 @@ impl Transport for UsbController {
 
     fn event(&self) -> Box<dyn Transfer> {
         Box::new(UsbTransfer::Idle(libusb::Transfer::new_interrupt(
-            &self.dev,
+            &self.hdl,
             self.ep.event,
             hci::EVT_BUF,
         )))
@@ -177,7 +177,7 @@ impl Transport for UsbController {
             Direction::Out => self.ep.acl_out,
         };
         Box::new(UsbTransfer::Idle(libusb::Transfer::new_bulk(
-            &self.dev,
+            &self.hdl,
             endpoint,
             hci::ACL_HDR + max_data_len as usize,
         )))
@@ -342,6 +342,10 @@ mod libusb {
     use std::task::{Poll, Waker};
     use std::time::Duration;
 
+    pub use rusb::constants::{
+        LIBUSB_LOG_LEVEL_DEBUG, LIBUSB_LOG_LEVEL_ERROR, LIBUSB_LOG_LEVEL_INFO,
+        LIBUSB_LOG_LEVEL_NONE, LIBUSB_LOG_LEVEL_WARNING,
+    };
     use rusb::{constants::*, ffi::*, *};
     use structbuf::{Pack, Packer, StructBuf};
     use tracing::{debug, error, info, trace, warn};
@@ -383,7 +387,7 @@ mod libusb {
         // libusb_unref_device. If libusb_exit is called before
         // libusb_free_transfer, the device contexts are set to NULL, leading to
         // a crash.
-        dev: Arc<DeviceHandle<T>>,
+        hdl: Arc<DeviceHandle<T>>,
     }
 
     // SAFETY: libusb_transfer is not aliased
@@ -394,30 +398,30 @@ mod libusb {
 
     impl<T: UsbContext> Transfer<T> {
         /// Creates a new control transfer.
-        pub fn new_control(dev: &Arc<DeviceHandle<T>>, mut buf_cap: usize) -> Box<Self> {
+        pub fn new_control(hdl: &Arc<DeviceHandle<T>>, mut buf_cap: usize) -> Box<Self> {
             buf_cap += LIBUSB_CONTROL_SETUP_SIZE;
-            let mut t = Self::new(dev, LIBUSB_TRANSFER_TYPE_CONTROL, 0, buf_cap);
+            let mut t = Self::new(hdl, LIBUSB_TRANSFER_TYPE_CONTROL, 0, buf_cap);
             t.buf.put_at(LIBUSB_CONTROL_SETUP_SIZE, []);
             t
         }
 
         /// Creates a new interrupt transfer.
         pub fn new_interrupt(
-            dev: &Arc<DeviceHandle<T>>,
+            hdl: &Arc<DeviceHandle<T>>,
             endpoint: u8,
             buf_cap: usize,
         ) -> Box<Self> {
             assert_eq!(endpoint & LIBUSB_ENDPOINT_DIR_MASK, LIBUSB_ENDPOINT_IN);
-            Self::new(dev, LIBUSB_TRANSFER_TYPE_INTERRUPT, endpoint, buf_cap)
+            Self::new(hdl, LIBUSB_TRANSFER_TYPE_INTERRUPT, endpoint, buf_cap)
         }
 
         /// Creates a new bulk transfer.
-        pub fn new_bulk(dev: &Arc<DeviceHandle<T>>, endpoint: u8, buf_cap: usize) -> Box<Self> {
-            Self::new(dev, LIBUSB_TRANSFER_TYPE_BULK, endpoint, buf_cap)
+        pub fn new_bulk(hdl: &Arc<DeviceHandle<T>>, endpoint: u8, buf_cap: usize) -> Box<Self> {
+            Self::new(hdl, LIBUSB_TRANSFER_TYPE_BULK, endpoint, buf_cap)
         }
 
         /// Creates new transfer state and buffer.
-        fn new(dev: &Arc<DeviceHandle<T>>, typ: u8, endpoint: u8, buf_cap: usize) -> Box<Self> {
+        fn new(hdl: &Arc<DeviceHandle<T>>, typ: u8, endpoint: u8, buf_cap: usize) -> Box<Self> {
             // SAFETY: C API call
             let inner = NonNull::new(unsafe { libusb_alloc_transfer(0) })
                 .expect("failed to allocate libusb_transfer struct");
@@ -433,7 +437,7 @@ mod libusb {
                 },
                 waker: SyncMutex::new(None),
                 result: None,
-                dev: Arc::clone(dev),
+                hdl: Arc::clone(hdl),
             });
             let mut inner = t.inner_mut();
             if is_out {
@@ -512,7 +516,7 @@ mod libusb {
                 LIBUSB_ENDPOINT_IN => self.buf.capacity(),
                 _ => unreachable!(),
             };
-            let dev_handle = self.dev.as_raw();
+            let dev_handle = self.hdl.as_raw();
             let inner = self.inner_mut();
             if inner.transfer_type == LIBUSB_TRANSFER_TYPE_CONTROL {
                 let n =
@@ -690,7 +694,7 @@ mod libusb {
     }
 
     /// Creates a new libusb context.
-    pub(super) fn new_ctx() -> Result<Context> {
+    pub(super) fn new_ctx(max_log_level: c_int) -> Result<Context> {
         init_lib();
         let ctx = Context::new()?;
         if cfg!(windows) {
@@ -703,9 +707,35 @@ mod libusb {
         check!(libusb_set_option(
             ctx.as_raw(),
             LIBUSB_OPTION_LOG_LEVEL,
-            LIBUSB_LOG_LEVEL_DEBUG,
+            max_log_level,
         ))?;
         Ok(ctx)
+    }
+
+    /// Resets the specified device handle.
+    pub(super) fn reset<T: UsbContext>(mut hdl: DeviceHandle<T>) -> Result<DeviceHandle<T>> {
+        let dev = hdl.device();
+        let port = dev.port_numbers()?;
+        info!("Resetting {dev:?}");
+        let ctx = match hdl.reset() {
+            Ok(_) => return Ok(hdl),
+            Err(Error::NotFound) => {
+                let ctx = hdl.context().clone();
+                drop(hdl);
+                ctx
+            }
+            Err(e) => return Err(e),
+        };
+        info!("Attempting to re-open device");
+        let all = ctx.devices()?;
+        for dev in all.iter() {
+            match dev.port_numbers() {
+                Ok(p) if p == port => return dev.open(),
+                _ => {}
+            }
+        }
+        error!("Failed to find device after reset");
+        Err(Error::NoDevice)
     }
 
     /// Initializes libusb.
@@ -736,8 +766,27 @@ mod libusb {
         });
     }
 
-    /// Converts libusb error code to [`rusb::Error`].
+    /// Converts libusb error code to [`Error`].
     const fn api_error(rc: c_int) -> Error {
+        /// Compile-time detection of new error variants.
+        const fn _error_variants(e: Error) {
+            match e {
+                Error::Io
+                | Error::InvalidParam
+                | Error::Access
+                | Error::NoDevice
+                | Error::NotFound
+                | Error::Busy
+                | Error::Timeout
+                | Error::Overflow
+                | Error::Pipe
+                | Error::Interrupted
+                | Error::NoMem
+                | Error::NotSupported
+                | Error::BadDescriptor
+                | Error::Other => {}
+            }
+        }
         match rc {
             LIBUSB_ERROR_IO => Error::Io,
             LIBUSB_ERROR_INVALID_PARAM => Error::InvalidParam,
@@ -752,26 +801,6 @@ mod libusb {
             LIBUSB_ERROR_NO_MEM => Error::NoMem,
             LIBUSB_ERROR_NOT_SUPPORTED => Error::NotSupported,
             _ => Error::Other,
-        }
-    }
-
-    /// Compile-time detection of new error variants.
-    const fn _error_variants(e: Error) {
-        match e {
-            Error::Io
-            | Error::InvalidParam
-            | Error::Access
-            | Error::NoDevice
-            | Error::NotFound
-            | Error::Busy
-            | Error::Timeout
-            | Error::Overflow
-            | Error::Pipe
-            | Error::Interrupted
-            | Error::NoMem
-            | Error::NotSupported
-            | Error::BadDescriptor
-            | Error::Other => {}
         }
     }
 
