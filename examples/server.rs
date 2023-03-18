@@ -63,7 +63,7 @@ async fn main() -> Result<()> {
     r
 }
 
-fn read_input(srv: Arc<hogp::HidService>) {
+fn read_input(srv: Arc<hogp::HidService>) -> tokio::task::JoinHandle<()> {
     let (tx, mut rx) = tokio::sync::mpsc::channel(1);
     std::thread::spawn(move || {
         // https://github.com/tokio-rs/tokio/issues/2466
@@ -80,7 +80,7 @@ fn read_input(srv: Arc<hogp::HidService>) {
                     None => return,
                     Some(ln) => ln,
                 },
-                //_ = tokio::signal::ctrl_c() => return,
+                _ = tokio::signal::ctrl_c() => return,
             };
             let mut tok = ln.split_ascii_whitespace();
             let Some(cmd) = tok.next() else { continue };
@@ -101,7 +101,7 @@ fn read_input(srv: Arc<hogp::HidService>) {
             };
             srv.exec(inp).await.unwrap();
         }
-    });
+    })
 }
 
 async fn serve(args: Args, host: hci::Host) -> Result<()> {
@@ -120,7 +120,7 @@ async fn serve(args: Args, host: hci::Host) -> Result<()> {
     //#[cfg(debug_assertions)]
     //db.morph_next();
     hid.define(&mut db);
-    read_input(hid);
+    let mut input_task = read_input(hid);
 
     let srv = gatt::Server::new(db, Arc::new(burble_fs::GattServerStore::per_user("burble")));
     srv.db().dump();
@@ -140,6 +140,7 @@ async fn serve(args: Args, host: hci::Host) -> Result<()> {
             adv_task = Some(tokio::task::spawn(advertise(args, host.clone())));
         }
         tokio::select! {
+            _ = &mut input_task => return Ok(()),
             adv = async { adv_task.as_mut().unwrap().await }, if adv_task.is_some() => {
                 info!("Advertisement result: {:?}", adv);
                 adv_task = None;

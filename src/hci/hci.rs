@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use structbuf::{Pack, Packer};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 
 pub use {adv::*, cmd::*, consts::*, event::*, handle::*};
 
@@ -230,20 +230,37 @@ impl EventLoop {
     /// Receives HCI events until cancellation.
     async fn run(h: Host, c: CancellationToken) -> Result<()> {
         debug!("Event loop started");
-        loop {
+        let r = loop {
             let r: Result<Event> = tokio::select! {
                 r = h.next_event() => r,
                 _ = c.cancelled() => {
                     debug!("Event loop terminating");
-                    return Ok(());
+                    break Ok(());
                 }
             };
             if let Err(e) = r {
                 // TODO: Ignore certain errors, like short write
                 error!("Event loop error: {e}");
-                return Err(e);
+                break Err(e);
             }
+        };
+        // We reset the controller when the event loop exits to ensure that it
+        // stops all communication. Doing this at the transport layer would be
+        // better, but WinUSB does not support actual device resets.
+        // TODO: Is there a better place to do this?
+        let mut reset = h.new_cmd();
+        reset.append().u16(Opcode::Reset).u8(0);
+        match reset.submit() {
+            Ok(fut) => {
+                if let Err(e) = fut.await {
+                    warn!("Failed to reset controller: {e}");
+                } else {
+                    debug!("Submitted controller reset command");
+                }
+            }
+            Err(e) => warn!("Failed to submit reset command: {e}"),
         }
+        r
     }
 }
 

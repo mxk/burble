@@ -126,6 +126,9 @@ impl Event {
     #[inline]
     fn new(mut t: tokio::sync::OwnedRwLockWriteGuard<EventTransfer>) -> Result<Self> {
         let raw = t.xfer.as_deref().expect("invalid event transfer").as_ref();
+        // Sanity check for RTL8761BUV sending a nonsensical CommandComplete
+        // event with UnknownCommand status that stalls the command interface.
+        assert_ne!(raw, [0x0E, 4, 0, 0, 0, 1], "invalid CommandComplete event");
         let (hdr, params) = EventHeader::unpack(raw)?;
         trace!("{hdr:?} {params:02X?}");
         (t.hdr, t.params_off) = (hdr, raw.len() - params.len());
