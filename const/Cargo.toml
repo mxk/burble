@@ -1,6 +1,6 @@
 [package]
 name = "burble-const"
-version = "0.2.0"
+version = "0.2.1"
 description = "Bluetooth LE assigned numbers"
 authors.workspace = true
 edition.workspace = true
