@@ -1,10 +1,4 @@
-//! Blackrock User-Mode Bluetooth LE library.
-//!
-//! A user-mode BLE stack implementation starting from the USB transport layer
-//! via [libusb].
-//!
-//! [libusb]: https://github.com/libusb/libusb
-
+#![doc = include_str!("../README.md")]
 #![cfg_attr(test, allow(unused_crate_dependencies))]
 
 pub use profile::*;

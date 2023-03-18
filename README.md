@@ -1,6 +1,10 @@
 Blackrock User-Mode Bluetooth LE Library
 ========================================
 
+[![crates.io](https://img.shields.io/crates/v/burble?style=for-the-badge)](https://crates.io/crates/burble)
+[![docs.rs](https://img.shields.io/badge/docs.rs-burble-66c2a5?style=for-the-badge&logo=docs.rs)](https://docs.rs/burble)
+[![License](https://img.shields.io/crates/l/burble?style=for-the-badge)](https://choosealicense.com/licenses/mpl-2.0/)
+
 A cross-platform user-mode BLE stack implementation starting from the USB transport layer via [libusb].
 
 [libusb]: https://github.com/libusb/libusb
