@@ -3,7 +3,7 @@ use std::ops::Range;
 use std::{iter, mem, slice};
 
 use structbuf::Unpack;
-use tracing::{info, warn};
+use tracing::{debug, warn};
 
 pub use builder::*;
 
@@ -167,7 +167,7 @@ impl Db {
         Ok(it.map_while(RspResult::ok).collect())
     }
 
-    /// Logs database contents.
+    /// Logs database contents at `debug` level.
     ///
     /// # Panics
     ///
@@ -176,13 +176,13 @@ impl Db {
         use Declaration::*;
         macro_rules! log {
             ($at:ident, $fmt:expr$(, $($args:tt)*)?) => {
-                info!("[{:#06X}] {}", u16::from($at.hdl), format_args!($fmt$(, $($args)*)?))
+                ::tracing::debug!("[{:#06X}] {}", u16::from($at.hdl), format_args!($fmt$(, $($args)*)?))
             };
         }
         let mut vhdl = Handle::MIN;
         let mut last_char_hdl = Handle::MIN;
         let mut cont = ' ';
-        info!("GATT database:");
+        debug!("GATT database:");
         for at in self.attr.iter() {
             let v = self.value(at);
             let mut v = v.unpack();
