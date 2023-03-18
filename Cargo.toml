@@ -12,7 +12,7 @@ categories = ["api-bindings", "embedded", "hardware-support", "network-programmi
 
 [workspace.metadata.release]
 allow-branch = ["main", "!HEAD"]
-pre-release-commit-message = "Release {{version}}"
+pre-release-commit-message = "Release v{{version}}"
 shared-version = true
 tag-message = ""
 tag-prefix = ""
