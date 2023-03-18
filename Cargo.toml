@@ -10,6 +10,13 @@ license = "MPL-2.0"
 keywords = ["ble", "bluetooth", "bluez", "gatt", "l2cap"]
 categories = ["api-bindings", "embedded", "hardware-support", "network-programming", "os"]
 
+[workspace.metadata.release]
+allow-branch = ["main", "!HEAD"]
+pre-release-commit-message = "Release {{version}}"
+shared-version = true
+tag-message = ""
+tag-prefix = ""
+
 [package]
 name = "burble"
 version = "0.1.2"
