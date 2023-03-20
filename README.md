@@ -92,12 +92,18 @@ $ RUST_LOG=info cargo run --example server -- --vid 7392 --pid c611
 Windows
 -------
 
-Either use [Zadig] to install the [WinUSB] driver for a specific Bluetooth device, or install [UsbDk], which has some known issues, but doesn't require changing device drivers. See [libusb Windows wiki page][libusb-Windows] for more info.
+Either use [Zadig] to install the [WinUSB] driver for a specific Bluetooth device (recommended), or install [UsbDk], which has some known issues, but doesn't require changing device drivers. See [libusb Windows wiki page][libusb-Windows] for more info.
 
 [Zadig]: https://zadig.akeo.ie/
 [WinUSB]: https://learn.microsoft.com/en-us/windows-hardware/drivers/usbcon/winusb-installation
 [UsbDk]: https://github.com/daynix/UsbDk/releases
 [libusb-Windows]: https://github.com/libusb/libusb/wiki/Windows#driver-installation
+
+### Using Zadig
+
+1. Run Zadig and enable Options → List All Devices.
+2. Select the target controller.
+3. Install either WinUSB or libusbK driver. In the future, libusbK may be preferred because WinUSB cannot perform a full device reset.
 
 ### UsbDk Known Issues
 
