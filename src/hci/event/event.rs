@@ -126,9 +126,6 @@ impl Event {
     #[inline]
     fn new(mut t: tokio::sync::OwnedRwLockWriteGuard<EventTransfer>) -> Result<Self> {
         let raw = t.xfer.as_deref().expect("invalid event transfer").as_ref();
-        // Sanity check for RTL8761BUV sending a nonsensical CommandComplete
-        // event with UnknownCommand status that stalls the command interface.
-        assert_ne!(raw, [0x0E, 4, 0, 0, 0, 1], "invalid CommandComplete event");
         let (hdr, params) = EventHeader::unpack(raw)?;
         trace!("{hdr:?} {params:02X?}");
         (t.hdr, t.params_off) = (hdr, raw.len() - params.len());
@@ -426,6 +423,17 @@ impl Receivers {
     fn notify(&mut self, xfer: &Arc<AsyncRwLock<EventTransfer>>, evt: &Event) {
         let hdr = &evt.0.hdr;
         if hdr.code.is_cmd() {
+            if hdr.cmd_quota == 0 && hdr.opcode.is_none() && !hdr.status.is_ok() {
+                // RTL8761BUV sends this invalid event (makes no sense to have a
+                // non-zero status for the zero opcode) when the controller had
+                // an unconsumed event from a previous connection. We let the
+                // command timeout take care of any retry logic, and we ignore
+                // the command quota because the controller never increases it
+                // later, permanently stalling the HCI interface.
+                warn!("Ignored corrupt command completion: {hdr:?}");
+                self.cmd_quota = 1;
+                return;
+            }
             self.cmd_quota = hdr.cmd_quota;
             if hdr.opcode.is_some() {
                 (self.queue.iter_mut().find(|r| r.opcode == hdr.opcode)).map_or_else(

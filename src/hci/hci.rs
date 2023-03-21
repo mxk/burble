@@ -154,7 +154,11 @@ impl Host {
 
         // Unmask all events.
         let all = enum_iterator::all().collect();
-        self.set_event_mask(&all).await?;
+        match self.set_event_mask(&all).await {
+            // The first command after a reset may time out, so we retry it once
+            Err(e) if e.is_timeout() => self.set_event_mask(&all).await,
+            r => r,
+        }?;
         let _ignore_unknown = self.set_event_mask_page_2(&all).await;
         self.le_set_event_mask(&all).await?;
 
