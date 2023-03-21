@@ -1,4 +1,5 @@
 use structbuf::Pack;
+use tokio::time::timeout;
 use tracing::trace;
 
 pub use {hci::*, le::*};
@@ -46,15 +47,23 @@ impl Command {
         // TODO: Block on CommandQuotaExceeded
         // TODO: Restore cmd_quota if submit() fails? Probably doesn't matter.
         *self.host_cmd.lock() = Some(self.xfer.submit()?.await?);
-        // [Vol 4] Part E, Section 4.4
+        // Handle command status and completion events with a one-second timeout
+        // ([Vol 4] Part E, Section 4.4).
         loop {
-            let e = events.next().await.map_err(|e| Error::CommandAborted {
-                opcode: self.opcode,
-                status: e.status().unwrap_or(Status::UnspecifiedError),
-            })?;
-            if matches!(e.code(), EventCode::CommandComplete) {
-                return Ok(e);
-            } else if let Err(e) = e.cmd_ok() {
+            let evt = match timeout(Duration::from_secs(1), events.next()).await {
+                Ok(r) => r.map_err(|e| Error::CommandAborted {
+                    opcode: self.opcode,
+                    status: e.status().unwrap_or(Status::UnspecifiedError),
+                })?,
+                Err(_timeout) => {
+                    return Err(Error::CommandTimeout {
+                        opcode: self.opcode,
+                    })
+                }
+            };
+            if matches!(evt.code(), EventCode::CommandComplete) {
+                return Ok(evt);
+            } else if let Err(e) = evt.cmd_ok() {
                 return Err(e); // Failed CommandStatus
             }
         }

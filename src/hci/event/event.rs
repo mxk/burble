@@ -402,7 +402,6 @@ impl EventRouter {
             e
         })?;
 
-        // TODO: One second command timeout ([Vol 4] Part E, Section 4.4)
         let evt = Event::new(xfer)?;
         self.recv.lock().notify(&rwlock, &evt);
         Ok(evt)

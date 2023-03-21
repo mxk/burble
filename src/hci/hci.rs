@@ -52,6 +52,8 @@ pub enum Error {
     CommandFailed { opcode: Opcode, status: Status },
     #[error("{opcode} command aborted: {status}")]
     CommandAborted { opcode: Opcode, status: Status },
+    #[error("{opcode} command timeout")]
+    CommandTimeout { opcode: Opcode },
 }
 
 impl Error {
@@ -67,7 +69,25 @@ impl Error {
             | InvalidEvent(_)
             | UnknownEvent { .. }
             | DuplicateCommands { .. }
-            | CommandQuotaExceeded => None,
+            | CommandQuotaExceeded
+            | CommandTimeout { .. } => None,
+        }
+    }
+
+    /// Returns whether the error is a result of a timeout.
+    #[must_use]
+    pub const fn is_timeout(&self) -> bool {
+        use Error::*;
+        match *self {
+            Host(e) => e.is_timeout(),
+            CommandTimeout { .. } => true,
+            Hci { .. }
+            | InvalidEvent(_)
+            | UnknownEvent { .. }
+            | DuplicateCommands { .. }
+            | CommandQuotaExceeded
+            | CommandFailed { .. }
+            | CommandAborted { .. } => false,
         }
     }
 }
