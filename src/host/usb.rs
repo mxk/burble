@@ -716,6 +716,12 @@ mod libusb {
     pub(super) fn reset<T: UsbContext>(mut hdl: DeviceHandle<T>) -> Result<DeviceHandle<T>> {
         let dev = hdl.device();
         let port = dev.port_numbers()?;
+        // WinUSB API with libusbK driver requires interface 0 to be claimed in
+        // order to perform an actual device reset:
+        // https://github.com/libusb/libusb/issues/1261
+        if let Err(e) = hdl.claim_interface(0) {
+            warn!("Failed to claim interface 0 before reset: {e}");
+        }
         info!("Resetting {dev:?}");
         let ctx = match hdl.reset() {
             Ok(_) => return Ok(hdl),

@@ -92,10 +92,10 @@ $ RUST_LOG=info cargo run --example server -- --vid 7392 --pid c611
 Windows
 -------
 
-Either use [Zadig] to install the [WinUSB] driver for a specific Bluetooth device (recommended), or install [UsbDk], which has some known issues, but doesn't require changing device drivers. See [libusb Windows wiki page][libusb-Windows] for more info.
+Either use [Zadig] to install the [libusbK] driver for a specific Bluetooth device (recommended), or install [UsbDk], which has some known issues, but doesn't require changing device drivers. See [libusb Windows wiki page][libusb-Windows] for more info.
 
 [Zadig]: https://zadig.akeo.ie/
-[WinUSB]: https://learn.microsoft.com/en-us/windows-hardware/drivers/usbcon/winusb-installation
+[libusbK]: https://github.com/mcuee/libusbk
 [UsbDk]: https://github.com/daynix/UsbDk/releases
 [libusb-Windows]: https://github.com/libusb/libusb/wiki/Windows#driver-installation
 
@@ -103,9 +103,13 @@ Either use [Zadig] to install the [WinUSB] driver for a specific Bluetooth devic
 
 1. Run Zadig and enable Options → List All Devices.
 2. Select the target controller.
-3. Install either WinUSB or libusbK driver. In the future, libusbK may be preferred because WinUSB cannot perform a full device reset.
+3. Install either [libusbK] or [WinUSB] driver. The former is recommended because it can reset the USB device. Each driver has some known issues, so if you're having problems with one, try the other.
+
+[WinUSB]: https://learn.microsoft.com/en-us/windows-hardware/drivers/usbcon/winusb-installation
 
 ### UsbDk Known Issues
+
+Unfortunately, UsbDk appears to be unmaintained, so its use is discouraged.
 
 #### Hanging libusb_open
 
@@ -122,6 +126,31 @@ A `WDF_VIOLATION` [BSOD] may be caused by having multiple [multiple power policy
 
 [BSOD]: https://github.com/daynix/UsbDk/issues/115
 [multiple power policy owners]: https://sourceforge.net/p/libusb-win32/mailman/message/25823294/
+
+FAQ
+---
+
+### What are the goals of this project?
+
+Burble aims to become a feature-complete Bluetooth LE library, implementing HCI, L2CAP, GAP, ATT, GATT, and SMP layers for both the Central and Peripheral roles.
+
+### How is this different from other Bluetooth libraries?
+
+Most libraries use OS-specific APIs and drivers to access the controller. Burble communicates with the controller directly over USB (or another transport), bypassing all OS-specific functionality. This allows it to run on all major operating systems.
+
+### What are the downsides to this approach?
+
+Burble requires exclusive access to the controller. The OS and other applications cannot use the controller at the same time. On Windows, this means installing a libusb-compatible driver which prevents the OS from identifying the controller as a Bluetooth device. On Linux, the driver is automatically detached while Burble is using the controller.
+
+Another potential downside is loss of vendor-specific functionality. Though this can be added for individual controllers, Burble focuses on implementing the Core Bluetooth Specification that is common to all controllers.
+
+### What are the advantages?
+
+Having exclusive controller access allows complete control over all aspects of the controller operation, advertising, scanning, GATT services, etc. This is particularly useful for implementing the peripheral role when you need specific configuration for GAP and GATT services.
+
+### Can Burble be used in embedded (`no_std`) systems?
+
+Currently, no, but this is an eventual goal. A few components, like the libusb event thread, currently require `std`. These will be put behind feature flags or redesigned to allow Burble core to function on any system that can implement the `host::Transport` trait.
 
 Tested Controllers
 ------------------
