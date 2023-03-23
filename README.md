@@ -40,7 +40,7 @@ The [server](examples/server.rs) example brings up a demo GATT server to test co
 
 ### Listing available Bluetooth controllers
 
-```
+```ignore
 $ cargo run --example server
 Available controllers (pass 'ID <VID>:<PID>' to '--vid' and '--pid' options):
 Bus 002 Device 012: ID 7392:c611
@@ -58,7 +58,7 @@ Some clients may not support extended LE advertising. Use the `--legacy` option 
 
 [nRF]: https://play.google.com/store/apps/details?id=no.nordicsemi.android.mcp
 
-```
+```ignore
 $ RUST_LOG=info cargo run --example server -- --vid 7392 --pid c611
  INFO burble::host::usb::libusb: libusb version: 1.0.26.11724
  INFO burble::host::usb::libusb: Using WinUSB backend
