@@ -88,6 +88,49 @@ impl Opcode {
     pub const fn is_some(self) -> bool {
         !self.is_none()
     }
+
+    /// Returns the associated octet and mask of the command in the
+    /// `Supported_Commands` parameter of `HCI_Read_Local_Supported_Commands`
+    /// ([Vol 4] Part E, Section 6.27). Returns `(0, 0)` for unconditionally
+    /// supported commands.
+    #[must_use]
+    pub(super) const fn mask(self) -> (usize, u8) {
+        use Opcode::*;
+        let (octet, bit) = match self {
+            None | ReadLocalSupportedCommands => (0, u32::MAX),
+            SetEventMask => (5, 6),
+            Reset => (5, 7),
+            SetControllerToHostFlowControl => (10, 5),
+            HostBufferSize => (10, 6),
+            SetEventMaskPage2 => (22, 2),
+            WriteLeHostSupport => (24, 6),
+            ReadLocalVersionInformation => (14, 3),
+            ReadBufferSize => (14, 7),
+            ReadBdAddr => (15, 1),
+            LeSetEventMask => (25, 0),
+            LeReadBufferSize => (25, 1),
+            LeReadLocalSupportedFeatures => (25, 2),
+            LeReadBufferSizeV2 => (41, 5),
+            LeLongTermKeyRequestReply => (28, 1),
+            LeLongTermKeyRequestNegativeReply => (28, 2),
+            LeReadPhy => (35, 4),
+            LeSetDefaultPhy => (35, 5),
+            LeSetPhy => (35, 6),
+            LeSetAdvertisingSetRandomAddress => (36, 1),
+            LeSetExtendedAdvertisingParameters => (36, 2),
+            LeSetExtendedAdvertisingData => (36, 3),
+            LeSetExtendedScanResponseData => (36, 4),
+            LeSetExtendedAdvertisingEnable => (36, 5),
+            LeReadMaximumAdvertisingDataLength => (36, 6),
+            LeReadNumberOfSupportedAdvertisingSets => (36, 7),
+            LeRemoveAdvertisingSet => (37, 0),
+            LeClearAdvertisingSets => (37, 1),
+            LeSetPeriodicAdvertisingParameters => (37, 2),
+            LeSetPeriodicAdvertisingData => (37, 3),
+            LeSetPeriodicAdvertisingEnable => (37, 4),
+        };
+        (octet, ((bit >> 3 == 0) as u8).wrapping_shl(bit))
+    }
 }
 
 // Opcode group field definitions.
@@ -851,3 +894,18 @@ impl Debug for CoreVersion {
 }
 
 crate::impl_display_via_debug! { Opcode, EventCode, Status, CoreVersion }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn support_mask() {
+        use Opcode::*;
+        assert_eq!(None.mask(), (0, 0));
+        assert_eq!(ReadLocalSupportedCommands.mask(), (0, 0));
+        assert_eq!(SetEventMask.mask(), (5, 1 << 6));
+        assert_eq!(Reset.mask(), (5, 1 << 7));
+        assert_eq!(LeSetEventMask.mask(), (25, 1 << 0));
+    }
+}
