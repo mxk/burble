@@ -53,6 +53,7 @@ pub enum Opcode {
     // LE Controller commands ([Vol 4] Part E, Section 7.8)
     LeSetEventMask = Le.ocf(0x0001),
     LeReadBufferSize = Le.ocf(0x0002),
+    LeReadLocalSupportedFeatures = Le.ocf(0x0003),
     LeReadBufferSizeV2 = Le.ocf(0x0060),
     LeLongTermKeyRequestReply = Le.ocf(0x001A),
     LeLongTermKeyRequestNegativeReply = Le.ocf(0x001B),
@@ -704,6 +705,94 @@ pub enum AdvDataOp {
     Complete = 0x03,
     /// Unchanged data (just update the Advertising DID).
     Unchanged = 0x04,
+}
+
+bitflags::bitflags! {
+    /// LE link layer feature support bitmask ([Vol 6] Part B, Section 4.6).
+    #[derive(Clone, Copy, Debug)]
+    #[repr(transparent)]
+    pub struct LeFeature: u64 {
+        const ENCRYPTION = 1 << 0;
+        const CONNECTION_PARAMETERS_REQUEST_PROCEDURE = 1 << 1;
+        const EXTENDED_REJECT_INDICATION = 1 << 2;
+        const PERIPHERAL_INITIATED_FEATURES_EXCHANGE = 1 << 3;
+        const PING = 1 << 4;
+        const DATA_PACKET_LENGTH_EXTENSION = 1 << 5;
+        const LL_PRIVACY = 1 << 6;
+        const EXTENDED_SCANNING_FILTER_POLICIES = 1 << 7;
+        const LE_2M_PHY = 1 << 8;
+        const STABLE_MODULATION_INDEX_TRANSMITTER = 1 << 9;
+        const STABLE_MODULATION_INDEX_RECEIVER = 1 << 10;
+        const LE_CODED_PHY = 1 << 11;
+        const EXTENDED_ADVERTISING = 1 << 12;
+        const PERIODIC_ADVERTISING = 1 << 13;
+        const CHANNEL_SELECTION_ALGORITHM_2 = 1 << 14;
+        const POWER_CLASS_1 = 1 << 15;
+        const MINIMUM_NUMBER_OF_USED_CHANNELS_PROCEDURE = 1 << 16;
+        const CONNECTION_CTE_REQUEST = 1 << 17;
+        const CONNECTION_CTE_RESPONSE = 1 << 18;
+        const CONNECTIONLESS_CTE_TRANSMITTER = 1 << 19;
+        const CONNECTIONLESS_CTE_RECEIVER = 1 << 20;
+        const ANTENNA_SWITCHING_DURING_CTE_TRANSMISSION = 1 << 21;
+        const ANTENNA_SWITCHING_DURING_CTE_RECEPTION = 1 << 22;
+        const RECEIVING_CONSTANT_TONE_EXTENSIONS = 1 << 23;
+        const PERIODIC_ADVERTISING_SYNC_TRANSFER_SENDER = 1 << 24;
+        const PERIODIC_ADVERTISING_SYNC_TRANSFER_RECIPIENT = 1 << 25;
+        const SLEEP_CLOCK_ACCURACY_UPDATES = 1 << 26;
+        const REMOTE_PUBLIC_KEY_VALIDATION = 1 << 27;
+        const CONNECTED_ISOCHRONOUS_STREAM_CENTRAL = 1 << 28;
+        const CONNECTED_ISOCHRONOUS_STREAM_PERIPHERAL = 1 << 29;
+        const ISOCHRONOUS_BROADCASTER = 1 << 30;
+        const SYNCHRONIZED_RECEIVER = 1 << 31;
+        const CONNECTED_ISOCHRONOUS_STREAM_HOST_SUPPORT = 1 << 32;
+        const POWER_CONTROL_REQUEST = 0b11 << 33;
+        const PATH_LOSS_MONITORING = 1 << 35;
+        const PERIODIC_ADVERTISING_ADI_SUPPORT = 1 << 36;
+        const CONNECTION_SUBRATING = 1 << 37;
+        const CONNECTION_SUBRATING_HOST_SUPPORT = 1 << 38;
+        const CHANNEL_CLASSIFICATION = 1 << 39;
+        const ADVERTISING_CODING_SELECTION = 1 << 40;
+        const ADVERTISING_CODING_SELECTION_HOST_SUPPORT = 1 << 41;
+        const PERIODIC_ADVERTISING_WITH_RESPONSES_ADVERTISER = 1 << 43;
+        const PERIODIC_ADVERTISING_WITH_RESPONSES_SCANNER = 1 << 44;
+
+        const SEND_TO_PEER_MASK = Self::ENCRYPTION.bits()
+            | Self::CONNECTION_PARAMETERS_REQUEST_PROCEDURE.bits()
+            | Self::EXTENDED_REJECT_INDICATION.bits()
+            | Self::PERIPHERAL_INITIATED_FEATURES_EXCHANGE.bits()
+            | Self::DATA_PACKET_LENGTH_EXTENSION.bits()
+            | Self::LE_2M_PHY.bits()
+            | Self::STABLE_MODULATION_INDEX_TRANSMITTER.bits()
+            | Self::STABLE_MODULATION_INDEX_RECEIVER.bits()
+            | Self::LE_CODED_PHY.bits()
+            | Self::CHANNEL_SELECTION_ALGORITHM_2.bits()
+            | Self::POWER_CLASS_1.bits()
+            | Self::MINIMUM_NUMBER_OF_USED_CHANNELS_PROCEDURE.bits()
+            | Self::CONNECTION_CTE_REQUEST.bits()
+            | Self::CONNECTION_CTE_RESPONSE.bits()
+            | Self::RECEIVING_CONSTANT_TONE_EXTENSIONS.bits()
+            | Self::PERIODIC_ADVERTISING_SYNC_TRANSFER_SENDER.bits()
+            | Self::PERIODIC_ADVERTISING_SYNC_TRANSFER_RECIPIENT.bits()
+            | Self::SLEEP_CLOCK_ACCURACY_UPDATES.bits()
+            | Self::CONNECTED_ISOCHRONOUS_STREAM_CENTRAL.bits()
+            | Self::CONNECTED_ISOCHRONOUS_STREAM_PERIPHERAL.bits()
+            | Self::ISOCHRONOUS_BROADCASTER.bits()
+            | Self::SYNCHRONIZED_RECEIVER.bits()
+            | Self::CONNECTED_ISOCHRONOUS_STREAM_HOST_SUPPORT.bits()
+            | Self::POWER_CONTROL_REQUEST.bits()
+            | Self::PATH_LOSS_MONITORING.bits()
+            | Self::CONNECTION_SUBRATING.bits()
+            | Self::CONNECTION_SUBRATING_HOST_SUPPORT.bits()
+            | Self::CHANNEL_CLASSIFICATION.bits()
+            | Self::ADVERTISING_CODING_SELECTION.bits()
+            | Self::ADVERTISING_CODING_SELECTION_HOST_SUPPORT.bits()
+            | Self::PERIODIC_ADVERTISING_WITH_RESPONSES_ADVERTISER.bits()
+            | Self::PERIODIC_ADVERTISING_WITH_RESPONSES_SCANNER.bits();
+
+        const HOST_CONTROL_MASK = Self::CONNECTED_ISOCHRONOUS_STREAM_HOST_SUPPORT.bits()
+            | Self::CONNECTION_SUBRATING_HOST_SUPPORT.bits()
+            | Self::ADVERTISING_CODING_SELECTION_HOST_SUPPORT.bits();
+    }
 }
 
 /// Bluetooth Core Specification versions ([Assigned Numbers] Section 2.1).

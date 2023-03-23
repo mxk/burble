@@ -30,6 +30,13 @@ impl Host {
         self.exec(Opcode::LeReadBufferSize).await?.ok()
     }
 
+    /// Requests supported LE features for the controller
+    /// ([Vol 4] Part E, Section 7.8.3).
+    pub async fn le_read_local_supported_features(&self) -> Result<LeFeature> {
+        let r = self.exec(Opcode::LeReadLocalSupportedFeatures);
+        r.await?.map_ok(|_, p| LeFeature::from_bits_retain(p.u64()))
+    }
+
     /// Replies to an `HCI_LE_Long_Term_Key_Request` event from the controller,
     /// specifying the Long Term Key for the connection, if one is available
     /// ([Vol 4] Part E, Section 7.8.25 and 7.8.26).
