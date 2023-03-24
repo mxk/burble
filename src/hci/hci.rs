@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::task::{ready, Context, Poll};
 use std::time::Duration;
 
+use once_cell::sync::Lazy;
 use structbuf::{Pack, Packer};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, warn};
@@ -102,6 +103,7 @@ type CommandTransfer = SyncMutex<Option<Box<dyn host::Transfer>>>;
 #[derive(Clone, Debug)]
 pub struct Host {
     transport: Arc<dyn host::Transport>,
+    info: Arc<ControllerInfo>,
     router: Arc<EventRouter>,
     cmd: Arc<CommandTransfer>,
 }
@@ -113,6 +115,7 @@ impl Host {
     pub fn new(t: Arc<dyn host::Transport>) -> Self {
         Self {
             transport: t,
+            info: Arc::default(),
             router: EventRouter::new(),
             cmd: Arc::new(CommandTransfer::default()),
         }
@@ -121,7 +124,7 @@ impl Host {
     /// Returns the underlying transport.
     #[inline]
     #[must_use]
-    pub const fn transport(&self) -> &Arc<dyn host::Transport> {
+    pub(crate) const fn transport(&self) -> &Arc<dyn host::Transport> {
         &self.transport
     }
 
@@ -145,24 +148,39 @@ impl Host {
         self.router.update_conn(hdl, f);
     }
 
-    /// Performs a reset and basic controller initialization
-    /// ([Vol 6] Part D, Section 2.1).
-    pub async fn init(&self) -> Result<()> {
-        // TODO: USB endpoints need to be reset. Otherwise, old events are
-        // delivered. Try using libusb_set_configuration.
-        self.reset().await?;
+    /// Performs a reset and controller initialization
+    /// ([Vol 6] Part D, Section 2.1). The event loop must be running prior to
+    /// calling this method.
+    pub async fn init(&mut self) -> Result<()> {
+        let mut host = self.clone();
+        host.info = ControllerInfo::init();
+        let info = Arc::get_mut(&mut self.info).expect("host is shared");
+        host.reset().await?;
 
-        // Unmask all events.
-        let all = enum_iterator::all().collect();
-        match self.set_event_mask(&all).await {
+        // Get controller information
+        info.cmd = match host.read_local_supported_commands().await {
             // The first command after a reset may time out, so we retry it once
-            Err(e) if e.is_timeout() => self.set_event_mask(&all).await,
+            Err(e) if e.is_timeout() => host.read_local_supported_commands().await,
             r => r,
         }?;
-        let _ignore_unknown = self.set_event_mask_page_2(&all).await;
-        self.le_set_event_mask(&all).await?;
+        info.le_features = host.le_read_local_supported_features().await?;
 
-        let _ignore_unknown = self.write_le_host_support(true).await;
+        // Unmask all events
+        let all = enum_iterator::all().collect();
+        if info.cmd.is_supported(Opcode::SetEventMask) {
+            host.set_event_mask(&all).await?;
+        }
+        if info.cmd.is_supported(Opcode::SetEventMaskPage2) {
+            host.set_event_mask_page_2(&all).await?;
+        }
+        if info.cmd.is_supported(Opcode::LeSetEventMask) {
+            host.le_set_event_mask(&all).await?;
+        }
+
+        // TODO: Remove this command?
+        if info.cmd.is_supported(Opcode::WriteLeHostSupport) {
+            self.write_le_host_support(true).await?;
+        }
         Ok(())
     }
 
@@ -192,8 +210,11 @@ impl Host {
     #[must_use]
     pub fn event_loop(&self) -> EventLoop {
         let c = CancellationToken::new();
+        let mut host = self.clone();
+        // Drop ControllerInfo reference to allow exclusive access in init()
+        host.info = ControllerInfo::init();
         EventLoop {
-            h: tokio::spawn(EventLoop::run(self.clone(), c.clone())),
+            h: tokio::spawn(EventLoop::run(host, c.clone())),
             c: c.clone(),
             _g: c.drop_guard(),
         }
@@ -214,6 +235,13 @@ impl Host {
         opcode: Opcode,
         f: impl FnOnce(&mut Packer) + Send,
     ) -> Result<Event> {
+        if !self.info.cmd.is_supported(opcode) {
+            warn!("Ignoring unsupported command: {opcode}");
+            return Err(Error::CommandFailed {
+                opcode,
+                status: Status::UnknownCommand,
+            });
+        }
         let mut cmd = Command::new(self, opcode);
         f(&mut cmd.append());
         cmd.exec().await.map_err(|e| {
@@ -232,6 +260,29 @@ impl Host {
                 cmd
             },
         )
+    }
+}
+
+/// Static controller information.
+#[derive(Clone, Copy, Debug, Default)]
+struct ControllerInfo {
+    cmd: SupportedCommands,
+    le_features: LeFeature,
+}
+
+/// Controller information used during initialization.
+static INIT_CONTROLLER_INFO: Lazy<Arc<ControllerInfo>> = Lazy::new(|| {
+    Arc::new(ControllerInfo {
+        cmd: SupportedCommands::ALL,
+        le_features: LeFeature::all(),
+    })
+});
+
+impl ControllerInfo {
+    /// Returns controller info for use during initialization.
+    #[inline(always)]
+    fn init() -> Arc<Self> {
+        Arc::clone(&INIT_CONTROLLER_INFO)
     }
 }
 

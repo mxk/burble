@@ -47,6 +47,7 @@ pub enum Opcode {
     // Informational parameters commands ([Vol 4] Part E, Section 7.4)
     ReadLocalVersionInformation = InfoParams.ocf(0x0001),
     ReadLocalSupportedCommands = InfoParams.ocf(0x0002),
+    ReadLocalSupportedFeatures = InfoParams.ocf(0x0003),
     ReadBufferSize = InfoParams.ocf(0x0005),
     ReadBdAddr = InfoParams.ocf(0x0009),
 
@@ -105,6 +106,7 @@ impl Opcode {
             SetEventMaskPage2 => (22, 2),
             WriteLeHostSupport => (24, 6),
             ReadLocalVersionInformation => (14, 3),
+            ReadLocalSupportedFeatures => (14, 5),
             ReadBufferSize => (14, 7),
             ReadBdAddr => (15, 1),
             LeSetEventMask => (25, 0),
@@ -752,7 +754,7 @@ pub enum AdvDataOp {
 
 bitflags::bitflags! {
     /// LE link layer feature support bitmask ([Vol 6] Part B, Section 4.6).
-    #[derive(Clone, Copy, Debug)]
+    #[derive(Clone, Copy, Debug, Default)]
     #[repr(transparent)]
     pub struct LeFeature: u64 {
         const ENCRYPTION = 1 << 0;

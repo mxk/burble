@@ -51,7 +51,7 @@ async fn main() -> Result<()> {
         return Ok(());
     };
     ctlr.init()?;
-    let host = hci::Host::new(Arc::new(ctlr));
+    let mut host = hci::Host::new(Arc::new(ctlr));
     let event_loop = host.event_loop();
     host.init().await?;
     info!("Local version: {:?}", host.read_local_version().await?);

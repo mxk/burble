@@ -68,12 +68,18 @@ impl Host {
         self.exec(Opcode::ReadLocalVersionInformation).await?.ok()
     }
 
-    /// Returns the commands supported by the local controller
+    /// Returns the controller's supported commands
     /// ([Vol 4] Part E, Section 7.4.2).
     pub async fn read_local_supported_commands(&self) -> Result<SupportedCommands> {
         let r = self.exec(Opcode::ReadLocalSupportedCommands);
         // SAFETY: All bit patterns are valid
         r.await?.map_ok(|_, p| unsafe { p.read() })
+    }
+
+    /// Returns the controller's supported LMP features
+    /// ([Vol 4] Part E, Section 7.4.3).
+    pub async fn read_local_supported_features(&self) -> Result<()> {
+        unimplemented!() // TODO
     }
 
     /// Returns the controller's packet size and count limits
@@ -162,6 +168,9 @@ impl FromEvent for LocalVersion {
 pub struct SupportedCommands([u8; 64]);
 
 impl SupportedCommands {
+    /// Command mask with all commands enabled.
+    pub(in crate::hci) const ALL: Self = Self([u8::MAX; 64]);
+
     /// Returns whether the specified command is supported.
     #[inline]
     #[must_use]
@@ -169,6 +178,16 @@ impl SupportedCommands {
         let (octet, mask) = cmd.mask();
         // SAFETY: octet < 64
         unsafe { self.0.get_unchecked(octet) & mask != 0 || mask == 0 }
+    }
+
+    /// Returns `cmd` if it is supported or `default` otherwise.
+    #[inline(always)]
+    pub(super) fn prefer(&self, cmd: Opcode, default: Opcode) -> Opcode {
+        if self.is_supported(cmd) {
+            cmd
+        } else {
+            default
+        }
     }
 }
 

@@ -46,6 +46,7 @@ enum-iterator.workspace = true
 futures-core = "0.3.26"
 lazy_static = "1.4.0"
 num_enum.workspace = true
+once_cell = { version = "1.17.1", features = ["parking_lot"] }
 parking_lot = { version = "0.12.1", features = ["arc_lock", "hardware-lock-elision", "send_guard"] }
 paste.workspace = true
 pin-project = "1.0.12"

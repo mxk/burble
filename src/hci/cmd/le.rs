@@ -20,14 +20,8 @@ impl Host {
     /// be missing if the controller does not support v2 of this command
     /// ([Vol 4] Part E, Section 7.8.2).
     pub async fn le_read_buffer_size(&self) -> Result<LeBufferSize> {
-        // TODO: Use supported features to determine which version to use?
-        {
-            let r = self.exec(Opcode::LeReadBufferSizeV2).await?;
-            if r.status() != Status::UnknownCommand {
-                return r.ok();
-            }
-        }
-        self.exec(Opcode::LeReadBufferSize).await?.ok()
+        let opcode = (self.info.cmd).prefer(Opcode::LeReadBufferSizeV2, Opcode::LeReadBufferSize);
+        self.exec(opcode).await?.ok()
     }
 
     /// Requests supported LE features for the controller
