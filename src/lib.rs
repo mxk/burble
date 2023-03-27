@@ -5,6 +5,8 @@ pub use profile::*;
 
 #[path = "att/att.rs"]
 pub mod att;
+#[cfg(feature = "fs")]
+pub mod fs;
 #[path = "gap/gap.rs"]
 pub mod gap;
 #[path = "gatt/gatt.rs"]

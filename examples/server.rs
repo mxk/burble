@@ -120,10 +120,10 @@ async fn serve(args: Args, host: hci::Host) -> Result<()> {
     hid.define(&mut db);
     let mut input_task = read_input(hid);
 
-    let srv = gatt::Server::new(db, Arc::new(burble_fs::GattServerStore::per_user("burble")));
+    let srv = gatt::Server::new(db, Arc::new(fs::GattServerStore::per_user("burble")));
     srv.db().dump();
 
-    let key_store: Arc<smp::KeyStore> = Arc::new(burble_fs::KeyStore::per_user("burble"));
+    let key_store: Arc<smp::KeyStore> = Arc::new(fs::KeyStore::per_user("burble"));
     let mut secdb = smp::SecDb::new(host.clone(), Arc::clone(&key_store));
     tokio::task::spawn(async move { secdb.event_loop().await });
 

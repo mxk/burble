@@ -6,8 +6,7 @@ use std::{fs, io};
 
 use tracing::{debug, error, warn};
 
-use burble::le::Addr;
-use burble::{gatt, smp};
+use crate::{gatt, le::Addr, smp, PeerStore};
 
 /// Security database stored in a file system directory.
 #[derive(Clone, Debug)]
@@ -37,7 +36,7 @@ impl KeyStore {
     }
 }
 
-impl burble::PeerStore for KeyStore {
+impl PeerStore for KeyStore {
     type Value = smp::Keys;
 
     #[inline(always)]
@@ -89,7 +88,7 @@ impl GattServerStore {
     }
 }
 
-impl burble::PeerStore for GattServerStore {
+impl PeerStore for GattServerStore {
     type Value = gatt::Cache;
 
     #[inline(always)]
@@ -228,8 +227,8 @@ impl Dir {
 mod tests {
     use tempfile::Builder;
 
-    use burble::le::RawAddr;
-    use burble::PeerStore;
+    use crate::le::RawAddr;
+    use crate::PeerStore;
 
     use super::*;
 
