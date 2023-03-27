@@ -456,6 +456,9 @@ impl Receivers {
                     // TODO: Store reason?
                     self.conns.remove(&ConnHandle::new(hdr.handle).unwrap());
                 }
+                EventCode::HardwareError => {
+                    error!("Controller hardware error: {:#04X}", evt.0.params().u8());
+                }
                 _ => {}
             }
         }

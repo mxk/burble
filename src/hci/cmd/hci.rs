@@ -78,8 +78,9 @@ impl Host {
 
     /// Returns the controller's supported LMP features
     /// ([Vol 4] Part E, Section 7.4.3).
-    pub async fn read_local_supported_features(&self) -> Result<()> {
-        unimplemented!() // TODO
+    pub async fn read_local_supported_features(&self) -> Result<LmpFeature> {
+        let r = self.exec(Opcode::ReadLocalSupportedFeatures);
+        (r.await?).map_ok(|_, p| LmpFeature::from_bits_retain(p.u64()))
     }
 
     /// Returns the controller's packet size and count limits
@@ -98,18 +99,58 @@ impl Host {
 /// `HCI_Set_Event_Mask`, `HCI_Set_Event_Mask_Page_2`, and
 /// `HCI_LE_Set_Event_Mask` command parameters
 /// ([Vol 4] Part E, Section 7.3.1, 7.3.69, 7.8.1).
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
 pub struct EventMask {
     pub(in crate::hci) p1: u64,
     pub(in crate::hci) p2: u64,
     pub(in crate::hci) le: u64,
 }
 
+impl EventMask {
+    /// Returns an all-zero event mask that disables all maskable events.
+    #[inline(always)]
+    #[must_use]
+    pub const fn none() -> Self {
+        Self {
+            p1: 0,
+            p2: 0,
+            le: 0,
+        }
+    }
+
+    // Enables or disables the specified event.
+    #[inline(always)]
+    pub fn enable(&mut self, c: EventCode, enable: bool) {
+        c.set(self, enable);
+    }
+
+    /// Applies the event mask to the controller.
+    #[inline]
+    pub async fn apply(&self, host: &Host) -> Result<()> {
+        host.set_event_mask(self).await?;
+        if host.info.cmd.is_supported(Opcode::SetEventMaskPage2) {
+            host.set_event_mask_page_2(self).await?;
+        }
+        host.le_set_event_mask(self).await
+    }
+}
+
+impl Default for EventMask {
+    /// Returns a default event mask that has all the required library events
+    /// enabled.
+    #[inline]
+    fn default() -> Self {
+        enum_iterator::all::<EventCode>()
+            .filter(|&e| e.enable())
+            .collect()
+    }
+}
+
 impl FromIterator<EventCode> for EventMask {
     /// Creates an event mask from an iterator of events to enable.
     #[must_use]
     fn from_iter<T: IntoIterator<Item = EventCode>>(it: T) -> Self {
-        let mut m = Self::default();
+        let mut m = Self::none();
         for c in it {
             c.set(&mut m, true);
         }
@@ -168,9 +209,6 @@ impl FromEvent for LocalVersion {
 pub struct SupportedCommands([u8; 64]);
 
 impl SupportedCommands {
-    /// Command mask with all commands enabled.
-    pub(in crate::hci) const ALL: Self = Self([u8::MAX; 64]);
-
     /// Returns whether the specified command is supported.
     #[inline]
     #[must_use]
@@ -180,9 +218,17 @@ impl SupportedCommands {
         unsafe { self.0.get_unchecked(octet) & mask != 0 || mask == 0 }
     }
 
+    /// Returns whether all bits are set to zero.
+    #[inline(always)]
+    #[must_use]
+    pub(in crate::hci) fn is_empty(&self) -> bool {
+        self.0 == [0; 64]
+    }
+
     /// Returns `cmd` if it is supported or `default` otherwise.
     #[inline(always)]
-    pub(super) fn prefer(&self, cmd: Opcode, default: Opcode) -> Opcode {
+    #[must_use]
+    pub(in crate::hci) fn prefer(&self, cmd: Opcode, default: Opcode) -> Opcode {
         if self.is_supported(cmd) {
             cmd
         } else {

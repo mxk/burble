@@ -39,7 +39,7 @@ impl FromEvent for EncryptionChange {
     fn matches(c: EventCode) -> bool {
         matches!(
             c,
-            EventCode::EncryptionChangeV1 | EventCode::EncryptionChangeV2
+            EventCode::EncryptionChange | EventCode::EncryptionChangeV2
         )
     }
 

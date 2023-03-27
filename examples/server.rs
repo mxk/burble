@@ -53,9 +53,7 @@ async fn main() -> Result<()> {
     ctlr.init()?;
     let mut host = hci::Host::new(Arc::new(ctlr));
     let event_loop = host.event_loop();
-    host.init().await?;
-    info!("Local version: {:?}", host.read_local_version().await?);
-    info!("Device address: {:?}", host.read_bd_addr().await?);
+    host.init(&hci::EventMask::default()).await?;
     host.le_set_default_phy(Some(hci::PhyMask::LE_2M), Some(hci::PhyMask::LE_2M))
         .await?;
     let r = serve(args, host).await;

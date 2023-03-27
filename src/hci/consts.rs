@@ -58,6 +58,7 @@ pub enum Opcode {
     LeReadBufferSizeV2 = Le.ocf(0x0060),
     LeLongTermKeyRequestReply = Le.ocf(0x001A),
     LeLongTermKeyRequestNegativeReply = Le.ocf(0x001B),
+    LeReadSupportedStates = Le.ocf(0x001C),
     LeReadPhy = Le.ocf(0x0030),
     LeSetDefaultPhy = Le.ocf(0x0031),
     LeSetPhy = Le.ocf(0x0032),
@@ -115,6 +116,7 @@ impl Opcode {
             LeReadBufferSizeV2 => (41, 5),
             LeLongTermKeyRequestReply => (28, 1),
             LeLongTermKeyRequestNegativeReply => (28, 2),
+            LeReadSupportedStates => (28, 3),
             LeReadPhy => (35, 4),
             LeSetDefaultPhy => (35, 5),
             LeSetPhy => (35, 6),
@@ -171,12 +173,12 @@ pub enum EventCode {
     DisconnectionComplete = 0x05,
     AuthenticationComplete = 0x06,
     RemoteNameRequestComplete = 0x07,
-    EncryptionChangeV1 = 0x08,
+    EncryptionChange = 0x08,
     EncryptionChangeV2 = 0x59,
     ChangeConnectionLinkKeyComplete = 0x09,
     LinkKeyTypeChanged = 0x0A,
     ReadRemoteSupportedFeaturesComplete = 0x0B,
-    ReadRemoteVersionInformationComplete = 0x0C,
+    ReadRemoteVersionInformationComplete = 0x0C, // TODO: Log
     QosSetupComplete = 0x0D,
     CommandComplete = 0x0E,
     CommandStatus = 0x0F,
@@ -229,6 +231,7 @@ pub enum EventCode {
     LeReadLocalP256PublicKeyComplete = le(0x08),
     LeGenerateDhKeyComplete = le(0x09),
     LeEnhancedConnectionComplete = le(0x0A),
+    // TODO: LeEnhancedConnectionCompleteV2 = le(0x29),
     LeDirectedAdvertisingReport = le(0x0B),
     LePhyUpdateComplete = le(0x0C),
     LeExtendedAdvertisingReport = le(0x0D),
@@ -250,7 +253,7 @@ pub enum EventCode {
     LeBigSyncEstablished = le(0x1D),
     LeBigSyncLost = le(0x1E),
     LeRequestPeerScaComplete = le(0x1F),
-    LePathLossThreshold = le(0x20),
+    LePathLossThreshold = le(0x20), // TODO: Log
     LeTransmitPowerReporting = le(0x21),
     LeBigInfoAdvertisingReport = le(0x22),
     LeSubrateChange = le(0x23),
@@ -302,7 +305,7 @@ impl EventCode {
             DisconnectionComplete => STATUS.union(CONN_HANDLE),
             AuthenticationComplete => STATUS.union(CONN_HANDLE),
             RemoteNameRequestComplete => STATUS,
-            EncryptionChangeV1 => STATUS.union(CONN_HANDLE),
+            EncryptionChange => STATUS.union(CONN_HANDLE),
             EncryptionChangeV2 => STATUS.union(CONN_HANDLE),
             ChangeConnectionLinkKeyComplete => STATUS.union(CONN_HANDLE),
             LinkKeyTypeChanged => STATUS.union(CONN_HANDLE),
@@ -400,6 +403,116 @@ impl EventCode {
         }
     }
 
+    /// Returns whether the event should be enabled by default.
+    #[allow(clippy::too_many_lines)]
+    #[must_use]
+    pub const fn enable(self) -> bool {
+        use EventCode::*;
+        #[allow(clippy::match_same_arms)]
+        match self {
+            InquiryComplete => false,                                   // BR/EDR only
+            InquiryResult => false,                                     // BR/EDR only
+            ConnectionComplete => false,                                // BR/EDR only
+            ConnectionRequest => false,                                 // BR/EDR only
+            DisconnectionComplete => true,                              // Required
+            AuthenticationComplete => false,                            // BR/EDR only
+            RemoteNameRequestComplete => false,                         // BR/EDR only
+            EncryptionChange => true,                                   // Required by SMP
+            EncryptionChangeV2 => false,                                // Not relevant for LE
+            ChangeConnectionLinkKeyComplete => false,                   // BR/EDR only
+            LinkKeyTypeChanged => false,                                // BR/EDR only
+            ReadRemoteSupportedFeaturesComplete => false,               // BR/EDR only
+            ReadRemoteVersionInformationComplete => true,               // Required
+            QosSetupComplete => false,                                  // BR/EDR only
+            CommandComplete => true,                                    // Unmaskable
+            CommandStatus => true,                                      // Unmaskable
+            HardwareError => true,                                      // Optional
+            FlushOccurred => false,                                     // BR/EDR only
+            RoleChange => false,                                        // BR/EDR only
+            NumberOfCompletedPackets => true,                           // Unmaskable
+            ModeChange => false,                                        // BR/EDR only
+            ReturnLinkKeys => false,                                    // BR/EDR only
+            PinCodeRequest => false,                                    // BR/EDR only
+            LinkKeyRequest => false,                                    // BR/EDR only
+            LinkKeyNotification => false,                               // BR/EDR only
+            LoopbackCommand => false,                                   // BR/EDR only
+            DataBufferOverflow => true,                                 // Optional
+            MaxSlotsChange => false,                                    // BR/EDR only
+            ReadClockOffsetComplete => false,                           // BR/EDR only
+            ConnectionPacketTypeChanged => false,                       // BR/EDR only
+            QosViolation => false,                                      // BR/EDR only
+            PageScanRepetitionModeChange => false,                      // BR/EDR only
+            FlowSpecificationComplete => false,                         // BR/EDR only
+            InquiryResultWithRssi => false,                             // BR/EDR only
+            ReadRemoteExtendedFeaturesComplete => false,                // BR/EDR only
+            SynchronousConnectionComplete => false,                     // BR/EDR only
+            SynchronousConnectionChanged => false,                      // BR/EDR only
+            SniffSubrating => false,                                    // BR/EDR only
+            ExtendedInquiryResult => false,                             // BR/EDR only
+            EncryptionKeyRefreshComplete => false,                      // TODO: Enable?
+            IoCapabilityRequest => false,                               // BR/EDR only
+            IoCapabilityResponse => false,                              // BR/EDR only
+            UserConfirmationRequest => false,                           // BR/EDR only
+            UserPasskeyRequest => false,                                // BR/EDR only
+            RemoteOobDataRequest => false,                              // BR/EDR only
+            SimplePairingComplete => false,                             // BR/EDR only
+            LinkSupervisionTimeoutChanged => false,                     // BR/EDR only
+            EnhancedFlushComplete => false,                             // BR/EDR only
+            UserPasskeyNotification => false,                           // BR/EDR only
+            KeypressNotification => false,                              // BR/EDR only
+            RemoteHostSupportedFeaturesNotification => false,           // BR/EDR only
+            NumberOfCompletedDataBlocks => false,                       // BR/EDR only
+            LeMetaEvent => true,                                        // Required
+            LeConnectionComplete => true,                               // Required
+            LeAdvertisingReport => false,                               // Central support
+            LeConnectionUpdateComplete => false,                        // Unused
+            LeReadRemoteFeaturesComplete => true,                       // Required
+            LeLongTermKeyRequest => true,                               // Required
+            LeRemoteConnectionParameterRequest => true,                 // Optional
+            LeDataLengthChange => false,                                // Unused
+            LeReadLocalP256PublicKeyComplete => false,                  // Unused
+            LeGenerateDhKeyComplete => false,                           // Unused
+            LeEnhancedConnectionComplete => true,                       // Optional
+            LeDirectedAdvertisingReport => false,                       // Central support
+            LePhyUpdateComplete => false,                               // Unused
+            LeExtendedAdvertisingReport => false,                       // Central support
+            LePeriodicAdvertisingSyncEstablished => false,              // Periodic adv support
+            LePeriodicAdvertisingReport => false,                       // Periodic adv support
+            LePeriodicAdvertisingSyncLost => false,                     // Periodic adv support
+            LeScanTimeout => false,                                     // Central support
+            LeAdvertisingSetTerminated => true,                         // Required
+            LeScanRequestReceived => false,                             // Unused
+            LeChannelSelectionAlgorithm => false,                       // Unused
+            LeConnectionlessIqReport => false,                          // CTE support
+            LeConnectionIqReport => false,                              // CTE support
+            LeCteRequestFailed => false,                                // CTE support
+            LePeriodicAdvertisingSyncTransferReceived => false,         // Periodic adv support
+            LeCisEstablished => false,                                  // CIS support
+            LeCisRequest => false,                                      // CIS support
+            LeCreateBigComplete => false,                               // BIG support
+            LeTerminateBigComplete => false,                            // BIG support
+            LeBigSyncEstablished => false,                              // BIG support
+            LeBigSyncLost => false,                                     // BIG support
+            LeRequestPeerScaComplete => false,                          // SCA support
+            LePathLossThreshold => false,                               // Unused
+            LeTransmitPowerReporting => false,                          // Unused
+            LeBigInfoAdvertisingReport => false,                        // BIG support
+            LeSubrateChange => false,                                   // Unused
+            TriggeredClockCapture => false,                             // BR/EDR only
+            SynchronizationTrainComplete => false,                      // BR/EDR only
+            SynchronizationTrainReceived => false,                      // BR/EDR only
+            ConnectionlessPeripheralBroadcastReceive => false,          // BR/EDR only
+            ConnectionlessPeripheralBroadcastTimeout => false,          // BR/EDR only
+            TruncatedPageComplete => false,                             // BR/EDR only
+            PeripheralPageResponseTimeout => false,                     // BR/EDR only
+            ConnectionlessPeripheralBroadcastChannelMapChange => false, // BR/EDR only
+            InquiryResponseNotification => false,                       // BR/EDR only
+            AuthenticatedPayloadTimeoutExpired => false,                // Unused
+            SamStatusChange => false,                                   // BR/EDR only
+            Vendor => true,                                             // Unmaskable
+        }
+    }
+
     /// Sets or clears the associated event mask bit.
     #[allow(clippy::too_many_lines)]
     pub(super) fn set(self, m: &mut super::EventMask, enable: bool) {
@@ -414,7 +527,7 @@ impl EventCode {
             DisconnectionComplete => (p1, 4),
             AuthenticationComplete => (p1, 5),
             RemoteNameRequestComplete => (p1, 6),
-            EncryptionChangeV1 => (p1, 7),
+            EncryptionChange => (p1, 7),
             ChangeConnectionLinkKeyComplete => (p1, 8),
             LinkKeyTypeChanged => (p1, 9),
             ReadRemoteSupportedFeaturesComplete => (p1, 10),
@@ -631,6 +744,105 @@ pub enum Role {
     Peripheral = 0x01,
 }
 
+bitflags::bitflags! {
+    /// LE link layer supported states ([Vol 4] Part E, Section 7.8.27).
+    #[derive(Clone, Copy, Debug, Default)]
+    #[repr(transparent)]
+    pub struct LeState: u16 {
+        const SCANNABLE_UNDIRECTED_ADV = 1 << 0;
+        const CONNECTABLE_SCANNABLE_UNDIRECTED_ADV = 1 << 1;
+        const NON_CONNECTABLE_NON_SCANNABLE_UNDIRECTED_ADV = 1 << 2;
+        const HIGH_DUTY_CYCLE_CONNECTABLE_DIRECTED_ADV = 1 << 3;
+        const LOW_DUTY_CYCLE_CONNECTABLE_DIRECTED_ADV = 1 << 4;
+        const ACTIVE_SCANNING = 1 << 5;
+        const PASSIVE_SCANNING = 1 << 6;
+        const INITIATING = 1 << 7;
+        const CONNECTION_CENTRAL = 1 << 8;
+        const CONNECTION_PERIPHERAL = 1 << 9;
+    }
+}
+
+/// LE link layer supported state combinations ([Vol 4] Part E, Section 7.8.27).
+#[derive(Clone, Copy, Debug, Default)]
+#[repr(transparent)]
+pub struct LeStateCombinations(pub(super) u64);
+
+impl LeStateCombinations {
+    /// Returns whether the controller supports the Connection State.
+    #[inline(always)]
+    #[must_use]
+    pub const fn supports_connection_state(self) -> bool {
+        const MASK: u64 = 1 << 7 | 0b1111 << 18 | 0b1_1111 << 24 | 0b111_1111 << 35;
+        self.0 & MASK != 0
+    }
+
+    /// Returns whether the controller supports the specified state combination.
+    #[must_use]
+    pub fn supports(self, want: LeState) -> bool {
+        macro_rules! union {
+            ($state:ident) => {LeState::$state};
+            ($state:ident | $($tail:ident)|+) => {LeState::$state.union(union!($($tail)|+))};
+        }
+        macro_rules! bit {
+            ($want:ident, $($($state:ident)|+ => $bit:literal,)+) => {{
+                paste::paste! {
+                    $(const [<S $bit>]: u16 = union!($($state)|+).bits();)+
+                    match $want.bits() {
+                        $([<S $bit>] => $bit,)+
+                        b => panic!("invalid state combination: {:?}", LeState::from_bits_retain(b)),
+                    }
+                }
+            }};
+        }
+        let bit = bit! {
+            want,
+            NON_CONNECTABLE_NON_SCANNABLE_UNDIRECTED_ADV => 0,
+            SCANNABLE_UNDIRECTED_ADV => 1,
+            CONNECTABLE_SCANNABLE_UNDIRECTED_ADV => 2,
+            HIGH_DUTY_CYCLE_CONNECTABLE_DIRECTED_ADV => 3,
+            PASSIVE_SCANNING => 4,
+            ACTIVE_SCANNING => 5,
+            INITIATING => 6,
+            CONNECTION_PERIPHERAL => 7,
+            NON_CONNECTABLE_NON_SCANNABLE_UNDIRECTED_ADV | PASSIVE_SCANNING => 8,
+            SCANNABLE_UNDIRECTED_ADV | PASSIVE_SCANNING => 9,
+            CONNECTABLE_SCANNABLE_UNDIRECTED_ADV | PASSIVE_SCANNING => 10,
+            HIGH_DUTY_CYCLE_CONNECTABLE_DIRECTED_ADV | PASSIVE_SCANNING => 11,
+            NON_CONNECTABLE_NON_SCANNABLE_UNDIRECTED_ADV | ACTIVE_SCANNING => 12,
+            SCANNABLE_UNDIRECTED_ADV | ACTIVE_SCANNING => 13,
+            CONNECTABLE_SCANNABLE_UNDIRECTED_ADV | ACTIVE_SCANNING => 14,
+            HIGH_DUTY_CYCLE_CONNECTABLE_DIRECTED_ADV | ACTIVE_SCANNING => 15,
+            NON_CONNECTABLE_NON_SCANNABLE_UNDIRECTED_ADV | INITIATING => 16,
+            SCANNABLE_UNDIRECTED_ADV | INITIATING => 17,
+            NON_CONNECTABLE_NON_SCANNABLE_UNDIRECTED_ADV | CONNECTION_CENTRAL => 18,
+            SCANNABLE_UNDIRECTED_ADV | CONNECTION_CENTRAL => 19,
+            NON_CONNECTABLE_NON_SCANNABLE_UNDIRECTED_ADV | CONNECTION_PERIPHERAL => 20,
+            SCANNABLE_UNDIRECTED_ADV | CONNECTION_PERIPHERAL => 21,
+            PASSIVE_SCANNING | INITIATING => 22,
+            ACTIVE_SCANNING | INITIATING => 23,
+            PASSIVE_SCANNING | CONNECTION_CENTRAL => 24,
+            ACTIVE_SCANNING | CONNECTION_CENTRAL => 25,
+            PASSIVE_SCANNING | CONNECTION_PERIPHERAL => 26,
+            ACTIVE_SCANNING | CONNECTION_PERIPHERAL => 27,
+            INITIATING | CONNECTION_CENTRAL => 28,
+            LOW_DUTY_CYCLE_CONNECTABLE_DIRECTED_ADV => 29,
+            LOW_DUTY_CYCLE_CONNECTABLE_DIRECTED_ADV | PASSIVE_SCANNING => 30,
+            LOW_DUTY_CYCLE_CONNECTABLE_DIRECTED_ADV | ACTIVE_SCANNING => 31,
+            CONNECTABLE_SCANNABLE_UNDIRECTED_ADV | INITIATING => 32,
+            HIGH_DUTY_CYCLE_CONNECTABLE_DIRECTED_ADV | INITIATING => 33,
+            LOW_DUTY_CYCLE_CONNECTABLE_DIRECTED_ADV | INITIATING => 34,
+            CONNECTABLE_SCANNABLE_UNDIRECTED_ADV | CONNECTION_CENTRAL => 35,
+            HIGH_DUTY_CYCLE_CONNECTABLE_DIRECTED_ADV | CONNECTION_CENTRAL => 36,
+            LOW_DUTY_CYCLE_CONNECTABLE_DIRECTED_ADV | CONNECTION_CENTRAL => 37,
+            CONNECTABLE_SCANNABLE_UNDIRECTED_ADV | CONNECTION_PERIPHERAL => 38,
+            HIGH_DUTY_CYCLE_CONNECTABLE_DIRECTED_ADV | CONNECTION_PERIPHERAL => 39,
+            LOW_DUTY_CYCLE_CONNECTABLE_DIRECTED_ADV | CONNECTION_PERIPHERAL => 40,
+            INITIATING | CONNECTION_PERIPHERAL => 41,
+        };
+        self.0 & (1 << bit) != 0
+    }
+}
+
 /// Physical layer transmitter/receiver ([Vol 4] Part E, Section 7.8.47). For
 /// advertising, LE Coded assumes S=8.
 #[derive(
@@ -750,6 +962,17 @@ pub enum AdvDataOp {
     Complete = 0x03,
     /// Unchanged data (just update the Advertising DID).
     Unchanged = 0x04,
+}
+
+bitflags::bitflags! {
+    /// LMP feature support bitmask ([Vol 2] Part C, Section 3.3 and 3.5.2).
+    #[derive(Clone, Copy, Debug, Default)]
+    #[repr(transparent)]
+    pub struct LmpFeature: u64 {
+        const BREDR_NOT_SUPPORTED = 1 << (8 * 4 + 5);
+        const LE_SUPPORTED = 1 << (8 * 4 + 6);
+        const EXTENDED_FEATURES = 1 << (8 * 7 + 7);
+    }
 }
 
 bitflags::bitflags! {
@@ -902,12 +1125,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn support_mask() {
+    fn supported_commands_mask() {
         use Opcode::*;
         assert_eq!(None.mask(), (0, 0));
         assert_eq!(ReadLocalSupportedCommands.mask(), (0, 0));
         assert_eq!(SetEventMask.mask(), (5, 1 << 6));
         assert_eq!(Reset.mask(), (5, 1 << 7));
         assert_eq!(LeSetEventMask.mask(), (25, 1 << 0));
+    }
+
+    #[test]
+    fn le_support_flag() {
+        use structbuf::Unpack;
+        let mut v = [0; 8];
+        v[4] = 1 << 6;
+        let f = LmpFeature::from_bits_truncate(v.unpack().u64());
+        assert_eq!(f.bits(), LmpFeature::LE_SUPPORTED.bits());
     }
 }

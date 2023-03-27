@@ -115,7 +115,8 @@ impl SecDb {
                         }
                     }
                     LeLongTermKeyRequest => break evt.get(),
-                    EncryptionChangeV1 | EncryptionChangeV2 => {
+                    // TODO: Handle HCI_Encryption_Key_Refresh_Complete?
+                    EncryptionChange | EncryptionChangeV2 => {
                         self.handle_encryption_change(evt.get());
                     }
                     _ => {}

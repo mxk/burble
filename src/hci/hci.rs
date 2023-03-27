@@ -37,6 +37,8 @@ pub enum Error {
         status: Status,
         // TODO: Add backtrace once stabilized
     },
+    #[error("controller initialization error: {0}")]
+    Init(&'static str),
     #[error("invalid event: {0:02X?}")]
     InvalidEvent(Vec<u8>),
     #[error("unknown event [code={code:#04X}, subcode={subcode:#04X}]: {params:02X?}")]
@@ -67,6 +69,7 @@ impl Error {
                 Some(status)
             }
             Host(_)
+            | Init(_)
             | InvalidEvent(_)
             | UnknownEvent { .. }
             | DuplicateCommands { .. }
@@ -83,6 +86,7 @@ impl Error {
             Host(e) => e.is_timeout(),
             CommandTimeout { .. } => true,
             Hci { .. }
+            | Init(_)
             | InvalidEvent(_)
             | UnknownEvent { .. }
             | DuplicateCommands { .. }
@@ -148,40 +152,68 @@ impl Host {
         self.router.update_conn(hdl, f);
     }
 
-    /// Performs a reset and controller initialization
-    /// ([Vol 6] Part D, Section 2.1). The event loop must be running prior to
-    /// calling this method.
-    pub async fn init(&mut self) -> Result<()> {
-        let mut host = self.clone();
-        host.info = ControllerInfo::init();
-        let info = Arc::get_mut(&mut self.info).expect("host is shared");
-        host.reset().await?;
+    /// Resets and initializes the controller ([Vol 6] Part D, Section 2.1). The
+    /// event loop must be running prior to calling this method.
+    pub async fn init(&mut self, event_mask: &EventMask) -> Result<()> {
+        use Opcode::*;
+        fn info_mut(this: &mut Host) -> &mut ControllerInfo {
+            Arc::get_mut(&mut this.info).expect("host is shared")
+        }
+
+        // Reset after allowing the event loop to discard any unexpected events
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        debug!("HCI reset...");
+        self.reset().await?;
 
         // Get controller information
-        info.cmd = match host.read_local_supported_commands().await {
+        info_mut(self).cmd = match self.read_local_supported_commands().await {
             // The first command after a reset may time out, so we retry it once
-            Err(e) if e.is_timeout() => host.read_local_supported_commands().await,
+            Err(e) if e.is_timeout() => self.read_local_supported_commands().await,
             r => r,
         }?;
-        info.le_features = host.le_read_local_supported_features().await?;
+        info_mut(self).ver = self.read_local_version().await?;
+        debug!("Controller version: {:?}", self.info.ver);
+        if self.info.ver.hci_version < CoreVersion::V5_0 {
+            return Err(Error::Init("pre-v5 controller"));
+        }
+        info_mut(self).lmp_features = self.read_local_supported_features().await?;
+        debug!("Controller LMP features: {:?}", self.info.lmp_features);
+        if !self.info.lmp_features.contains(LmpFeature::LE_SUPPORTED) {
+            return Err(Error::Init("non-LE controller"));
+        }
+        info_mut(self).le_features = self.le_read_local_supported_features().await?;
+        debug!("Controller LE features: {:?}", self.info.le_features);
+        info_mut(self).states = self.le_read_supported_states().await?;
+        debug!("Controller LE states: {:#044b}", self.info.states.0);
 
-        // Unmask all events
-        let all = enum_iterator::all().collect();
-        if info.cmd.is_supported(Opcode::SetEventMask) {
-            host.set_event_mask(&all).await?;
+        // [Vol 4] Part E, Section 4.1 and [Vol 4] Part E, Section 7.8.2
+        if self.info.states.supports_connection_state() {
+            let mut buf = self.le_read_buffer_size().await?;
+            debug!("Controller LE buffers: {:?}", buf);
+            #[allow(clippy::cast_possible_truncation)]
+            if buf.acl_data_len == 0 || buf.acl_num_pkts == 0 {
+                let shared = self.read_buffer_size().await?;
+                debug!("Controller BR/EDR/LE buffers: {:?}", shared);
+                buf.acl_data_len = shared.acl_data_len;
+                buf.acl_num_pkts = shared.acl_num_pkts.max(u16::from(u8::MAX)) as _;
+                if buf.acl_data_len == 0 || buf.acl_num_pkts == 0 {
+                    return Err(Error::Init("invalid buffer parameters"));
+                }
+            }
+            info_mut(self).buf = buf;
+        } else {
+            warn!("Controller does not support Connection State");
         }
-        if info.cmd.is_supported(Opcode::SetEventMaskPage2) {
-            host.set_event_mask_page_2(&all).await?;
-        }
-        if info.cmd.is_supported(Opcode::LeSetEventMask) {
-            host.le_set_event_mask(&all).await?;
-        }
+        info_mut(self).addr = self.read_bd_addr().await?;
+        debug!("Controller address: {:?}", self.info.addr);
 
-        // TODO: Remove this command?
-        if info.cmd.is_supported(Opcode::WriteLeHostSupport) {
+        // TODO: Remove
+        if self.info.cmd.is_supported(WriteLeHostSupport) {
             self.write_le_host_support(true).await?;
         }
-        Ok(())
+
+        // Enable requested events
+        event_mask.apply(self).await
     }
 
     /// Receives the next HCI event, routes it to registered waiters, and
@@ -212,7 +244,7 @@ impl Host {
         let c = CancellationToken::new();
         let mut host = self.clone();
         // Drop ControllerInfo reference to allow exclusive access in init()
-        host.info = ControllerInfo::init();
+        host.info = Arc::clone(&NO_CONTROLLER_INFO);
         EventLoop {
             h: tokio::spawn(EventLoop::run(host, c.clone())),
             c: c.clone(),
@@ -235,7 +267,8 @@ impl Host {
         opcode: Opcode,
         f: impl FnOnce(&mut Packer) + Send,
     ) -> Result<Event> {
-        if !self.info.cmd.is_supported(opcode) {
+        // Allow all commands until cmd is initialized in init()
+        if !self.info.cmd.is_supported(opcode) && !self.info.cmd.is_empty() {
             warn!("Ignoring unsupported command: {opcode}");
             return Err(Error::CommandFailed {
                 opcode,
@@ -265,26 +298,19 @@ impl Host {
 
 /// Static controller information.
 #[derive(Clone, Copy, Debug, Default)]
+#[must_use]
 struct ControllerInfo {
     cmd: SupportedCommands,
+    ver: LocalVersion,
+    lmp_features: LmpFeature,
     le_features: LeFeature,
+    states: LeStateCombinations,
+    buf: LeBufferSize,
+    addr: le::Addr,
 }
 
-/// Controller information used during initialization.
-static INIT_CONTROLLER_INFO: Lazy<Arc<ControllerInfo>> = Lazy::new(|| {
-    Arc::new(ControllerInfo {
-        cmd: SupportedCommands::ALL,
-        le_features: LeFeature::all(),
-    })
-});
-
-impl ControllerInfo {
-    /// Returns controller info for use during initialization.
-    #[inline(always)]
-    fn init() -> Arc<Self> {
-        Arc::clone(&INIT_CONTROLLER_INFO)
-    }
-}
+/// Invalid controller information.
+static NO_CONTROLLER_INFO: Lazy<Arc<ControllerInfo>> = Lazy::new(Arc::default);
 
 /// Future that continuously receives HCI events.
 #[derive(Debug)]

@@ -59,6 +59,13 @@ impl Host {
         Ok(())
     }
 
+    /// Requests LE link layer supported state and role combinations
+    /// ([Vol 4] Part E, Section 7.8.27).
+    pub async fn le_read_supported_states(&self) -> Result<LeStateCombinations> {
+        let r = self.exec(Opcode::LeReadSupportedStates);
+        r.await?.map_ok(|_, p| LeStateCombinations(p.u64()))
+    }
+
     /// Reads the current transmitter and receiver PHY for the specified
     /// connection ([Vol 4] Part E, Section 7.8.47).
     ///
