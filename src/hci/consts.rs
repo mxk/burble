@@ -42,7 +42,6 @@ pub enum Opcode {
     SetControllerToHostFlowControl = HciControl.ocf(0x0031),
     HostBufferSize = HciControl.ocf(0x0033),
     SetEventMaskPage2 = HciControl.ocf(0x0063),
-    WriteLeHostSupport = HciControl.ocf(0x006D),
 
     // Informational parameters commands ([Vol 4] Part E, Section 7.4)
     ReadLocalVersionInformation = InfoParams.ocf(0x0001),
@@ -105,7 +104,6 @@ impl Opcode {
             SetControllerToHostFlowControl => (10, 5),
             HostBufferSize => (10, 6),
             SetEventMaskPage2 => (22, 2),
-            WriteLeHostSupport => (24, 6),
             ReadLocalVersionInformation => (14, 3),
             ReadLocalSupportedFeatures => (14, 5),
             ReadBufferSize => (14, 7),

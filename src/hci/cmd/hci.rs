@@ -49,15 +49,6 @@ impl Host {
         });
         r.await?.ok()
     }
-
-    /// Sets the LE Supported (Host) Link Manager Protocol feature bit
-    /// ([Vol 4] Part E, Section 7.3.79).
-    pub async fn write_le_host_support(&self, enable: bool) -> Result<()> {
-        let r = self.exec_params(Opcode::WriteLeHostSupport, |cmd| {
-            cmd.bool(enable).u8(0);
-        });
-        r.await?.ok()
-    }
 }
 
 /// Informational parameters commands ([Vol 4] Part E, Section 7.4).

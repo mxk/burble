@@ -155,7 +155,6 @@ impl Host {
     /// Resets and initializes the controller ([Vol 6] Part D, Section 2.1). The
     /// event loop must be running prior to calling this method.
     pub async fn init(&mut self, event_mask: &EventMask) -> Result<()> {
-        use Opcode::*;
         fn info_mut(this: &mut Host) -> &mut ControllerInfo {
             Arc::get_mut(&mut this.info).expect("host is shared")
         }
@@ -206,11 +205,6 @@ impl Host {
         }
         info_mut(self).addr = self.read_bd_addr().await?;
         debug!("Controller address: {:?}", self.info.addr);
-
-        // TODO: Remove
-        if self.info.cmd.is_supported(WriteLeHostSupport) {
-            self.write_le_host_support(true).await?;
-        }
 
         // Enable requested events
         event_mask.apply(self).await
