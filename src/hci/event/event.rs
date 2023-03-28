@@ -298,7 +298,7 @@ impl EventUnpacker for Unpacker<'_> {
 /// must process the event asynchronously before the next event can be received.
 #[derive(Debug)]
 pub(super) struct EventRouter {
-    recv: SyncMutex<Receivers>,
+    monitor: SyncMutex<Monitor>,
     xfer: AsyncMutex<Arc<AsyncRwLock<EventTransfer>>>,
 }
 
@@ -307,7 +307,7 @@ impl EventRouter {
     #[inline]
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
-            recv: SyncMutex::default(),
+            monitor: SyncMutex::default(),
             xfer: AsyncMutex::new(Arc::new(AsyncRwLock::with_max_readers(
                 EventTransfer::default(),
                 64,
@@ -320,25 +320,25 @@ impl EventRouter {
 
     /// Returns an event receiver. Commands must specify their opcode.
     pub fn events(self: &Arc<Self>, opcode: Opcode) -> Result<EventStream> {
-        let mut rs = self.recv.lock();
+        let mut m = self.monitor.lock();
         if opcode.is_some() {
-            if rs.queue.iter().any(|r| r.opcode == opcode) {
+            if m.queue.iter().any(|r| r.opcode == opcode) {
                 // The spec doesn't specify whether commands with the same
                 // opcode can be issued concurrently, but it's safer to avoid.
                 return Err(Error::DuplicateCommands { opcode });
             }
-            if rs.cmd_quota == 0 {
+            if m.cmd_quota == 0 {
                 return Err(Error::CommandQuotaExceeded);
             }
             if opcode == Opcode::Reset {
-                rs.cmd_quota = 0; // [Vol 4] Part E, Section 7.3.2
+                m.cmd_quota = 0; // [Vol 4] Part E, Section 7.3.2
             } else {
-                rs.cmd_quota -= 1;
+                m.cmd_quota -= 1;
             }
         }
-        let id = rs.next_id;
-        rs.next_id += 1;
-        rs.queue.push_back(Receiver {
+        let id = m.next_id;
+        m.next_id += 1;
+        m.queue.push_back(Receiver {
             id,
             opcode,
             ..Receiver::default()
@@ -353,16 +353,16 @@ impl EventRouter {
     /// the handle is invalid.
     #[inline]
     pub fn conn(&self, hdl: ConnHandle) -> Option<ConnWatch> {
-        let rs = self.recv.lock();
-        (rs.conns.get(&hdl)).map(tokio::sync::watch::Sender::subscribe)
+        let m = self.monitor.lock();
+        (m.conns.get(&hdl)).map(tokio::sync::watch::Sender::subscribe)
     }
 
     /// Calls `f` to update connection parameters. This is a no-op if the handle
     /// is invalid.
     #[inline]
     pub fn update_conn(&self, hdl: ConnHandle, f: impl FnOnce(&mut Conn)) {
-        let rs = self.recv.lock();
-        if let Some(s) = rs.conns.get(&hdl) {
+        let m = self.monitor.lock();
+        if let Some(s) = m.conns.get(&hdl) {
             s.send_modify(f);
         }
     }
@@ -388,9 +388,9 @@ impl EventRouter {
             .expect("EventRouter stalled (Event not handled)");
         xfer.next(t).await.map_err(|e| {
             // Fatal transport error
-            let mut rs = self.recv.lock();
-            rs.err = Some(e);
-            for r in &mut rs.queue {
+            let mut m = self.monitor.lock();
+            m.err = Some(e);
+            for r in &mut m.queue {
                 r.ready = None;
                 if let Some(w) = r.waker.take() {
                     w.wake();
@@ -400,16 +400,14 @@ impl EventRouter {
         })?;
 
         let evt = Event::new(xfer)?;
-        self.recv.lock().notify(&rwlock, &evt);
+        self.monitor.lock().notify(&rwlock, &evt);
         Ok(evt)
     }
 }
 
-/// Receiver queue and internal router state. `VecDeque` is used because there
-/// are likely to be only a few receivers with frequent insertions/removals for
-/// commands, so it is likely to outperform `HashMap` and `BTreeMap`.
+/// Receiver queue and router state monitor.
 #[derive(Debug)]
-struct Receivers {
+struct Monitor {
     conns: BTreeMap<ConnHandle, tokio::sync::watch::Sender<Conn>>,
     queue: VecDeque<Receiver>,
     err: Option<host::Error>,
@@ -418,7 +416,7 @@ struct Receivers {
     _cmd_wakers: Vec<Waker>, // TODO: Implement
 }
 
-impl Receivers {
+impl Monitor {
     // Notifies registered receives of a new event.
     fn notify(&mut self, xfer: &Arc<AsyncRwLock<EventTransfer>>, evt: &Event) {
         let hdr = &evt.0.hdr;
@@ -479,7 +477,7 @@ impl Receivers {
     }
 }
 
-impl Default for Receivers {
+impl Default for Monitor {
     #[inline]
     fn default() -> Self {
         Self {
@@ -570,11 +568,11 @@ impl EventStream {
 
     /// Polls for the next event.
     pub(super) fn poll(&mut self, cx: Option<&mut Context<'_>>) -> Poll<Result<Event>> {
-        let mut rs = self.router.recv.lock();
-        if let Some(e) = rs.err {
+        let mut m = self.router.monitor.lock();
+        if let Some(e) = m.err {
             return Poll::Ready(Err(Error::Host(e)));
         }
-        let r = rs.get(self.id);
+        let r = m.get(self.id);
         if let Some(xfer) = r.ready.take() {
             return Poll::Ready(Ok(Event(xfer, PhantomData)));
         }
@@ -586,11 +584,11 @@ impl EventStream {
 
     /// Polls for whether the next event is ready.
     pub(super) fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<()> {
-        let mut rs = self.router.recv.lock();
-        if rs.err.is_some() {
+        let mut m = self.router.monitor.lock();
+        if m.err.is_some() {
             return Poll::Ready(());
         }
-        let mut r = rs.get(self.id);
+        let mut r = m.get(self.id);
         if r.ready.is_some() {
             return Poll::Ready(());
         }
@@ -601,11 +599,11 @@ impl EventStream {
 
 impl Drop for EventStream {
     fn drop(&mut self) {
-        let mut rs = self.router.recv.lock();
-        if let Some(i) = rs.queue.iter().position(|r| r.id == self.id) {
+        let mut m = self.router.monitor.lock();
+        if let Some(i) = m.queue.iter().position(|r| r.id == self.id) {
             // Order doesn't matter since we don't control the order in which
             // async tasks are executed.
-            rs.queue.swap_remove_back(i);
+            m.queue.swap_remove_back(i);
         }
     }
 }
@@ -638,8 +636,8 @@ impl Future for NextEvent<'_, ()> {
 
 impl<T> Drop for NextEvent<'_, T> {
     fn drop(&mut self) {
-        let mut rs = self.0.router.recv.lock();
-        if let Some(r) = rs.queue.iter_mut().find(|r| r.id == self.0.id) {
+        let mut m = self.0.router.monitor.lock();
+        if let Some(r) = m.queue.iter_mut().find(|r| r.id == self.0.id) {
             r.waker = None;
         }
     }
