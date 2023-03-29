@@ -129,7 +129,7 @@ Linux
 
 Burble requires read/write access to the USB device node, which is normally restricted to root. On systems with [udev], the following rules file can be used to provide access to the logged-in user (adjust the example as needed to restrict access, and set `vendor_id` and `product_id`):
 
-```
+```ignore
 /etc/udev/rules.d/99-burble.rules:
 
 SUBSYSTEMS=="usb", ATTRS{idVendor}=="vendor_id", ATTRS{idProduct}=="product_id", MODE="0660", TAG+="uaccess"

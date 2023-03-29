@@ -9,7 +9,7 @@ use tracing::{debug, error, trace, warn};
 pub use {consts::*, handle::*, perm::*};
 
 use crate::gap::Uuid;
-use crate::l2cap::{BasicChan, Cid, LeCid, Payload};
+use crate::l2cap::{Chan, Cid, LeCid, Payload};
 use crate::{hci, l2cap};
 
 mod consts;
@@ -82,14 +82,14 @@ impl Display for ErrorRsp {
 /// ATT bearer ([Vol 3] Part F, Section 3.2.11).
 #[derive(Clone, Debug)]
 #[repr(transparent)]
-pub struct Bearer(BasicChan);
+pub struct Bearer(Chan);
 
 impl Bearer {
     /// Creates an ATT bearer by associating an L2CAP channel with an ATT
     /// server.
     #[inline]
     #[must_use]
-    pub(crate) const fn new(ch: BasicChan) -> Self {
+    pub(crate) const fn new(ch: Chan) -> Self {
         Self(ch)
     }
 

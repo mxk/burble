@@ -5,7 +5,7 @@ use tracing::error;
 use burble_crypto::{Nonce, PublicKeyX, SecretKey, LTK};
 
 use crate::hci::Role;
-use crate::l2cap::BasicChan;
+use crate::l2cap::Chan;
 use crate::{hci, le};
 
 use super::*;
@@ -15,13 +15,13 @@ use super::*;
 /// mode ([Vol 3] Part C, Section 10.2.1 and 10.2.4).
 #[derive(Debug)]
 pub struct Peripheral {
-    ch: BasicChan,
+    ch: Chan,
 }
 
 impl Peripheral {
     /// Creates a new peripheral security manager.
     #[inline(always)]
-    pub(crate) fn new(ch: BasicChan) -> Self {
+    pub(crate) fn new(ch: Chan) -> Self {
         assert_eq!(ch.conn().borrow().role, Role::Peripheral);
         Self { ch }
     }

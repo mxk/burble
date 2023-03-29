@@ -12,17 +12,15 @@ use crate::hci::ACL_LE_MIN_DATA_LEN;
 
 use super::*;
 
-// TODO: Mark RawChan as closed when BasicChan is dropped?
-
-/// Basic L2CAP channel over an LE-U logical link.
+/// L2CAP channel over an LE-U logical link.
 #[derive(Clone, Debug)]
-pub(crate) struct BasicChan {
+pub(crate) struct Chan {
     pub(super) raw: Arc<RawChan>,
     tx: Arc<tx::State>,
     mtu: u16,
 }
 
-impl BasicChan {
+impl Chan {
     /// Creates a new channel.
     #[inline]
     pub(super) fn new(cid: LeCid, cn: &hci::ConnWatch, tx: &Arc<tx::State>, mtu: u16) -> Self {
@@ -110,6 +108,13 @@ impl BasicChan {
     #[inline]
     pub async fn send(&mut self, sdu: Payload) -> Result<()> {
         self.tx.send(&self.raw, sdu.f).await
+    }
+}
+
+impl Drop for Chan {
+    #[inline(always)]
+    fn drop(&mut self) {
+        self.raw.set_closed();
     }
 }
 

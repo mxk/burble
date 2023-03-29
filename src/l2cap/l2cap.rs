@@ -139,12 +139,12 @@ impl ChanManager {
         let cn = self.ctl.conn(evt.handle).expect("invalid {link}");
 
         // [Vol 3] Part A, Section 4
-        let sig = BasicChan::new(link.chan(Cid::SIG), &cn, &self.rm.tx, 23);
+        let sig = Chan::new(link.chan(Cid::SIG), &cn, &self.rm.tx, 23);
         // [Vol 3] Part G, Section 5.2
-        let att = BasicChan::new(link.chan(Cid::ATT), &cn, &self.rm.tx, 23);
+        let att = Chan::new(link.chan(Cid::ATT), &cn, &self.rm.tx, 23);
         // [Vol 3] Part H, Section 3.2
         // TODO: MTU is 23 when LE Secure Connections is not supported
-        let sm = BasicChan::new(link.chan(Cid::SMP), &cn, &self.rm.tx, 65);
+        let sm = Chan::new(link.chan(Cid::SMP), &cn, &self.rm.tx, 65);
 
         // [Vol 3] Part A, Section 2.2
         self.rm.tx.register_link(LeU::new(evt.handle));
@@ -205,14 +205,14 @@ impl ResManager {
 /// Established connection over an LE-U logical link.
 #[derive(Debug)]
 struct Conn {
-    /// LE Signaling fiexed channel.
-    sig: BasicChan,
+    /// LE Signaling fixed channel.
+    sig: Chan,
     /// Attribute Protocol fixed channel.
     att: Arc<RawChan>,
-    att_opt: Option<BasicChan>,
+    att_opt: Option<Chan>,
     /// Security Manager fixed channel.
     smp: Arc<RawChan>,
-    smp_opt: Option<BasicChan>,
+    smp_opt: Option<Chan>,
 }
 
 impl Conn {
