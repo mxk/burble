@@ -38,6 +38,8 @@ Example Server
 
 The [server](examples/server.rs) example brings up a demo GATT server to test controller functionality.
 
+See OS-specific sections below for instructions on allowing `libusb` to access the controllers from user-space.
+
 ### Listing available Bluetooth controllers
 
 ```ignore
@@ -49,45 +51,91 @@ Bus 002 Device 003: ID 8087:0033
 
 ### Running the server
 
-* Linux users need to either configure `udev` permissions or run the example binary via `sudo` to give `libusb` device write access to the USB device.
-* Windows users need to follow driver installation instructions from the section below.
-
-Look for "Burble" Bluetooth device on the client. You can use [nRF Connect for Mobile][nRF] to get more details about the server advertisements and GATT services.
+Start the server and look for "Burble" Bluetooth device on the client. You can use [nRF Connect for Mobile][nRF] to get more details about the server advertisements and GATT services.
 
 Some clients may not support extended LE advertising. Use the `--legacy` option to switch to legacy advertising PDUs.
 
 [nRF]: https://play.google.com/store/apps/details?id=no.nordicsemi.android.mcp
 
 ```ignore
-$ RUST_LOG=info cargo run --example server -- --vid 7392 --pid c611
+$ RUST_LOG=debug cargo run --example server -- --vid 7392 --pid c611
  INFO burble::host::usb::libusb: libusb version: 1.0.26.11724
+DEBUG burble::host::usb::libusb: - LIBUSB_CAP_HAS_CAPABILITY = true
+DEBUG burble::host::usb::libusb: - LIBUSB_CAP_HAS_HOTPLUG = false
+DEBUG burble::host::usb::libusb: - LIBUSB_CAP_SUPPORTS_DETACH_KERNEL_DRIVER = false
  INFO burble::host::usb::libusb: Using WinUSB backend
- INFO server: Local version: LocalVersion { hci_version: V5_1, hci_subversion: 11, lmp_version: V5_1, company_id: CompanyId(0x005D => "Realtek Semiconductor Corporation"), lmp_subversion: 34657 }
- INFO server: Device address: Public(08:BE:AC:2E:0D:EE)
- INFO burble::gatt::schema: GATT schema:
- INFO burble::gatt::schema: [0x0001] GenericAccess <0x1800>
- INFO burble::gatt::schema: [0x0002] |__ DeviceName <0x2A00>
- INFO burble::gatt::schema: [0x0003] |   |__ [Value <0x2A00>]
- INFO burble::gatt::schema: [0x0004] |__ Appearance <0x2A01>
- INFO burble::gatt::schema: [0x0005]     |__ [Value <0x2A01>]
- INFO burble::gatt::schema: [0x0006] GenericAttribute <0x1801>
- INFO burble::gatt::schema: [0x0007] |__ ServiceChanged <0x2A05>
- INFO burble::gatt::schema: [0x0008] |   |__ [Value <0x2A05>]
- INFO burble::gatt::schema: [0x0009] |   |__ ClientCharacteristicConfiguration <0x2902>
- INFO burble::gatt::schema: [0x000A] |__ ClientSupportedFeatures <0x2B29>
- INFO burble::gatt::schema: [0x000B] |   |__ [Value <0x2B29>]
- INFO burble::gatt::schema: [0x000C] |__ DatabaseHash <0x2B2A>
- INFO burble::gatt::schema: [0x000D]     |__ [Value <0x2B2A>]
- INFO burble::gatt::schema: [0x000E] (Secondary) Battery <0x180F>
- INFO burble::gatt::schema: [0x000F] |__ BatteryLevel <0x2A19>
- INFO burble::gatt::schema: [0x0010]     |__ [Value <0x2A19>]
- INFO burble::gatt::schema: [0x0011] Glucose <0x1808>
- INFO burble::gatt::schema: [0x0012] |__ [Include 0x000E..=0x0010]
- INFO burble::gatt::schema: [0x0013] |__ GlucoseMeasurement <0x2A18>
- INFO burble::gatt::schema: [0x0014]     |__ [Value <0x2A18>]
- INFO burble::gatt::schema: [0x0015]     |__ ClientCharacteristicConfiguration <0x2902>
- INFO burble::gatt::schema: [0x0016]     |__ CharacteristicExtendedProperties <0x2900>
+ INFO burble::host::usb: Opening device ID 7392:C611
+DEBUG burble::host::usb: Event thread started
+ INFO burble::host::usb::libusb: Resetting Bus 002 Device 012: ID 7392:c611
+DEBUG burble::host::usb: Bluetooth device at Bus 002 Device 012: ID 7392:c611
+DEBUG burble::host::usb: Claiming main interface
+DEBUG burble::host::usb: Claiming isochronous interface
+DEBUG burble::host::usb: Setting isochronous interface alt setting to 0
+DEBUG burble::hci: Event loop started
+DEBUG burble::hci: HCI reset...
+DEBUG burble::hci: Controller version: LocalVersion { hci_version: v5.1, hci_subversion: 11, lmp_version: v5.1, company_id: CompanyId(0x005D => "Realtek Semiconductor Corporation"), lmp_subversion: 34657 }
+DEBUG burble::hci: Controller LMP features: LmpFeature(LE_SUPPORTED | EXTENDED_FEATURES | 0x77bfd9bfeffffff)
+DEBUG burble::hci: Controller LE features: LeFeature(ENCRYPTION | EXTENDED_REJECT_INDICATION | PERIPHERAL_INITIATED_FEATURES_EXCHANGE | PING | DATA_PACKET_LENGTH_EXTENSION | LL_PRIVACY | EXTENDED_SCANNING_FILTER_POLICIES | LE_2M_PHY | STABLE_MODULATION_INDEX_TRANSMITTER | STABLE_MODULATION_INDEX_RECEIVER | LE_CODED_PHY | EXTENDED_ADVERTISING | CHANNEL_SELECTION_ALGORITHM_2 | CONNECTION_CTE_REQUEST | CONNECTION_CTE_RESPONSE | ANTENNA_SWITCHING_DURING_CTE_TRANSMISSION | ANTENNA_SWITCHING_DURING_CTE_RECEPTION)
+DEBUG burble::hci: Controller LE states: 0b111111111111111111111111111111111111111111
+DEBUG burble::hci: Controller LE buffers: LeBufferSize { acl_data_len: 251, acl_num_pkts: 8, iso_data_len: 0, iso_num_pkts: 0 }
+DEBUG burble::hci: Controller address: Public(08:BE:AC:2E:0D:EE)
+DEBUG burble::gatt::db: GATT database:
+DEBUG burble::gatt::db: [0x0001] Service(GenericAttribute) <0x1801>
+DEBUG burble::gatt::db: [0x0002] |__ Characteristic(ServiceChanged) <0x2A05>
+DEBUG burble::gatt::db: [0x0003] |   |__ [Value <0x2A05>]
+DEBUG burble::gatt::db: [0x0004] |   |__ Descriptor(ClientCharacteristicConfiguration) <0x2902>
+DEBUG burble::gatt::db: [0x0005] |__ Characteristic(ClientSupportedFeatures) <0x2B29>
+DEBUG burble::gatt::db: [0x0006] |   |__ [Value <0x2B29>]
+DEBUG burble::gatt::db: [0x0007] |__ Characteristic(DatabaseHash) <0x2B2A>
+DEBUG burble::gatt::db: [0x0008] |   |__ [Value <0x2B2A>]
+DEBUG burble::gatt::db: [0x0009] |__ Characteristic(ServerSupportedFeatures) <0x2B3A>
+DEBUG burble::gatt::db: [0x000A]     |__ [Value <0x2B3A>]
+DEBUG burble::gatt::db: [0x000B] Service(GenericAccess) <0x1800>
+DEBUG burble::gatt::db: [0x000C] |__ Characteristic(DeviceName) <0x2A00>
+DEBUG burble::gatt::db: [0x000D] |   |__ [Value <0x2A00>]
+DEBUG burble::gatt::db: [0x000E] |__ Characteristic(Appearance) <0x2A01>
+DEBUG burble::gatt::db: [0x000F]     |__ [Value <0x2A01>]
+DEBUG burble::gatt::db: [0x0010] Service(DeviceInformation) <0x180A>
+DEBUG burble::gatt::db: [0x0011] |__ Characteristic(ManufacturerNameString) <0x2A29>
+DEBUG burble::gatt::db: [0x0012] |   |__ [Value <0x2A29>]
+DEBUG burble::gatt::db: [0x0013] |__ Characteristic(PnpId) <0x2A50>
+DEBUG burble::gatt::db: [0x0014]     |__ [Value <0x2A50>]
+DEBUG burble::gatt::db: [0x0015] Service(Battery) <0x180F>
+DEBUG burble::gatt::db: [0x0016] |__ Characteristic(BatteryLevel) <0x2A19>
+DEBUG burble::gatt::db: [0x0017]     |__ [Value <0x2A19>]
+DEBUG burble::gatt::db: [0x0018] Service(HumanInterfaceDevice) <0x1812>
+DEBUG burble::gatt::db: [0x0019] |__ Characteristic(HidInformation) <0x2A4A>
+DEBUG burble::gatt::db: [0x001A] |   |__ [Value <0x2A4A>]
+DEBUG burble::gatt::db: [0x001B] |__ Characteristic(HidControlPoint) <0x2A4C>
+DEBUG burble::gatt::db: [0x001C] |   |__ [Value <0x2A4C>]
+DEBUG burble::gatt::db: [0x001D] |__ Characteristic(Report) <0x2A4D>
+DEBUG burble::gatt::db: [0x001E] |   |__ [Value <0x2A4D>]
+DEBUG burble::gatt::db: [0x001F] |   |__ Descriptor(ClientCharacteristicConfiguration) <0x2902>
+DEBUG burble::gatt::db: [0x0020] |   |__ Descriptor(ReportReference) <0x2908>
+DEBUG burble::gatt::db: [0x0021] |__ Characteristic(Report) <0x2A4D>
+DEBUG burble::gatt::db: [0x0022] |   |__ [Value <0x2A4D>]
+DEBUG burble::gatt::db: [0x0023] |   |__ Descriptor(ReportReference) <0x2908>
+DEBUG burble::gatt::db: [0x0024] |__ Characteristic(Report) <0x2A4D>
+DEBUG burble::gatt::db: [0x0025] |   |__ [Value <0x2A4D>]
+DEBUG burble::gatt::db: [0x0026] |   |__ Descriptor(ClientCharacteristicConfiguration) <0x2902>
+DEBUG burble::gatt::db: [0x0027] |   |__ Descriptor(ReportReference) <0x2908>
+DEBUG burble::gatt::db: [0x0028] |__ Characteristic(ReportMap) <0x2A4B>
+DEBUG burble::gatt::db: [0x0029]     |__ [Value <0x2A4B>]
+ INFO server: Enabling advertisements
 ```
+
+Linux
+-----
+
+Burble requires read/write access to the USB device node, which is normally restricted to root. On systems with [udev], the following rules file can be used to provide access to the logged-in user (adjust the example as needed to restrict access, and set `vendor_id` and `product_id`):
+
+```
+/etc/udev/rules.d/99-burble.rules:
+
+SUBSYSTEMS=="usb", ATTRS{idVendor}=="vendor_id", ATTRS{idProduct}=="product_id", MODE="0660", TAG+="uaccess"
+```
+
+[udev]: https://wiki.archlinux.org/title/udev
 
 Windows
 -------
@@ -136,17 +184,21 @@ Burble aims to become a feature-complete Bluetooth LE library, implementing HCI,
 
 ### How is this different from other Bluetooth libraries?
 
-Most libraries use OS-specific APIs and drivers to access the controller. Burble communicates with the controller directly over USB (or another transport), bypassing all OS-specific functionality. This allows it to run on all major operating systems.
+Most libraries use OS-specific APIs and drivers to access the controller. Burble communicates with the controller directly over USB (or another transport), bypassing all OS-specific functionality.
 
 ### What are the downsides to this approach?
 
-Burble requires exclusive access to the controller. The OS and other applications cannot use the controller at the same time. On Windows, this means installing a libusb-compatible driver which prevents the OS from identifying the controller as a Bluetooth device. On Linux, the driver is automatically detached while Burble is using the controller.
+Burble requires exclusive access to the controller. The OS and other applications cannot use the controller at the same time. On Windows, this means installing a libusb-compatible driver which prevents the OS from identifying the controller as a Bluetooth device. On Linux and macOS, the driver is automatically detached while Burble is using the controller.
 
 Another potential downside is loss of vendor-specific functionality. Though this can be added for individual controllers, Burble focuses on implementing the Core Bluetooth Specification that is common to all controllers.
 
 ### What are the advantages?
 
-Having exclusive controller access allows complete control over all aspects of the controller operation, advertising, scanning, GATT services, etc. This is particularly useful for implementing the peripheral role when you need specific configuration for GAP and GATT services.
+Burble supports all major operating systems and can take advantage of the features introduced in the most recent versions of the Bluetooth Core Specification (subject to controller support). Having exclusive controller access allows complete control over all aspects of the controller operation, such as advertising, scanning, and GATT services. This is particularly useful for implementing the peripheral role when you need specific configuration for GAP and GATT services.
+
+### What is Burble's approach to security?
+
+Burble places heavy emphasis on security and correctness. Legacy features that can lead to insecure operation are simply not implemented (e.g. LE legacy pairing, < 128-bit encryption keys). All cryptographic primitives used by the Security Manager are implemented in a [separate package](./crypto/) that forbids unsafe code to facilitate auditing.
 
 ### Can Burble be used in embedded (`no_std`) systems?
 
