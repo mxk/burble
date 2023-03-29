@@ -135,6 +135,8 @@ Burble requires read/write access to the USB device node, which is normally rest
 SUBSYSTEMS=="usb", ATTRS{idVendor}=="vendor_id", ATTRS{idProduct}=="product_id", MODE="0660", TAG+="uaccess"
 ```
 
+Use `sudo udevadm control --reload-rules && sudo udevadm trigger` to apply the permissions.
+
 [udev]: https://wiki.archlinux.org/title/udev
 
 Windows
