@@ -9,7 +9,7 @@ A cross-platform user-mode BLE stack implementation starting from the USB transp
 
 [libusb]: https://github.com/libusb/libusb
 
-**Project status:** Under active development. Tested on Windows and Linux. Not accepting external contributions at this time. The library implements all components for a BLE GATT server (peripheral role) and LE Secure Connections pairing. Minimum supported Bluetooth version is 5.0. All APIs are subject to change prior to v1.0.
+**Project status:** Under active development. Tested on Linux, macOS, and Windows. Not accepting external contributions at this time. The library implements all components for a BLE GATT server (peripheral role) and LE Secure Connections pairing. Minimum supported Bluetooth version is 5.0. All APIs are subject to change prior to v1.0.
 
 Reference documents:
 
