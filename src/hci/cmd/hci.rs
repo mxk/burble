@@ -1,7 +1,6 @@
 use structbuf::Unpacker;
 
 use crate::hci::*;
-use crate::le;
 
 /// HCI Control and Baseband commands ([Vol 4] Part E, Section 7.3).
 impl Host {
@@ -81,9 +80,9 @@ impl Host {
     }
 
     /// Returns the controller's public address ([Vol 4] Part E, Section 7.4.6).
-    pub async fn read_bd_addr(&self) -> Result<le::Addr> {
+    pub async fn read_bd_addr(&self) -> Result<Addr> {
         let r = self.exec(Opcode::ReadBdAddr);
-        r.await?.map_ok(|_, p| le::Addr::Public(p.addr()))
+        r.await?.map_ok(|_, p| Addr::Public(p.addr()))
     }
 }
 

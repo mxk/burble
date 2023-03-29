@@ -31,6 +31,15 @@ impl Host {
         r.await?.map_ok(|_, p| LeFeature::from_bits_retain(p.u64()))
     }
 
+    /// Sets the LE Random Device Address for the local controller
+    /// ([Vol 4] Part E, Section 7.8.4).
+    pub async fn le_set_random_address(&self, a: RawAddr) -> Result<()> {
+        let r = self.exec_params(Opcode::LeSetRandomAddress, |cmd| {
+            cmd.put(a.as_le_bytes());
+        });
+        r.await?.ok()
+    }
+
     /// Replies to an `HCI_LE_Long_Term_Key_Request` event from the controller,
     /// specifying the Long Term Key for the connection, if one is available
     /// ([Vol 4] Part E, Section 7.8.25 and 7.8.26).
@@ -299,7 +308,7 @@ pub struct AdvParams {
     pub props: AdvProp,
     pub pri_interval: (Duration, Duration),
     pub pri_chan_map: AdvChanMap,
-    pub addr_type: AdvAddrType,
+    pub addr_type: OwnAddrType,
     pub peer_addr: Addr,
     pub filter_policy: AdvFilterPolicy,
     pub tx_power: Option<TxPower>,

@@ -13,7 +13,6 @@ pub struct Advertiser {
     host: Host,
     handles: BTreeSet<AdvHandle>,
     max_data_len: usize,
-    local_addr: le::Addr,
 }
 
 impl Advertiser {
@@ -24,7 +23,6 @@ impl Advertiser {
             host: host.clone(),
             handles: BTreeSet::new(),
             max_data_len: host.le_read_maximum_advertising_data_length().await?,
-            local_addr: host.read_bd_addr().await?,
         })
     }
 
@@ -79,7 +77,7 @@ impl Advertiser {
         let p = p.into();
         let ctl = self.host.events();
         (self.host.le_set_extended_advertising_enable(true, &[p])).await?;
-        Ok(AdvFuture::new(p.handle, ctl, self.local_addr))
+        Ok(AdvFuture::new(p.handle, ctl, self.host.info.addr))
     }
 
     // Disable advertising.
@@ -152,7 +150,7 @@ pub enum AdvEvent {
 pub struct AdvFuture {
     hdl: Option<AdvHandle>,
     ctl: EventStream,
-    local_addr: le::Addr,
+    local_addr: Addr,
     conn: BTreeMap<ConnHandle, LeConnectionComplete>,
     term: Option<LeAdvertisingSetTerminated>,
     #[pin]
@@ -163,7 +161,7 @@ impl AdvFuture {
     /// Creates a new advertising set future.
     #[inline]
     #[must_use]
-    fn new(hdl: AdvHandle, ctl: EventStream, local_addr: le::Addr) -> Self {
+    fn new(hdl: AdvHandle, ctl: EventStream, local_addr: Addr) -> Self {
         Self {
             hdl: Some(hdl),
             ctl,
@@ -204,7 +202,7 @@ impl AdvFutureProj<'_> {
         term: LeAdvertisingSetTerminated,
     ) -> Poll<<AdvFuture as Future>::Output> {
         if conn.status.is_ok() {
-            (self.ctl).update_conn(conn.handle, |cn| cn.local_addr = Some(*self.local_addr));
+            (self.ctl).update_conn(conn.handle, |cn| cn.local_addr = *self.local_addr);
         }
         self.ready(Ok(AdvEvent::Conn { conn, term }))
     }

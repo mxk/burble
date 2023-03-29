@@ -15,7 +15,8 @@ use tracing::{debug, error, warn};
 
 pub use {adv::*, cmd::*, consts::*, event::*, handle::*};
 
-use crate::{host, le, smp, SyncMutex};
+use crate::le::Addr;
+use crate::{host, smp, SyncMutex};
 
 mod adv;
 #[path = "cmd/cmd.rs"]
@@ -126,10 +127,16 @@ impl Host {
     }
 
     /// Returns the underlying transport.
-    #[inline]
+    #[inline(always)]
     #[must_use]
     pub(crate) const fn transport(&self) -> &Arc<dyn host::Transport> {
         &self.transport
+    }
+
+    /// Returns controller information.
+    #[inline(always)]
+    pub(crate) fn info(&self) -> &ControllerInfo {
+        &self.info
     }
 
     /// Returns an event receiver.
@@ -147,7 +154,7 @@ impl Host {
 
     /// Calls `f` to update connection parameters. This is a no-op if the handle
     /// is invalid.
-    #[inline]
+    #[inline(always)]
     pub(crate) fn update_conn(&self, hdl: ConnHandle, f: impl FnOnce(&mut Conn)) {
         self.router.update_conn(hdl, f);
     }
@@ -224,7 +231,7 @@ impl Host {
     /// # Panics
     ///
     /// Panics if there are multiple concurrent event receivers.
-    #[inline]
+    #[inline(always)]
     async fn next_event(&self) -> Result<Event> {
         self.router.next(self.transport.as_ref()).await
     }
@@ -248,7 +255,7 @@ impl Host {
 
     /// Executes a command with no parameters and returns the command completion
     /// event.
-    #[inline]
+    #[inline(always)]
     async fn exec(&self, opcode: Opcode) -> Result<Event> {
         self.exec_params(opcode, |_| {}).await
     }
@@ -291,20 +298,50 @@ impl Host {
 }
 
 /// Static controller information.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Debug, Default)]
 #[must_use]
-struct ControllerInfo {
+pub struct ControllerInfo {
     cmd: SupportedCommands,
     ver: LocalVersion,
     lmp_features: LmpFeature,
     le_features: LeFeature,
     states: LeStateCombinations,
     buf: LeBufferSize,
-    addr: le::Addr,
+    addr: Addr,
 }
 
 /// Invalid controller information.
 static NO_CONTROLLER_INFO: Lazy<Arc<ControllerInfo>> = Lazy::new(Arc::default);
+
+impl ControllerInfo {
+    /// Returns information about commands supported by the controller.
+    #[inline(always)]
+    #[must_use]
+    pub const fn commands(&self) -> &SupportedCommands {
+        &self.cmd
+    }
+
+    /// Returns controller version information.
+    #[inline(always)]
+    #[must_use]
+    pub const fn version(&self) -> LocalVersion {
+        self.ver
+    }
+
+    /// Returns controller feature support information.
+    #[inline(always)]
+    #[must_use]
+    pub const fn features(&self) -> LeFeature {
+        self.le_features
+    }
+
+    /// Returns controller buffer size information.
+    #[inline(always)]
+    #[must_use]
+    pub const fn buffer_size(&self) -> LeBufferSize {
+        self.buf
+    }
+}
 
 /// Future that continuously receives HCI events.
 #[derive(Debug)]
@@ -379,9 +416,9 @@ pub(crate) struct Conn {
     /// during pairing. [`LeConnectionComplete`] event does not provide this
     /// information, so it must be set by the component that created the
     /// connection.
-    pub local_addr: Option<le::Addr>,
+    pub local_addr: Addr,
     /// Remote public or random address (identity address if IRK is used).
-    pub peer_addr: le::Addr,
+    pub peer_addr: Addr,
     /// Current connection security properties.
     pub sec: ConnSec,
     /// Bond ID set by the Security Manager when a connection is created to
@@ -393,10 +430,10 @@ pub(crate) struct Conn {
 impl Conn {
     /// Creates new connection info.
     #[inline(always)]
-    const fn new(e: &LeConnectionComplete) -> Self {
+    fn new(e: &LeConnectionComplete) -> Self {
         Self {
             role: e.role,
-            local_addr: None,
+            local_addr: Addr::default(),
             peer_addr: e.peer_addr,
             sec: ConnSec::empty(),
             bond_id: None,

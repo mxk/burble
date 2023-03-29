@@ -148,10 +148,10 @@ impl Peripheral {
                 let cn = self.ch.conn().borrow();
                 (cn.peer_addr, cn.local_addr)
             };
-            let Some(local_addr) = local_addr else {
+            if local_addr.is_zero() {
                 error!("Pairing failed because local address is unknown");
                 return self.fail(Reason::UnspecifiedReason).await;
-            };
+            }
             (peer_addr, peer_addr.into(), local_addr.into())
         };
         let (mac_key, ltk) = dh_key.f5(na, nb, a, b);

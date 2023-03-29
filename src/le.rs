@@ -28,19 +28,26 @@ impl Addr {
     }
 
     /// Returns the raw 48-bit address.
-    #[inline]
+    #[inline(always)]
     #[must_use]
     pub const fn raw(self) -> RawAddr {
         match self {
             Self::Public(addr) | Self::Random(addr) => addr,
         }
     }
+
+    /// Returns whether the address is all-zero.
+    #[inline(always)]
+    #[must_use]
+    pub const fn is_zero(self) -> bool {
+        matches!(self.raw().0, [0, 0, 0, 0, 0, 0])
+    }
 }
 
 impl Default for Addr {
-    #[inline]
+    #[inline(always)]
     fn default() -> Self {
-        Self::Public(RawAddr::default())
+        Self::Public(RawAddr([0; 6]))
     }
 }
 

@@ -16,10 +16,10 @@ impl State {
     /// Creates a new outbound transfer state.
     #[must_use]
     #[inline]
-    pub fn new(t: &Arc<dyn host::Transport>, max_pkts: u16, acl_data_len: u16) -> Arc<Self> {
+    pub fn new(t: &Arc<dyn host::Transport>, max_pkts: u8, acl_data_len: u16) -> Arc<Self> {
         Arc::new(Self {
             alloc: Alloc::new(Arc::clone(t), host::Direction::Out, acl_data_len),
-            sched: SyncMutex::new(Scheduler::new(max_pkts)),
+            sched: SyncMutex::new(Scheduler::new(u16::from(max_pkts))),
         })
     }
 

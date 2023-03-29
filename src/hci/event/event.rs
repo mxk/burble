@@ -13,7 +13,8 @@ use tracing::{trace, warn};
 
 pub use {hci::*, le::*};
 
-use crate::{host, le::RawAddr, AsyncMutex, AsyncRwLock, SyncMutex};
+use crate::le::RawAddr;
+use crate::{host, AsyncMutex, AsyncRwLock, SyncMutex};
 
 use super::*;
 
@@ -315,9 +316,6 @@ impl EventRouter {
         })
     }
 
-    // TODO: Use event masks for filtering. These should also determine which
-    // events are unmasked on the controller.
-
     /// Returns an event receiver. Commands must specify their opcode.
     pub fn events(self: &Arc<Self>, opcode: Opcode) -> Result<EventStream> {
         let mut m = self.monitor.lock();
@@ -419,6 +417,7 @@ struct Monitor {
 impl Monitor {
     // Notifies registered receives of a new event.
     fn notify(&mut self, xfer: &Arc<AsyncRwLock<EventTransfer>>, evt: &Event) {
+        use EventCode::*;
         let hdr = &evt.0.hdr;
         if hdr.code.is_cmd() {
             if hdr.cmd_quota == 0 && hdr.opcode.is_none() && !hdr.status.is_ok() {
@@ -441,24 +440,25 @@ impl Monitor {
             }
             return;
         }
-        if hdr.status.is_ok() {
-            // Update global connection information
-            match hdr.code {
-                EventCode::LeConnectionComplete | EventCode::LeEnhancedConnectionComplete => {
-                    let e: LeConnectionComplete = evt.get();
+        match hdr.code {
+            DisconnectionComplete => {
+                if hdr.status.is_ok() {
+                    // TODO: Store reason?
+                    self.conns.remove(&ConnHandle::new(hdr.handle).unwrap());
+                }
+            }
+            HardwareError => {
+                error!("Controller hardware error: {:#04X}", evt.0.params().u8());
+            }
+            LeConnectionComplete | LeEnhancedConnectionComplete => {
+                if hdr.status.is_ok() {
+                    let e: super::LeConnectionComplete = evt.get();
                     let (cn, _) = tokio::sync::watch::channel(Conn::new(&e));
                     let old = self.conns.insert(e.handle, cn);
                     assert!(old.is_none(), "duplicate connection handle");
                 }
-                EventCode::DisconnectionComplete => {
-                    // TODO: Store reason?
-                    self.conns.remove(&ConnHandle::new(hdr.handle).unwrap());
-                }
-                EventCode::HardwareError => {
-                    error!("Controller hardware error: {:#04X}", evt.0.params().u8());
-                }
-                _ => {}
             }
+            _ => {}
         }
         let mut received = false;
         for r in self.queue.iter_mut().filter(|r| r.opcode.is_none()) {

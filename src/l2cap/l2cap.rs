@@ -187,29 +187,17 @@ impl ResManager {
     /// Creates a new resource manager after configuring the ACL data packet
     /// parameters ([Vol 3] Part A, Section 1.1).
     async fn new(host: &hci::Host) -> Result<Self> {
-        // [Vol 4] Part E, Section 4.1 and [Vol 4] Part E, Section 7.8.2
-        let mut cbuf = host.le_read_buffer_size().await?;
-        let acl_num_pkts = if cbuf.acl_data_len == 0 || cbuf.acl_num_pkts == 0 {
-            let shared = host.read_buffer_size().await?; // TODO: Handle invalid params
-            cbuf.acl_data_len = shared.acl_data_len;
-            shared.acl_num_pkts
-        } else {
-            u16::from(cbuf.acl_num_pkts)
-        };
-        debug!("Controller buffers: {:?}", cbuf);
-
+        let cbuf = host.info().buffer_size();
         // [Vol 4] Part E, Section 4.2 and [Vol 4] Part E, Section 7.3.39
-        // TODO: Check supported features first
         // TODO: Enable controller to host flow control?
         let hbuf = hci::BufferSize {
             acl_data_len: cbuf.acl_data_len,
             acl_num_pkts: 1,
         };
         host.host_buffer_size(hbuf).await?;
-
         Ok(Self {
             rx: rx::State::new(host.transport(), hbuf.acl_data_len),
-            tx: tx::State::new(host.transport(), acl_num_pkts, cbuf.acl_data_len),
+            tx: tx::State::new(host.transport(), cbuf.acl_num_pkts, cbuf.acl_data_len),
         })
     }
 }

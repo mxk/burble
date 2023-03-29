@@ -54,6 +54,7 @@ pub enum Opcode {
     LeSetEventMask = Le.ocf(0x0001),
     LeReadBufferSize = Le.ocf(0x0002),
     LeReadLocalSupportedFeatures = Le.ocf(0x0003),
+    LeSetRandomAddress = Le.ocf(0x0005),
     LeReadBufferSizeV2 = Le.ocf(0x0060),
     LeLongTermKeyRequestReply = Le.ocf(0x001A),
     LeLongTermKeyRequestNegativeReply = Le.ocf(0x001B),
@@ -111,6 +112,7 @@ impl Opcode {
             LeSetEventMask => (25, 0),
             LeReadBufferSize => (25, 1),
             LeReadLocalSupportedFeatures => (25, 2),
+            LeSetRandomAddress => (25, 4),
             LeReadBufferSizeV2 => (41, 5),
             LeLongTermKeyRequestReply => (28, 1),
             LeLongTermKeyRequestNegativeReply => (28, 2),
@@ -901,12 +903,12 @@ impl Default for AdvChanMap {
     }
 }
 
-/// Type of address being used in an advertising packet
-/// ([Vol 4] Part E, Section 7.8.53).
+/// Type of address being used in advertising packets or connection requests
+/// ([Vol 4] Part E, Section 7.8.53 and 7.8.66).
 #[allow(clippy::exhaustive_enums)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, num_enum::IntoPrimitive)]
 #[repr(u8)]
-pub enum AdvAddrType {
+pub enum OwnAddrType {
     /// Public Device Address.
     #[default]
     Public = 0x00,
@@ -918,8 +920,7 @@ pub enum AdvAddrType {
     PrivateOrPublic = 0x02,
     /// Controller generates the Resolvable Private Address based on the local
     /// IRK from the resolving list. If the resolving list contains no matching
-    /// entry, use the random address from
-    /// `le_set_advertising_set_random_address`.
+    /// entry, then use the random address.
     PrivateOrRandom = 0x03,
 }
 
