@@ -469,8 +469,10 @@ impl Monitor {
         match hdr.code {
             DisconnectionComplete => {
                 if hdr.status.is_ok() {
-                    // TODO: Store reason?
-                    self.conns.remove(&ConnHandle::new(hdr.handle).unwrap());
+                    let e: super::DisconnectionComplete = evt.get();
+                    if let Some(s) = self.conns.remove(&e.handle) {
+                        s.send_modify(|cn| cn.disconnect_reason = Some(e.reason));
+                    }
                 }
             }
             HardwareError => {

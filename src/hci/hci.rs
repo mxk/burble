@@ -415,6 +415,8 @@ pub(crate) struct Conn {
     /// indicate the existence of a trusted relationship with the peer. A change
     /// in the ID invalidates any cached data.
     pub bond_id: Option<smp::BondId>,
+    /// Reason parameter from the [`DisconnectionComplete`] event.
+    pub disconnect_reason: Option<Status>,
 }
 
 impl Conn {
@@ -427,6 +429,7 @@ impl Conn {
             peer_addr: e.peer_addr,
             sec: ConnSec::empty(),
             bond_id: None,
+            disconnect_reason: None,
         }
     }
 }
