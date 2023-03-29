@@ -40,13 +40,9 @@ impl Command {
         let n = u8::try_from(xfer.as_ref().len() - CMD_HDR).expect("command too long");
         xfer.at(CMD_HDR - 1).u8(n);
         trace!("Command: {:02X?}", xfer.as_ref());
-        // Event registration must happen first to ensure that the command quota
-        // is not exceeded, to check for any conflicting commands, and to
-        // guarantee that the completion event will not be missed.
-        let mut events = self.router.events(self.opcode)?;
-        // TODO: Block on CommandQuotaExceeded
-        // TODO: Restore cmd_quota if submit() fails? Probably doesn't matter.
+        let cmd_guard = self.router.reserve(self.opcode).await;
         *self.host_cmd.lock() = Some(self.xfer.submit()?.await?);
+        let mut events = cmd_guard.submitted();
         // Handle command status and completion events with a one-second timeout
         // ([Vol 4] Part E, Section 4.4).
         loop {

@@ -48,10 +48,6 @@ pub enum Error {
         subcode: u8,
         params: Vec<u8>,
     },
-    #[error("duplicate {opcode} commands issued")]
-    DuplicateCommands { opcode: Opcode },
-    #[error("command quota exceeded")]
-    CommandQuotaExceeded,
     #[error("{opcode} command failed: {status}")]
     CommandFailed { opcode: Opcode, status: Status },
     #[error("{opcode} command aborted: {status}")]
@@ -69,13 +65,9 @@ impl Error {
             Hci { status } | CommandFailed { status, .. } | CommandAborted { status, .. } => {
                 Some(status)
             }
-            Host(_)
-            | Init(_)
-            | InvalidEvent(_)
-            | UnknownEvent { .. }
-            | DuplicateCommands { .. }
-            | CommandQuotaExceeded
-            | CommandTimeout { .. } => None,
+            Host(_) | Init(_) | InvalidEvent(_) | UnknownEvent { .. } | CommandTimeout { .. } => {
+                None
+            }
         }
     }
 
@@ -90,8 +82,6 @@ impl Error {
             | Init(_)
             | InvalidEvent(_)
             | UnknownEvent { .. }
-            | DuplicateCommands { .. }
-            | CommandQuotaExceeded
             | CommandFailed { .. }
             | CommandAborted { .. } => false,
         }
@@ -139,10 +129,10 @@ impl Host {
         &self.info
     }
 
-    /// Returns an event receiver.
-    #[inline]
+    /// Returns an event stream that will yield non-command events.
+    #[inline(always)]
     pub(crate) fn events(&self) -> EventStream {
-        self.router.events(Opcode::None).unwrap() // Never returns an error
+        self.router.events()
     }
 
     /// Returns connection information for the specified handle or [`None`] if

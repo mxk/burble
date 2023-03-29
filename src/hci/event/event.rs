@@ -14,7 +14,7 @@ use tracing::{trace, warn};
 pub use {hci::*, le::*};
 
 use crate::le::RawAddr;
-use crate::{host, AsyncMutex, AsyncRwLock, SyncMutex};
+use crate::{host, AsyncMutex, AsyncRwLock, SyncMutex, SyncMutexGuard};
 
 use super::*;
 
@@ -295,8 +295,9 @@ impl EventUnpacker for Unpacker<'_> {
 }
 
 /// Event receiver and router. When an event is received, all registered
-/// receivers with matching filters are notified in a broadcast fashion, and
-/// must process the event asynchronously before the next event can be received.
+/// receivers are notified in a broadcast fashion, and must process and drop the
+/// event before the next one can be received. Command status and completion
+/// events are delivered to exactly one receiver with the matching [`Opcode`].
 #[derive(Debug)]
 pub(super) struct EventRouter {
     monitor: SyncMutex<Monitor>,
@@ -316,35 +317,41 @@ impl EventRouter {
         })
     }
 
-    /// Returns an event receiver. Commands must specify their opcode.
-    pub fn events(self: &Arc<Self>, opcode: Opcode) -> Result<EventStream> {
-        let mut m = self.monitor.lock();
-        if opcode.is_some() {
-            if m.queue.iter().any(|r| r.opcode == opcode) {
-                // The spec doesn't specify whether commands with the same
-                // opcode can be issued concurrently, but it's safer to avoid.
-                return Err(Error::DuplicateCommands { opcode });
-            }
-            if m.cmd_quota == 0 {
-                return Err(Error::CommandQuotaExceeded);
-            }
-            if opcode == Opcode::Reset {
-                m.cmd_quota = 0; // [Vol 4] Part E, Section 7.3.2
-            } else {
-                m.cmd_quota -= 1;
-            }
+    /// Returns a future that resolves when the specified command can be
+    /// submitted.
+    #[inline(always)]
+    pub fn reserve(self: &Arc<Self>, opcode: Opcode) -> Reserve {
+        debug_assert!(opcode.is_some());
+        Reserve {
+            router: Some(Arc::clone(self)),
+            opcode,
         }
+    }
+
+    /// Returns a non-command event stream.
+    #[inline(always)]
+    pub fn events(self: &Arc<Self>) -> EventStream {
+        self.events_locked(self.monitor.lock(), Opcode::None)
+    }
+
+    /// Registers a new event stream.
+    #[inline]
+    fn events_locked(
+        self: &Arc<Self>,
+        mut m: SyncMutexGuard<Monitor>,
+        opcode: Opcode,
+    ) -> EventStream {
         let id = m.next_id;
-        m.next_id += 1;
+        m.next_id = m.next_id.checked_add(1).expect("overflow");
         m.queue.push_back(Receiver {
             id,
             opcode,
             ..Receiver::default()
         });
-        Ok(EventStream {
+        EventStream {
             router: Arc::clone(self),
             id,
-        })
+        }
     }
 
     /// Returns connection watch channel for the specified handle or [`None`] if
@@ -411,11 +418,30 @@ struct Monitor {
     err: Option<host::Error>,
     next_id: u64,
     cmd_quota: u8,
-    _cmd_wakers: Vec<Waker>, // TODO: Implement
+    cmd_wakers: Vec<Waker>,
 }
 
 impl Monitor {
-    // Notifies registered receives of a new event.
+    /// Updates command quota, possibly waking any blocked commands.
+    #[inline]
+    fn set_cmd_quota(&mut self, new: u8) {
+        self.cmd_quota = new;
+        if new > 0 {
+            // Commands don't unregister their wakers if dropped, so we have to
+            // wake them all to guarantee that at least one can execute.
+            self.wake_cmds();
+        }
+    }
+
+    /// Wakes all command waiters.
+    #[inline]
+    fn wake_cmds(&mut self) {
+        while let Some(w) = self.cmd_wakers.pop() {
+            w.wake();
+        }
+    }
+
+    /// Notifies registered receives of a new event.
     fn notify(&mut self, xfer: &Arc<AsyncRwLock<EventTransfer>>, evt: &Event) {
         use EventCode::*;
         let hdr = &evt.0.hdr;
@@ -428,10 +454,10 @@ impl Monitor {
                 // the command quota because the controller never increases it
                 // later, permanently stalling the HCI interface.
                 warn!("Ignored corrupt command completion: {hdr:?}");
-                self.cmd_quota = 1;
+                self.set_cmd_quota(1);
                 return;
             }
-            self.cmd_quota = hdr.cmd_quota;
+            self.set_cmd_quota(hdr.cmd_quota);
             if hdr.opcode.is_some() {
                 (self.queue.iter_mut().find(|r| r.opcode == hdr.opcode)).map_or_else(
                     || warn!("Ignored {} command completion", hdr.opcode),
@@ -486,7 +512,7 @@ impl Default for Monitor {
             err: None,
             next_id: 0,
             cmd_quota: 1, // [Vol 4] Part E, Section 4.4
-            _cmd_wakers: Vec::new(),
+            cmd_wakers: Vec::new(),
         }
     }
 }
@@ -514,6 +540,70 @@ impl Receiver {
         if let Some(w) = self.waker.take() {
             w.wake();
         }
+    }
+}
+
+/// Future that resolves when the command can be submitted after ensuring that
+/// there are no quota or opcode conflicts.
+#[derive(Debug)]
+#[must_use]
+pub(super) struct Reserve {
+    router: Option<Arc<EventRouter>>,
+    opcode: Opcode,
+}
+
+impl Future for Reserve {
+    type Output = CmdGuard;
+
+    #[inline]
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let router = self.router.as_ref().expect("poll of resolved future");
+        let mut m = router.monitor.lock();
+        // The spec doesn't say whether commands with the same opcode can be
+        // executed concurrently, but it's safer to avoid.
+        if m.queue.iter().any(|r| r.opcode == self.opcode) || m.cmd_quota == 0 {
+            m.cmd_wakers.push(cx.waker().clone());
+            return Poll::Pending;
+        }
+        if matches!(self.opcode, Opcode::Reset) {
+            m.cmd_quota = 0; // [Vol 4] Part E, Section 7.3.2
+        } else {
+            m.cmd_quota -= 1;
+        }
+        let events = router.events_locked(m, self.opcode);
+        Poll::Ready(CmdGuard {
+            router: self.router.take(),
+            events: Some(events),
+        })
+    }
+}
+
+/// Command quota reservation guard that restores the quota if the command is
+/// not submitted successfully.
+#[derive(Debug)]
+#[must_use]
+pub(super) struct CmdGuard {
+    router: Option<Arc<EventRouter>>,
+    events: Option<EventStream>,
+}
+
+impl CmdGuard {
+    /// Consumes reserved command quota and returns the command event stream.
+    /// This should be called after the command transfer is completed.
+    #[inline(always)]
+    pub fn submitted(mut self) -> EventStream {
+        self.router = None;
+        self.events.take().expect("guard already consumed")
+    }
+}
+
+impl Drop for CmdGuard {
+    #[inline]
+    fn drop(&mut self) {
+        let Some(router) = self.router.take() else { return };
+        let mut m = router.monitor.lock();
+        let new = m.cmd_quota.saturating_add(1);
+        m.set_cmd_quota(new);
     }
 }
 
@@ -603,7 +693,10 @@ impl Drop for EventStream {
         if let Some(i) = m.queue.iter().position(|r| r.id == self.id) {
             // Order doesn't matter since we don't control the order in which
             // async tasks are executed.
-            m.queue.swap_remove_back(i);
+            let Some(r) = m.queue.swap_remove_back(i) else { unreachable!() };
+            if r.opcode.is_some() {
+                m.wake_cmds();
+            }
         }
     }
 }
