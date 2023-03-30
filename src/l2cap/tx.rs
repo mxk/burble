@@ -8,7 +8,7 @@ use super::*;
 /// Outbound PDU transfer state.
 #[derive(Debug)]
 pub(super) struct State {
-    alloc: Arc<Alloc>,
+    alloc: Alloc,
     sched: SyncMutex<Scheduler>,
 }
 
@@ -18,21 +18,16 @@ impl State {
     #[inline]
     pub fn new(t: &Arc<dyn host::Transport>, max_pkts: u8, acl_data_len: u16) -> Arc<Self> {
         Arc::new(Self {
-            alloc: Alloc::new(Arc::clone(t), host::Direction::Out, acl_data_len),
+            alloc: Alloc::new(t, host::Direction::Out, acl_data_len),
             sched: SyncMutex::new(Scheduler::new(u16::from(max_pkts))),
         })
     }
 
-    /// Returns the maximum frame length that avoids fragmentation.
-    #[inline]
-    pub fn preferred_frame_len(&self) -> u16 {
-        self.alloc.acl_data_len
-    }
-
-    /// Allocates an outbound frame with a zero-filled basic L2CAP header.
-    #[inline]
-    pub fn new_frame(&self, max_frame_len: usize) -> Frame {
-        self.alloc.frame(max_frame_len)
+    /// Returns the transfer allocator.
+    #[inline(always)]
+    #[must_use]
+    pub const fn alloc(&self) -> &Alloc {
+        &self.alloc
     }
 
     /// Sends the PDU, returning as soon as the last fragment is submitted to
@@ -324,7 +319,7 @@ impl SchedulerGuard {
 
         if let Some(xfer) = pdu.take_xfer() {
             // Fast path for a single-fragment PDU
-            debug_assert_eq!(xfer.dir(), host::Direction::Out);
+            debug_assert_eq!(xfer.typ(), host::TransferType::Acl(host::Direction::Out));
             return self.send_frag(xfer, false, false).await.map(|_xfer| ());
         }
 
@@ -344,12 +339,12 @@ impl SchedulerGuard {
     /// Sends a single PDU fragment.
     async fn send_frag(
         &self,
-        mut xfer: AclTransfer,
+        mut xfer: Box<dyn host::Transfer>,
         is_cont: bool,
         more: bool,
-    ) -> Result<AclTransfer> {
+    ) -> Result<Box<dyn host::Transfer>> {
         // Update ACL data packet header ([Vol 4] Part E, Section 5.4.2)
-        let data_len = u16::try_from(xfer.as_ref().len() - ACL_HDR).unwrap();
+        let data_len = u16::try_from((*xfer).as_ref().len() - ACL_HDR).unwrap();
         xfer.at(0)
             .u16(u16::from(is_cont) << hci::ConnHandle::BITS | u16::from(self.ch.cid.link))
             .u16(data_len);
@@ -358,18 +353,20 @@ impl SchedulerGuard {
             "{}{}: {:02X?}",
             if is_cont { "Cont. " } else { "" },
             self.ch.cid,
-            &xfer.as_ref()[4 + 4..] // Skip ACL and L2CAP headers
+            &(*xfer).as_ref()[4 + 4..] // Skip ACL and L2CAP headers
         );
-        match xfer.submit().await {
-            Ok(xfer) => {
-                self.tx.sched.lock().sent(&self.ch, more);
-                Ok(xfer)
-            }
-            Err(e) => {
-                self.ch.set_error();
-                Err(e.into())
-            }
-        }
+        let e = match xfer.submit() {
+            Ok(fut) => match fut.await {
+                Ok(xfer) => {
+                    self.tx.sched.lock().sent(&self.ch, more);
+                    return Ok(xfer);
+                }
+                Err(e) => e,
+            },
+            Err(e) => e,
+        };
+        self.ch.set_error();
+        Err(e.into())
     }
 }
 

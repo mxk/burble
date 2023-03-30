@@ -253,7 +253,7 @@ impl Peripheral {
 
     /// Sends a command over the channel.
     async fn send(&mut self, cmd: Command) -> Result<()> {
-        let mut pdu = self.ch.new_payload();
+        let mut pdu = self.ch.alloc();
         cmd.pack(&mut pdu);
         Ok(self.ch.send(pdu).await?)
     }

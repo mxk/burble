@@ -54,7 +54,8 @@ impl Chan {
     #[allow(clippy::cast_possible_truncation)]
     #[inline]
     pub(crate) fn preferred_mtu(&self) -> u16 {
-        self.tx.preferred_frame_len() - L2CAP_HDR as u16
+        // TODO: Use HCI_LE_Data_Length_Change information?
+        self.tx.alloc().acl_data_len - L2CAP_HDR as u16
     }
 
     /// Sets new channel MTU.
@@ -81,10 +82,11 @@ impl Chan {
         self.raw.set_error();
     }
 
-    /// Creates a new outbound SDU.
+    /// Allocates a new outbound SDU.
     #[inline]
-    pub fn new_payload(&self) -> Payload {
-        Payload::new(self.tx.new_frame(L2CAP_HDR + self.mtu as usize), L2CAP_HDR)
+    pub fn alloc(&self) -> Payload {
+        let f = self.tx.alloc().frame(L2CAP_HDR + self.mtu as usize);
+        Payload::new(f, L2CAP_HDR)
     }
 
     /// Returns a future that will resolve to the next inbound SDU.
@@ -100,6 +102,7 @@ impl Chan {
     /// stay in the buffer.
     #[inline(always)]
     pub fn recv_filter<F: Fn(Unpacker) -> bool + Send>(&mut self, f: F) -> RecvFilter<F> {
+        // TODO: Remove this functionality
         RecvFilter { r: self.recv(), f }
     }
 
@@ -133,7 +136,7 @@ impl Future for Recv {
         if let Err(e) = cs.err(self.raw.cid) {
             return Poll::Ready(Err(e));
         }
-        if let Some(pdu) = cs.pdu.pop_front() {
+        if let Some(pdu) = cs.rx_pdu.pop_front() {
             return Poll::Ready(Ok(Payload::new(pdu, L2CAP_HDR)));
         }
         cs.rx_await(cx, self.have_lock);
@@ -169,10 +172,10 @@ impl<F: Fn(Unpacker) -> bool + Send + Unpin> Future for RecvFilter<F> {
         if let Err(e) = cs.err(self.r.raw.cid) {
             return Poll::Ready(Err(e));
         }
-        let mut it = cs.pdu.iter();
+        let mut it = cs.rx_pdu.iter();
         if let Some(i) = it.position(|pdu| (self.f)(pdu.unpack().split_at(L2CAP_HDR).1)) {
             // SAFETY: `i` is within bounds
-            let pdu = unsafe { cs.pdu.remove(i).unwrap_unchecked() };
+            let pdu = unsafe { cs.rx_pdu.remove(i).unwrap_unchecked() };
             return Poll::Ready(Ok(Payload::new(pdu, L2CAP_HDR)));
         }
         cs.rx_await(cx, self.r.have_lock);
@@ -310,7 +313,7 @@ pub(super) struct State {
     /// Maximum PDU length, including the L2CAP header.
     max_frame_len: usize,
     /// Received PDU queue.
-    pdu: VecDeque<Frame>,
+    rx_pdu: VecDeque<Frame>,
     /// Receive task waker.
     rx_waker: Option<Waker>,
     /// Transmit task waker.
@@ -329,7 +332,7 @@ impl State {
         Self {
             status: Status::empty(),
             max_frame_len,
-            pdu: VecDeque::new(),
+            rx_pdu: VecDeque::new(),
             rx_waker: None,
             tx_waker: None,
         }
@@ -410,13 +413,13 @@ impl State {
         if !self.is_ok() {
             return;
         }
-        if self.pdu.len() == Self::MAX_PDUS {
+        if self.rx_pdu.len() == Self::MAX_PDUS {
             error!("PDU queue overflow for {}", cid);
             self.set_fatal(Status::ERROR);
             return;
         }
         trace!("New PDU for {}", cid);
-        self.pdu.push_back(pdu);
+        self.rx_pdu.push_back(pdu);
         if let Some(rx) = self.rx_waker.take() {
             rx.wake();
         }

@@ -192,6 +192,22 @@ enum UsbTransfer {
 }
 
 impl Transfer for UsbTransfer {
+    fn typ(&self) -> TransferType {
+        use rusb::{Direction::*, TransferType::*};
+        match *self {
+            Self::Idle(ref t) => match t.typ() {
+                Control => TransferType::Command,
+                Isochronous => unreachable!(),
+                Bulk => TransferType::Acl(match t.dir() {
+                    In => Direction::In,
+                    Out => Direction::Out,
+                }),
+                Interrupt => TransferType::Event,
+            },
+            Self::Future(_) => unreachable!(),
+        }
+    }
+
     fn submit(mut self: Box<Self>) -> Result<TransferFuture> {
         *self = Self::Future(match *self {
             Self::Idle(t) => t.submit()?,
@@ -480,6 +496,30 @@ mod libusb {
         fn inner_mut(&mut self) -> &mut libusb_transfer {
             // SAFETY: new() ensures that inner can be converted to a reference
             unsafe { self.inner.as_mut() }
+        }
+
+        /// Returns the transfer type.
+        #[inline]
+        #[must_use]
+        pub fn typ(&self) -> TransferType {
+            match self.inner().transfer_type {
+                LIBUSB_TRANSFER_TYPE_CONTROL => TransferType::Control,
+                LIBUSB_TRANSFER_TYPE_ISOCHRONOUS => TransferType::Isochronous,
+                LIBUSB_TRANSFER_TYPE_BULK => TransferType::Bulk,
+                LIBUSB_TRANSFER_TYPE_INTERRUPT => TransferType::Interrupt,
+                _ => unreachable!(),
+            }
+        }
+
+        /// Returns the transfer direction.
+        #[inline]
+        #[must_use]
+        pub fn dir(&self) -> Direction {
+            match self.inner().endpoint & LIBUSB_ENDPOINT_DIR_MASK {
+                LIBUSB_ENDPOINT_OUT => Direction::Out,
+                LIBUSB_ENDPOINT_IN => Direction::In,
+                _ => unreachable!(),
+            }
         }
 
         /// Sets control transfer parameters.

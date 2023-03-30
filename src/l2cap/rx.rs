@@ -8,7 +8,7 @@ use super::*;
 /// Inbound PDU transfer state.
 #[derive(Debug)]
 pub(super) struct State {
-    xfer: tokio::sync::mpsc::Receiver<host::Result<AclTransfer>>,
+    xfer: tokio::sync::mpsc::Receiver<host::Result<Box<dyn host::Transfer>>>,
     recv: SyncMutex<Receiver>, // TODO: Get rid of Mutex
 }
 
@@ -17,7 +17,8 @@ impl State {
     #[must_use]
     pub fn new(t: &Arc<dyn host::Transport>, acl_data_len: u16) -> Self {
         let (tx, rx) = tokio::sync::mpsc::channel(1);
-        tokio::task::spawn(Self::recv_task(Arc::clone(t), acl_data_len, tx));
+        let alloc = Alloc::new(t, host::Direction::In, acl_data_len);
+        tokio::task::spawn(Self::recv_task(alloc, tx));
         Self {
             xfer: rx,
             recv: SyncMutex::new(Receiver::new()),
@@ -49,14 +50,17 @@ impl State {
     /// Receives ACL data packets and sends them via a channel. This makes
     /// `recv()` cancel safe.
     async fn recv_task(
-        t: Arc<dyn host::Transport>,
-        acl_data_len: u16,
-        ch: tokio::sync::mpsc::Sender<host::Result<AclTransfer>>,
+        alloc: Alloc,
+        ch: tokio::sync::mpsc::Sender<host::Result<Box<dyn host::Transfer>>>,
     ) {
-        let alloc = Alloc::new(t, host::Direction::In, acl_data_len);
         loop {
             let r = tokio::select! {
-                r = alloc.xfer().submit() => r,
+                r = async {
+                    match alloc.xfer().submit() {
+                        Ok(fut) => fut.await,
+                        Err(e) => Err(e),
+                    }
+                } => r,
                 _ = ch.closed() => break,
             };
             if ch.send(r).await.is_err() {
@@ -111,8 +115,8 @@ impl Receiver {
 
     /// Recombines a received PDU fragment, and returns the CID of the channel
     /// that has a new complete PDU ([Vol 3] Part A, Section 7.2.2).
-    fn recombine(&mut self, xfer: AclTransfer) {
-        let pkt = xfer.as_ref();
+    fn recombine(&mut self, xfer: Box<dyn host::Transfer>) {
+        let pkt = (*xfer).as_ref();
         let Some((link, l2cap_hdr, data)) = parse_hdr(pkt) else { return };
         let Some(cont_cid) = self.cont.get_mut(&link) else {
             warn!("PDU fragment for an unknown {link}: {pkt:02X?}");
@@ -185,15 +189,15 @@ impl Chan {
     }
 
     /// Receives the first, possibly incomplete, PDU fragment.
-    pub fn first(&mut self, pdu_len: u16, xfer: AclTransfer) {
+    pub fn first(&mut self, pdu_len: u16, xfer: Box<dyn host::Transfer>) {
         self.ensure_complete();
         let mut cs = self.raw.state.lock();
         let frame_len = L2CAP_HDR + usize::from(pdu_len);
         if cs.can_recv(self.raw.cid, frame_len) {
-            if xfer.as_ref().len() == ACL_HDR + frame_len {
+            if (*xfer).as_ref().len() == ACL_HDR + frame_len {
                 cs.push(self.raw.cid, Frame::complete(xfer));
             } else {
-                self.buf = Frame::first(&xfer, frame_len);
+                self.buf = Frame::first(&*xfer, frame_len);
             }
         }
     }

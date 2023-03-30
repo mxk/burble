@@ -10,7 +10,7 @@ pub struct LeU(hci::ConnHandle);
 
 impl LeU {
     /// Creates an LE-U logical link from an HCI connection handle.
-    #[inline]
+    #[inline(always)]
     #[must_use]
     pub(super) const fn new(cn: hci::ConnHandle) -> Self {
         Self(cn)
@@ -26,14 +26,14 @@ impl LeU {
 }
 
 impl From<LeU> for u16 {
-    #[inline]
+    #[inline(always)]
     fn from(link: LeU) -> Self {
         Self::from(link.0)
     }
 }
 
 impl From<LeU> for hci::ConnHandle {
-    #[inline]
+    #[inline(always)]
     fn from(link: LeU) -> Self {
         link.0
     }
@@ -59,7 +59,7 @@ impl Cid {
     pub(crate) const SMP: Self = Self::fixed(0x0006);
 
     /// Wraps a fixed CID.
-    #[inline]
+    #[inline(always)]
     #[must_use]
     const fn fixed(v: u16) -> Self {
         // SAFETY: Only called for valid fixed channels
@@ -102,7 +102,7 @@ impl Cid {
 }
 
 impl From<Cid> for u16 {
-    #[inline]
+    #[inline(always)]
     fn from(cid: Cid) -> Self {
         cid.0.get()
     }

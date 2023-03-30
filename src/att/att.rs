@@ -260,7 +260,7 @@ impl Bearer {
     #[allow(clippy::unnecessary_wraps)]
     #[inline(always)]
     fn rsp(&self, op: Opcode, f: impl FnOnce(&mut Packer) -> RspResult<()>) -> RspResult<Rsp> {
-        let mut pdu = self.0.new_payload();
+        let mut pdu = self.0.alloc();
         f(pdu.append().u8(op))?;
         trace!("{op}: {:02X?}", pdu.as_ref());
         Ok(Rsp(pdu))
@@ -270,7 +270,7 @@ impl Bearer {
     /// opcode.
     #[inline(always)]
     fn pack(&self, op: Opcode, f: impl FnOnce(&mut Packer)) -> Payload {
-        let mut pdu = self.0.new_payload();
+        let mut pdu = self.0.alloc();
         f(pdu.append().u8(op));
         trace!("{op}: {:02X?}", pdu.as_ref());
         pdu

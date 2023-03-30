@@ -38,6 +38,38 @@ impl Error {
 /// Common host result type.
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// Transfer type.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum TransferType {
+    Command,
+    Event,
+    Acl(Direction),
+}
+
+impl TransferType {
+    /// Returns the transfer direction.
+    #[inline]
+    #[must_use]
+    pub const fn dir(self) -> Direction {
+        match self {
+            Self::Command => Direction::Out,
+            Self::Event => Direction::In,
+            Self::Acl(dir) => dir,
+        }
+    }
+}
+
+/// Transfer direction.
+#[allow(clippy::exhaustive_enums)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Direction {
+    /// Controller to host transfer.
+    In,
+    /// Host to controller transfer.
+    Out,
+}
+
 /// HCI transport layer.
 pub trait Transport: Debug + Send + Sync {
     /// Returns an outbound command transfer.
@@ -50,18 +82,13 @@ pub trait Transport: Debug + Send + Sync {
     fn acl(&self, dir: Direction, max_data_len: u16) -> Box<dyn Transfer>;
 }
 
-/// Transfer direction.
-#[allow(clippy::exhaustive_enums)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Direction {
-    In,
-    Out,
-}
-
 /// Asynchronous I/O transfer.
 pub trait Transfer:
     AsRef<[u8]> + Debug + Send + Sync + structbuf::Pack + structbuf::Unpack
 {
+    /// Returns the transfer type.
+    fn typ(&self) -> TransferType;
+
     /// Submits the transfer for execution. The transfer may be cancelled by
     /// dropping the returned future.
     fn submit(self: Box<Self>) -> Result<TransferFuture>;

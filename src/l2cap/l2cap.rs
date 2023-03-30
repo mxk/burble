@@ -4,8 +4,6 @@ use std::collections::hash_map::Entry;
 use std::collections::{HashMap, VecDeque};
 use std::fmt::Debug;
 use std::mem;
-use std::mem::ManuallyDrop;
-use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
 use structbuf::{Pack, Packer, StructBuf};
@@ -269,7 +267,7 @@ impl Pack for Payload {
 #[must_use]
 enum Frame {
     /// Complete PDU or SDU, starting with the ACL data packet header.
-    Transfer(AclTransfer),
+    Transfer(Box<dyn host::Transfer>),
     /// Possibly incomplete PDU or SDU, starting with the basic L2CAP header.
     Buf(StructBuf),
 }
@@ -277,14 +275,14 @@ enum Frame {
 impl Frame {
     /// Creates a frame from a single ACL data packet.
     #[inline]
-    fn complete(xfer: AclTransfer) -> Self {
-        debug_assert!(ACL_HDR + L2CAP_HDR <= xfer.as_ref().len());
+    fn complete(xfer: Box<dyn host::Transfer>) -> Self {
+        debug_assert!(ACL_HDR + L2CAP_HDR <= (*xfer).as_ref().len());
         Self::Transfer(xfer)
     }
 
     /// Allocates a PDU recombination buffer and appends the first fragment.
     #[inline]
-    fn first(xfer: &AclTransfer, frame_len: usize) -> StructBuf {
+    fn first(xfer: &dyn host::Transfer, frame_len: usize) -> StructBuf {
         let frag = xfer.as_ref();
         debug_assert!(ACL_HDR + L2CAP_HDR <= frag.len() && frag.len() < ACL_HDR + frame_len);
         let mut buf = StructBuf::with_capacity(frame_len);
@@ -296,7 +294,7 @@ impl Frame {
     /// Returns the transfer containing a complete PDU or `None` if the PDU is
     /// fragmented.
     #[inline]
-    fn take_xfer(&mut self) -> Option<AclTransfer> {
+    fn take_xfer(&mut self) -> Option<Box<dyn host::Transfer>> {
         if matches!(*self, Self::Buf(_)) {
             return None;
         }
@@ -320,7 +318,7 @@ impl AsRef<[u8]> for Frame {
     fn as_ref(&self) -> &[u8] {
         match *self {
             // SAFETY: xfer always starts with an ACL data packet header
-            Self::Transfer(ref xfer) => unsafe { xfer.as_ref().get_unchecked(ACL_HDR..) },
+            Self::Transfer(ref xfer) => unsafe { (**xfer).as_ref().get_unchecked(ACL_HDR..) },
             Self::Buf(ref buf) => buf.as_ref(),
         }
     }
@@ -349,117 +347,42 @@ impl Pack for Frame {
 struct Alloc {
     /// Host transport.
     transport: Arc<dyn host::Transport>,
-    /// Transfers that can be reused.
-    free: SyncMutex<Vec<Box<dyn host::Transfer>>>,
-    /// Maximum size of a PDU fragment in an ACL data packet.
-    acl_data_len: u16,
     /// Transfer direction.
     dir: host::Direction,
+    /// Maximum size of a PDU fragment in an ACL data packet.
+    acl_data_len: u16,
 }
 
 impl Alloc {
     /// Creates a new transfer allocator.
     #[inline]
     #[must_use]
-    fn new(
-        transport: Arc<dyn host::Transport>,
-        dir: host::Direction,
-        acl_data_len: u16,
-    ) -> Arc<Self> {
+    fn new(t: &Arc<dyn host::Transport>, dir: host::Direction, acl_data_len: u16) -> Self {
         assert!(acl_data_len >= hci::ACL_LE_MIN_DATA_LEN);
-        Arc::new(Self {
-            transport,
-            free: SyncMutex::new(Vec::with_capacity(8)), // TODO: Tune
-            acl_data_len,
+        Self {
+            transport: Arc::clone(t),
             dir,
-        })
+            acl_data_len,
+        }
     }
 
-    /// Allocates an empty ACL data transfer.
+    /// Allocates a new ACL data transfer.
     #[must_use]
-    fn xfer(self: &Arc<Self>) -> AclTransfer {
-        let xfer = self.free.lock().pop().map_or_else(
-            || self.transport.acl(self.dir, self.acl_data_len),
-            |mut xfer| {
-                xfer.reset();
-                xfer
-            },
-        );
-        AclTransfer::new(xfer, Arc::clone(self))
+    fn xfer(&self) -> Box<dyn host::Transfer> {
+        self.transport.acl(self.dir, self.acl_data_len)
     }
 
     /// Allocates an outbound frame with a zero-filled basic L2CAP header.
-    fn frame(self: &Arc<Self>, max_frame_len: usize) -> Frame {
+    fn frame(&self, max_frame_len: usize) -> Frame {
         if max_frame_len <= self.acl_data_len as usize {
-            // TODO: Reuse transfers. This change was made because remaining()
-            // has to report `max_frame_len` rather than `acl_data_len`.
-            //let mut xfer = self.xfer();
             #[allow(clippy::cast_possible_truncation)]
             let mut xfer = self.transport.acl(self.dir, max_frame_len as u16);
             xfer.at(ACL_HDR + L2CAP_HDR).put([]);
-            Frame::Transfer(AclTransfer::new(xfer, Arc::clone(self)))
+            Frame::Transfer(xfer)
         } else {
-            // TODO: Reuse buffers?
             let mut buf = StructBuf::new(max_frame_len);
             buf.at(L2CAP_HDR).put([]);
             Frame::Buf(buf)
         }
-    }
-}
-
-/// ACL data transfer containing a PDU fragment. The transfer starts with an ACL
-/// data packet header at index 0.
-#[derive(Debug)]
-struct AclTransfer(ManuallyDrop<(Box<dyn host::Transfer>, Arc<Alloc>)>);
-
-impl AclTransfer {
-    /// Wraps an ACL transfer obtained from `alloc`.
-    #[inline]
-    fn new(xfer: Box<dyn host::Transfer>, alloc: Arc<Alloc>) -> Self {
-        Self(ManuallyDrop::new((xfer, alloc)))
-    }
-
-    /// Returns the transfer direction.
-    #[inline]
-    fn dir(&self) -> host::Direction {
-        self.0 .1.dir
-    }
-
-    /// Submits the transfer for execution.
-    #[inline]
-    async fn submit(self) -> host::Result<Self> {
-        // SAFETY: `self` is not used again
-        let (xfer, alloc) = unsafe { ManuallyDrop::take(&mut ManuallyDrop::new(self).0) };
-        Ok(Self::new(xfer.submit()?.await?, alloc))
-    }
-}
-
-impl Drop for AclTransfer {
-    fn drop(&mut self) {
-        // SAFETY: `self` is not used again
-        let (mut xfer, alloc) = unsafe { ManuallyDrop::take(&mut self.0) };
-        if xfer.at(ACL_HDR).remaining() != alloc.acl_data_len as usize {
-            return; // TODO: Remove workaround
-        }
-        let mut free = alloc.free.lock();
-        if free.len() < free.capacity() {
-            free.push(xfer);
-        }
-    }
-}
-
-impl Deref for AclTransfer {
-    type Target = dyn host::Transfer;
-
-    #[inline(always)]
-    fn deref(&self) -> &Self::Target {
-        self.0 .0.as_ref()
-    }
-}
-
-impl DerefMut for AclTransfer {
-    #[inline(always)]
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.0 .0.as_mut()
     }
 }
