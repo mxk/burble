@@ -16,14 +16,14 @@ use super::*;
 #[derive(Clone, Debug)]
 pub(crate) struct Chan {
     pub(super) raw: Arc<RawChan>,
-    tx: Arc<tx::State>,
+    tx: Arc<Sender>,
     mtu: u16,
 }
 
 impl Chan {
     /// Creates a new channel.
     #[inline]
-    pub(super) fn new(cid: LeCid, cn: &hci::ConnWatch, tx: &Arc<tx::State>, mtu: u16) -> Self {
+    pub(super) fn new(cid: LeCid, cn: &hci::ConnWatch, tx: &Arc<Sender>, mtu: u16) -> Self {
         assert!(mtu >= L2CAP_LE_MIN_MTU);
         Self {
             raw: RawChan::new(cid, cn, L2CAP_HDR + mtu as usize),
@@ -304,7 +304,7 @@ bitflags::bitflags! {
     }
 }
 
-/// Mutex-protected channel state. When interacting with [`tx::State`], the
+/// Mutex-protected channel state. When interacting with [`tx::Sender`], the
 /// scheduler must always be locked before the channel to avoid a deadlock.
 #[derive(Debug)]
 pub(super) struct State {

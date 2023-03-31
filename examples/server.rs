@@ -131,7 +131,7 @@ async fn serve(args: Args, host: hci::Host) -> Result<()> {
     let mut cm = l2cap::ChanManager::new(&host).await?;
     let mut adv_task = None;
     let mut srv_task = None;
-    let mut link = None;
+    let mut conn = None;
     loop {
         if srv_task.is_none() && adv_task.is_none() {
             info!("Enabling advertisements");
@@ -145,27 +145,27 @@ async fn serve(args: Args, host: hci::Host) -> Result<()> {
                 if matches!(adv??, AdvEvent::Term(_)) {
                     continue;
                 }
-                let link = match link.take() {
-                    Some(link) => link,
-                    None => cm.recv().await?,
+                let mut conn = match conn.take() {
+                    Some(conn) => conn,
+                    None => cm.next().await?,
                 };
-                info!("Serving {link}");
-                let mut smp = cm.smp_chan(link).unwrap();
+                info!("Serving {}", conn.link());
+                let mut smp = conn.smp_peripheral().unwrap();
                 let key_store = Arc::clone(&key_store);
                 tokio::task::spawn(async move {
                     let mut dev = smp::Device::new().with_display(Box::new(Dev)).with_confirm(Box::new(Dev));
                     smp.respond(&mut dev, key_store.as_ref()).await
                 });
-                let br = cm.att_chan(link).unwrap();
+                let br = conn.att_bearer().unwrap();
                 srv_task = Some(tokio::task::spawn(srv.attach(&br).serve(br)));
             }
             srv = async { srv_task.as_mut().unwrap().await }, if srv_task.is_some() => {
                 info!("GATT server terminated: {:?}", srv);
                 srv_task = None;
             }
-            r = cm.recv() => {
-                assert!(link.is_none());
-                link = Some(r?);
+            r = cm.next() => {
+                assert!(conn.is_none());
+                conn = Some(r?);
             }
         }
     }

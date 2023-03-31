@@ -10,7 +10,6 @@ use std::time::Duration;
 
 use once_cell::sync::Lazy;
 use structbuf::{Pack, Packer};
-use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, warn};
 
 pub use {adv::*, cmd::*, consts::*, event::*, handle::*};
@@ -232,14 +231,14 @@ impl Host {
     #[inline]
     #[must_use]
     pub fn event_loop(&self) -> EventLoop {
-        let c = CancellationToken::new();
+        let ct = tokio_util::sync::CancellationToken::new();
         let mut host = self.clone();
         // Drop ControllerInfo reference to allow exclusive access in init()
         host.info = Arc::clone(&NO_CONTROLLER_INFO);
         EventLoop {
-            h: tokio::spawn(EventLoop::run(host, c.clone())),
-            c: c.clone(),
-            _g: c.drop_guard(),
+            join: tokio::spawn(EventLoop::run(host, ct.clone())),
+            cancel: ct.clone(),
+            _guard: ct.drop_guard(),
         }
     }
 
@@ -336,21 +335,21 @@ impl ControllerInfo {
 /// Future that continuously receives HCI events.
 #[derive(Debug)]
 pub struct EventLoop {
-    h: tokio::task::JoinHandle<Result<()>>,
-    c: CancellationToken,
-    _g: tokio_util::sync::DropGuard,
+    join: tokio::task::JoinHandle<Result<()>>,
+    cancel: tokio_util::sync::CancellationToken,
+    _guard: tokio_util::sync::DropGuard,
 }
 
 impl EventLoop {
     /// Stops event processing.
     #[inline]
     pub async fn stop(self) -> Result<()> {
-        self.c.cancel();
-        self.h.await.expect("event loop panic")
+        self.cancel.cancel();
+        self.join.await.expect("event loop panic")
     }
 
     /// Receives HCI events until cancellation.
-    async fn run(h: Host, c: CancellationToken) -> Result<()> {
+    async fn run(h: Host, c: tokio_util::sync::CancellationToken) -> Result<()> {
         debug!("Event loop started");
         let r = loop {
             let r: Result<Event> = tokio::select! {
@@ -390,7 +389,7 @@ impl Future for EventLoop {
     type Output = Result<()>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        Poll::Ready(ready!(Pin::new(&mut self.h).poll(cx)).unwrap())
+        Poll::Ready(ready!(Pin::new(&mut self.join).poll(cx)).unwrap())
     }
 }
 

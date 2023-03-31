@@ -1,18 +1,18 @@
-//! Transmit side of the Resource Manager.
+//! Send side of the Resource Manager.
 
 use structbuf::Pack;
 use tracing::{trace, warn};
 
 use super::*;
 
-/// Outbound PDU transfer state.
+/// Outbound PDU sender.
 #[derive(Debug)]
-pub(super) struct State {
+pub(super) struct Sender {
     alloc: Alloc,
     sched: SyncMutex<Scheduler>,
 }
 
-impl State {
+impl Sender {
     /// Creates a new outbound transfer state.
     #[must_use]
     #[inline]
@@ -206,7 +206,7 @@ impl Scheduler {
     }
 
     /// Schedules channel `ch` for sending a PDU.
-    fn schedule(&mut self, tx: Arc<State>, ch: Arc<RawChan>) -> Result<SchedulerGuard> {
+    fn schedule(&mut self, tx: Arc<Sender>, ch: Arc<RawChan>) -> Result<SchedulerGuard> {
         let Some(blocked) = self.blocked.get_mut(&ch.cid.link) else {
             return Err(Error::InvalidConn(ch.cid.link.into()));
         };
@@ -305,7 +305,7 @@ impl Scheduler {
 #[derive(Debug)]
 #[must_use]
 struct SchedulerGuard {
-    tx: Arc<State>,
+    tx: Arc<Sender>,
     ch: Arc<RawChan>,
 }
 
@@ -351,9 +351,9 @@ impl SchedulerGuard {
         self.ch.may_send().await?;
         trace!(
             "{}{}: {:02X?}",
-            if is_cont { "Cont. " } else { "" },
             self.ch.cid,
-            &(*xfer).as_ref()[4 + 4..] // Skip ACL and L2CAP headers
+            if is_cont { " (cont.)" } else { "" },
+            &(*xfer).as_ref()[ACL_HDR + L2CAP_HDR..]
         );
         let e = match xfer.submit() {
             Ok(fut) => match fut.await {

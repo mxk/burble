@@ -1,24 +1,28 @@
 //! Logical Link Control and Adaptation Protocol ([Vol 3] Part A).
 
 use std::collections::hash_map::Entry;
-use std::collections::{HashMap, VecDeque};
-use std::fmt::Debug;
+use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::fmt::{Debug, Formatter};
 use std::mem;
+use std::ops::Deref;
 use std::sync::Arc;
 
 use structbuf::{Pack, Packer, StructBuf};
-use tracing::debug;
+use tracing::error;
 
+pub(crate) use chan::*;
 pub use handle::*;
-pub(crate) use {chan::*, consts::*};
+use {consts::*, rx::Receiver, tx::Sender};
 
 use crate::hci::ACL_HDR;
+use crate::l2cap::sig::SigChan;
 use crate::{att, hci, host, smp, SyncMutex};
 
 mod chan;
 mod consts;
 mod handle;
 mod rx;
+mod sig;
 mod tx;
 
 // TODO: Remove this assumption? Currently, it is required to index into buffers
@@ -56,120 +60,211 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// information.
 #[derive(Debug)]
 pub struct ChanManager {
-    ctl: hci::EventStream,
-    conns: HashMap<LeU, Conn>,
-    rm: ResManager,
+    rx: tokio::sync::mpsc::Receiver<Conn>,
+    join: Option<tokio::task::JoinHandle<Result<()>>>,
 }
 
 impl ChanManager {
     /// Creates a new Channel Manager.
+    #[inline]
     pub async fn new(host: &hci::Host) -> Result<Self> {
+        let (tx, rx) = tokio::sync::mpsc::channel(4);
+        let task = ChanManagerTask::new(host.clone(), tx).await?;
         Ok(Self {
-            ctl: host.events(),
-            conns: HashMap::new(),
-            rm: ResManager::new(host).await?,
+            rx,
+            join: Some(tokio::spawn(task.run())),
         })
     }
 
-    /// Receives HCI events and ACL data packets until a new connection is
-    /// established. This method is cancel safe.
-    pub async fn recv(&mut self) -> Result<LeU> {
-        loop {
-            tokio::select! {
-                evt = self.ctl.next() => {
-                    if let Some(link) = self.handle_event(&evt?) {
-                        return Ok(link);
-                    }
-                }
-                _ = self.rm.rx.recv() => {} //self.handle_signal(r?),
-            }
+    /// Returns the next LE-U connection. This method is cancel safe.
+    #[inline]
+    pub async fn next(&mut self) -> Result<Conn> {
+        if let Some(cn) = self.rx.recv().await {
+            return Ok(cn);
         }
+        let join = self.join.take().expect("event loop already joined");
+        join.await.expect("event loop panic")?;
+        unreachable!()
     }
 
-    /// Returns the Attribute Protocol (ATT) fixed channel for the specified
-    /// LE-U logical link.
-    pub fn att_chan(&mut self, link: LeU) -> Option<att::Bearer> {
-        (self.conns.get_mut(&link)).and_then(|cn| cn.att_opt.take().map(att::Bearer::new))
+    /// Closes all connections.
+    #[inline]
+    pub async fn close_all(mut self) -> Result<()> {
+        self.rx.close();
+        if let Some(join) = self.join.take() {
+            join.await.expect("event loop panic")?;
+        }
+        Ok(())
+    }
+}
+
+/// Established connection over an LE-U logical link.
+pub struct Conn {
+    raw: Arc<RawConn>,
+    att: Option<Chan>,
+    smp: Option<Chan>,
+}
+
+impl Conn {
+    /// Creates fixed channel state for a newly established connection.
+    #[must_use]
+    fn new(host: &hci::Host, link: LeU, rm: &mut ResManager) -> (Self, SigChan) {
+        let cn = host.conn(link.into()).expect("invalid link");
+        // [Vol 3] Part A, Section 4
+        let sig = Chan::new(link.chan(Cid::SIG), &cn, &rm.tx, 23);
+        // [Vol 3] Part G, Section 5.2
+        let att = Chan::new(link.chan(Cid::ATT), &cn, &rm.tx, 23);
+        // [Vol 3] Part H, Section 3.2
+        let smp = Chan::new(link.chan(Cid::SMP), &cn, &rm.tx, 65);
+        let cn = Self {
+            raw: Arc::new(RawConn {
+                sig: Arc::clone(&sig.raw),
+                att: Arc::clone(&att.raw),
+                smp: Arc::clone(&smp.raw),
+            }),
+            att: Some(att),
+            smp: Some(smp),
+        };
+        // [Vol 3] Part A, Section 2.2
+        rm.tx.register_link(link);
+        rm.rx.register_chan(&cn.raw.sig);
+        rm.rx.register_chan(&cn.raw.att);
+        rm.rx.register_chan(&cn.raw.smp);
+        (cn, SigChan::new(sig))
+    }
+
+    /// Returns the LE-U logical link handle.
+    #[inline(always)]
+    #[must_use]
+    pub fn link(&self) -> LeU {
+        self.raw.sig.cid.link
+    }
+
+    /// Returns the Attribute Protocol (ATT) fixed channel bearer or [`None`] if
+    /// the channel was already consumed.
+    #[inline]
+    pub fn att_bearer(&mut self) -> Option<att::Bearer> {
+        self.att.take().map(att::Bearer::new)
     }
 
     /// Returns the Security Manager Protocol (SMP) fixed channel for the
-    /// specified LE-U logical link.
-    pub fn smp_chan(&mut self, link: LeU) -> Option<smp::Peripheral> {
-        (self.conns.get_mut(&link).and_then(|cn| cn.smp_opt.take())).map(smp::Peripheral::new)
+    /// Peripheral role or [`None`] if the channel was already consumed.
+    #[inline]
+    pub fn smp_peripheral(&mut self) -> Option<smp::Peripheral> {
+        self.smp.take().map(smp::Peripheral::new)
+    }
+}
+
+impl Debug for Conn {
+    #[inline(always)]
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        Debug::fmt(&self.raw, f)
+    }
+}
+
+/// Internal connection state.
+#[derive(Debug)]
+struct RawConn {
+    /// LE Signaling fixed channel.
+    sig: Arc<RawChan>,
+    /// Attribute Protocol fixed channel.
+    att: Arc<RawChan>,
+    /// Security Manager fixed channel.
+    smp: Arc<RawChan>,
+}
+
+/// Drop guard that closes all connection channels when dropped.
+#[derive(Debug)]
+#[repr(transparent)]
+struct ConnGuard(Arc<RawConn>);
+
+impl Drop for ConnGuard {
+    #[inline(always)]
+    fn drop(&mut self) {
+        self.smp.set_closed();
+        self.att.set_closed();
+        self.sig.set_closed();
+    }
+}
+
+impl Deref for ConnGuard {
+    type Target = RawConn;
+
+    #[inline(always)]
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+/// Channel manager task state.
+#[derive(Debug)]
+pub struct ChanManagerTask {
+    host: hci::Host,
+    ctl: hci::EventStream,
+    tx: tokio::sync::mpsc::Sender<Conn>,
+    rm: ResManager,
+    conns: BTreeMap<LeU, ConnGuard>,
+}
+
+impl ChanManagerTask {
+    /// Creates a new channel manager task state.
+    #[inline]
+    async fn new(host: hci::Host, tx: tokio::sync::mpsc::Sender<Conn>) -> Result<Self> {
+        let ctl = host.events();
+        let rm = ResManager::new(&host).await?;
+        Ok(Self {
+            host,
+            ctl,
+            tx,
+            rm,
+            conns: BTreeMap::new(),
+        })
+    }
+
+    /// Handles HCI events and ACL data packets.
+    async fn run(mut self) -> Result<()> {
+        loop {
+            tokio::select! {
+                evt = self.ctl.next() => self.handle_event(&evt?),
+                r = self.rm.rx.recv() => r?,
+            }
+        }
     }
 
     /// Handles HCI control events.
-    fn handle_event(&mut self, evt: &hci::Event) -> Option<LeU> {
+    fn handle_event(&mut self, evt: &hci::Event) {
         use hci::EventCode::*;
         match evt.code() {
-            LeConnectionComplete | LeEnhancedConnectionComplete => {
-                return self.handle_connect(&evt.get());
-            }
-            DisconnectionComplete => {
-                self.handle_disconnect(evt.get());
-            }
-            NumberOfCompletedPackets => {
-                self.rm.tx.handle_num_completed(&evt.get());
-            }
+            DisconnectionComplete => self.handle_disconnect(evt.get()),
+            NumberOfCompletedPackets => self.rm.tx.handle_num_completed(&evt.get()),
+            LeConnectionComplete | LeEnhancedConnectionComplete => self.handle_connect(&evt.get()),
             _ => {}
         }
-        None
-    }
-
-    /// Handles signaling channel communications.
-    #[allow(dead_code)] // TODO: Remove
-    fn handle_signal(&mut self, cid: LeCid) {
-        if cid.chan != Cid::SIG {
-            return;
-        }
-        let _ = self;
-        debug!("Signal on {cid}");
-        // TODO: Implement
-        // TODO: This will miss signal channel errors
     }
 
     /// Handles the creation of a new LE-U logical link.
-    fn handle_connect(&mut self, evt: &hci::LeConnectionComplete) -> Option<LeU> {
+    fn handle_connect(&mut self, evt: &hci::LeConnectionComplete) {
         if !evt.status.is_ok() {
-            return None;
+            return;
         }
-        let link = LeU::new(evt.handle);
-        let cn = self.ctl.conn(evt.handle).expect("invalid {link}");
-
-        // [Vol 3] Part A, Section 4
-        let sig = Chan::new(link.chan(Cid::SIG), &cn, &self.rm.tx, 23);
-        // [Vol 3] Part G, Section 5.2
-        let att = Chan::new(link.chan(Cid::ATT), &cn, &self.rm.tx, 23);
-        // [Vol 3] Part H, Section 3.2
-        // TODO: MTU is 23 when LE Secure Connections is not supported
-        let sm = Chan::new(link.chan(Cid::SMP), &cn, &self.rm.tx, 65);
-
-        // [Vol 3] Part A, Section 2.2
-        self.rm.tx.register_link(LeU::new(evt.handle));
-        self.rm.rx.register_chan(&att.raw);
-        self.rm.rx.register_chan(&sig.raw);
-        self.rm.rx.register_chan(&sm.raw);
-        let cn = Conn {
-            sig,
-            att: Arc::clone(&att.raw),
-            att_opt: Some(att),
-            smp: Arc::clone(&sm.raw),
-            smp_opt: Some(sm),
-        };
-        assert!(self.conns.insert(link, cn).is_none());
-        Some(link)
+        let (cn, sig) = Conn::new(&self.host, LeU::new(evt.handle), &mut self.rm);
+        let link = cn.link();
+        let guard = ConnGuard(Arc::clone(&cn.raw));
+        self.tx.try_send(cn).expect("connection channel is full");
+        tokio::task::spawn(sig.serve()); // TODO: Store handle?
+        assert!(self.conns.insert(link, guard).is_none());
     }
 
+    /// Handles LE-U logical link disconnection.
     fn handle_disconnect(&mut self, evt: hci::DisconnectionComplete) {
         if !evt.status.is_ok() {
             return;
         }
-        let Some(mut cn) = self.conns.remove(&LeU::new(evt.handle)) else { return };
-        self.rm.rx.remove_chan(cn.sig.raw.cid);
+        let Some(cn) = self.conns.remove(&LeU::new(evt.handle)) else { return };
+        self.rm.rx.remove_chan(cn.sig.cid);
         self.rm.rx.remove_chan(cn.att.cid);
         self.rm.rx.remove_chan(cn.smp.cid);
         self.rm.tx.handle_disconnect(evt);
-        cn.set_closed();
     }
 }
 
@@ -177,8 +272,8 @@ impl ChanManager {
 /// logical channels and host transport.
 #[derive(Debug)]
 struct ResManager {
-    rx: rx::State,
-    tx: Arc<tx::State>,
+    rx: Receiver,
+    tx: Arc<Sender>,
 }
 
 impl ResManager {
@@ -194,31 +289,9 @@ impl ResManager {
         };
         host.host_buffer_size(hbuf).await?;
         Ok(Self {
-            rx: rx::State::new(host.transport(), hbuf.acl_data_len),
-            tx: tx::State::new(host.transport(), cbuf.acl_num_pkts, cbuf.acl_data_len),
+            rx: Receiver::new(host.transport(), hbuf.acl_data_len),
+            tx: Sender::new(host.transport(), cbuf.acl_num_pkts, cbuf.acl_data_len),
         })
-    }
-}
-
-/// Established connection over an LE-U logical link.
-#[derive(Debug)]
-struct Conn {
-    /// LE Signaling fixed channel.
-    sig: Chan,
-    /// Attribute Protocol fixed channel.
-    att: Arc<RawChan>,
-    att_opt: Option<Chan>,
-    /// Security Manager fixed channel.
-    smp: Arc<RawChan>,
-    smp_opt: Option<Chan>,
-}
-
-impl Conn {
-    /// Marks all channels as closed.
-    fn set_closed(&mut self) {
-        self.sig.raw.set_closed();
-        self.att.set_closed();
-        self.smp.set_closed();
     }
 }
 

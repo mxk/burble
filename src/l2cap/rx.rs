@@ -5,102 +5,58 @@ use tracing::{error, trace, warn};
 
 use super::*;
 
-/// Inbound PDU transfer state.
-#[derive(Debug)]
-pub(super) struct State {
-    xfer: tokio::sync::mpsc::Receiver<host::Result<Box<dyn host::Transfer>>>,
-    recv: SyncMutex<Receiver>, // TODO: Get rid of Mutex
-}
-
-impl State {
-    /// Creates a new inbound transfer state.
-    #[must_use]
-    pub fn new(t: &Arc<dyn host::Transport>, acl_data_len: u16) -> Self {
-        let (tx, rx) = tokio::sync::mpsc::channel(1);
-        let alloc = Alloc::new(t, host::Direction::In, acl_data_len);
-        tokio::task::spawn(Self::recv_task(alloc, tx));
-        Self {
-            xfer: rx,
-            recv: SyncMutex::new(Receiver::new()),
-        }
-    }
-
-    /// Receives one or more PDU fragments, and returns the CID of the channel
-    /// that has a new complete PDU. This method is cancel safe.
-    #[inline]
-    pub async fn recv(&mut self) -> Result<()> {
-        loop {
-            let xfer = self.xfer.recv().await.unwrap()?;
-            self.recv.lock().recombine(xfer);
-        }
-    }
-
-    /// Registers a new LE-U channel.
-    #[inline]
-    pub fn register_chan(&self, ch: &Arc<RawChan>) {
-        self.recv.lock().register_chan(Arc::clone(ch));
-    }
-
-    /// Removes LE-U channel registration.
-    #[inline]
-    pub fn remove_chan(&self, cid: LeCid) {
-        self.recv.lock().remove_chan(cid);
-    }
-
-    /// Receives ACL data packets and sends them via a channel. This makes
-    /// `recv()` cancel safe.
-    async fn recv_task(
-        alloc: Alloc,
-        ch: tokio::sync::mpsc::Sender<host::Result<Box<dyn host::Transfer>>>,
-    ) {
-        loop {
-            let r = tokio::select! {
-                r = async {
-                    match alloc.xfer().submit() {
-                        Ok(fut) => fut.await,
-                        Err(e) => Err(e),
-                    }
-                } => r,
-                _ = ch.closed() => break,
-            };
-            if ch.send(r).await.is_err() {
-                break;
-            }
-        }
-    }
-}
-
 /// Inbound PDU receiver. Recombines PDU fragments and routes the PDUs to their
 /// channels.
 #[derive(Debug)]
 pub(super) struct Receiver {
+    /// Received transfer channel.
+    xfer: tokio::sync::mpsc::Receiver<Box<dyn host::Transfer>>,
+    /// Receive loop handle.
+    join: Option<tokio::task::JoinHandle<host::Result<()>>>,
     /// CID of the current PDU for each logical link. Used to route continuation
     /// fragments to the appropriate channel ([Vol 3] Part A, Section 7.2.1).
     cont: HashMap<LeU, Option<Cid>>,
     /// Registered channels.
-    chans: HashMap<LeCid, Chan>,
+    chans: HashMap<LeCid, ChanBuf>,
 }
 
 impl Receiver {
-    /// Creates a new PDU receiver.
+    /// Creates a new inbound PDU receiver.
     #[inline]
     #[must_use]
-    pub fn new() -> Self {
+    pub fn new(t: &Arc<dyn host::Transport>, acl_data_len: u16) -> Self {
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        let alloc = Alloc::new(t, host::Direction::In, acl_data_len);
         Self {
+            xfer: rx,
+            join: Some(tokio::task::spawn(Self::recv_loop(alloc, tx))),
             cont: HashMap::new(),
             chans: HashMap::new(),
         }
     }
 
-    /// Registers a new LE-U channel, allowing it to receive data.
-    fn register_chan(&mut self, ch: Arc<RawChan>) {
+    /// Receives PDU fragments until a fatal transport error is encountered.
+    /// This method is cancel safe.
+    #[inline]
+    pub async fn recv(&mut self) -> host::Result<()> {
+        while let Some(xfer) = self.xfer.recv().await {
+            // TODO: Reuse transfer
+            self.recombine(xfer);
+        }
+        let join = self.join.take().expect("receive loop already joined");
+        join.await.expect("receive loop panic")
+    }
+
+    /// Registers an LE-U channel, allowing it to receive data.
+    pub fn register_chan(&mut self, ch: &Arc<RawChan>) {
         trace!("Adding channel: {}", ch.cid);
         self.cont.entry(ch.cid.link).or_default();
-        assert!(self.chans.insert(ch.cid, Chan::new(ch)).is_none());
+        let prev = self.chans.insert(ch.cid, ChanBuf::new(ch));
+        debug_assert!(prev.is_none());
     }
 
     /// Removes channel registration. Any incomplete PDU is discarded.
-    fn remove_chan(&mut self, cid: LeCid) {
+    pub fn remove_chan(&mut self, cid: LeCid) {
         let Some(_) = self.chans.remove(&cid) else { return };
         trace!("Removing channel: {}", cid);
         if !self.chans.keys().any(|other| other.link == cid.link) {
@@ -113,8 +69,7 @@ impl Receiver {
         }
     }
 
-    /// Recombines a received PDU fragment, and returns the CID of the channel
-    /// that has a new complete PDU ([Vol 3] Part A, Section 7.2.2).
+    /// Recombines a received PDU fragment ([Vol 3] Part A, Section 7.2.2).
     fn recombine(&mut self, xfer: Box<dyn host::Transfer>) {
         let pkt = (*xfer).as_ref();
         let Some((link, l2cap_hdr, data)) = parse_hdr(pkt) else { return };
@@ -124,7 +79,6 @@ impl Receiver {
         };
         if let Some((pdu_len, cid)) = l2cap_hdr {
             if let Some(cid) = *cont_cid {
-                // TODO: ChanManager will not notice this in handle_signal()
                 (self.chans.get_mut(&link.chan(cid)).unwrap()).ensure_complete();
                 *cont_cid = None;
             }
@@ -138,42 +92,66 @@ impl Receiver {
                 warn!("PDU fragment for an unknown {cid}: {pkt:02X?}");
                 return;
             };
-            trace!("{cid}: {:02X?}", &pkt[4 + 4..]); // Skip ACL and L2CAP headers
+            let is_first = usize::from(pdu_len) != data.len();
+            trace!(
+                "{cid}{}: {:02X?}",
+                if is_first { " (first)" } else { "" },
+                &pkt[ACL_HDR + L2CAP_HDR..]
+            );
             ch.first(pdu_len, xfer);
             if !ch.buf.is_none() {
                 *cont_cid = Some(cid.chan);
             }
-            return;
+        } else {
+            let Some(cid) = *cont_cid else {
+                warn!("Unexpected PDU continuation fragment for {link}: {pkt:02X?}");
+                return;
+            };
+            trace!("{cid} (cont.): {:02X?}", &pkt[ACL_HDR..]);
+            let ch = self.chans.get_mut(&link.chan(cid)).unwrap();
+            ch.cont(data);
+            if ch.buf.is_none() {
+                *cont_cid = None;
+            }
         }
-        let Some(cid) = *cont_cid else {
-            warn!("Unexpected continuation PDU fragment for {link}: {pkt:02X?}");
-            return;
-        };
-        trace!("Cont. PDU fragment for {cid}: {pkt:02X?}");
-        let ch = self.chans.get_mut(&link.chan(cid)).unwrap();
-        ch.cont(data);
-        if ch.buf.is_none() {
-            *cont_cid = None;
+    }
+
+    /// Receives ACL data packets and sends them via a channel. This makes
+    /// [`Self::recv()`] cancel safe.
+    async fn recv_loop(
+        alloc: Alloc,
+        tx: tokio::sync::mpsc::Sender<Box<dyn host::Transfer>>,
+    ) -> host::Result<()> {
+        loop {
+            tokio::select! {
+                xfer = alloc.xfer().submit()? => {
+                    if tx.send(xfer?).await.is_err() {
+                        break;
+                    }
+                }
+                _ = tx.closed() => break,
+            }
         }
+        Ok(())
     }
 }
 
-/// Channel PDU recombination state.
+/// Channel PDU recombination buffer.
 #[derive(Debug)]
-struct Chan {
+struct ChanBuf {
     /// Destination channel.
     raw: Arc<RawChan>,
     /// PDU recombination buffer.
     buf: StructBuf,
 }
 
-impl Chan {
-    /// Creates PDU receive state for channel `ch`.
-    #[inline]
+impl ChanBuf {
+    /// Creates a new PDU recombination buffer.
+    #[inline(always)]
     #[must_use]
-    pub const fn new(ch: Arc<RawChan>) -> Self {
+    pub fn new(ch: &Arc<RawChan>) -> Self {
         Self {
-            raw: ch,
+            raw: Arc::clone(ch),
             buf: StructBuf::none(),
         }
     }
@@ -191,21 +169,28 @@ impl Chan {
     /// Receives the first, possibly incomplete, PDU fragment.
     pub fn first(&mut self, pdu_len: u16, xfer: Box<dyn host::Transfer>) {
         self.ensure_complete();
-        let mut cs = self.raw.state.lock();
         let frame_len = L2CAP_HDR + usize::from(pdu_len);
-        if cs.can_recv(self.raw.cid, frame_len) {
-            if (*xfer).as_ref().len() == ACL_HDR + frame_len {
-                cs.push(self.raw.cid, Frame::complete(xfer));
-            } else {
-                self.buf = Frame::first(&*xfer, frame_len);
-            }
+        let mut cs = self.raw.state.lock();
+        if !cs.can_recv(self.raw.cid, frame_len) {
+            return;
+        }
+        if (*xfer).as_ref().len() == ACL_HDR + frame_len {
+            cs.push(self.raw.cid, Frame::complete(xfer));
+        } else {
+            self.buf = Frame::first(&*xfer, frame_len);
         }
     }
 
     /// Receives a continuation PDU fragment.
     pub fn cont(&mut self, acl_data: &[u8]) {
         let mut p = self.buf.append();
-        if !p.can_put(acl_data.len()) {
+        if p.can_put(acl_data.len()) {
+            p.put(acl_data);
+            if self.buf.is_full() {
+                let buf = Frame::Buf(self.buf.take());
+                self.raw.state.lock().push(self.raw.cid, buf);
+            }
+        } else {
             error!(
                 "PDU fragment for {} exceeds expected length ({} > {})",
                 self.raw.cid,
@@ -214,12 +199,6 @@ impl Chan {
             );
             self.buf = StructBuf::none();
             self.raw.set_error();
-            return;
-        }
-        p.put(acl_data);
-        if self.buf.is_full() {
-            let buf = Frame::Buf(self.buf.take());
-            self.raw.state.lock().push(self.raw.cid, buf);
         }
     }
 }
@@ -266,4 +245,36 @@ fn parse_hdr(pkt: &[u8]) -> Option<(LeU, Option<(u16, Cid)>, &[u8])> {
         None
     };
     Some((LeU::new(cn), l2cap_hdr, p.into_inner()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_hdr() {
+        use super::parse_hdr;
+        let link = LeU::new(hci::ConnHandle::new(0xEFF).unwrap());
+        let cid = link.chan(Cid::ATT);
+
+        let mut p = StructBuf::new(ACL_HDR + L2CAP_HDR + 2);
+        assert_eq!(parse_hdr(p.as_ref()), None);
+
+        p.append().u16(0xF00_u16).u16(0_u16);
+        assert_eq!(parse_hdr(p.as_ref()), None);
+
+        p.clear().append().u16(link).u16(0_u16);
+        assert_eq!(parse_hdr(p.as_ref()), None);
+
+        p.clear()
+            .append()
+            .u16(link)
+            .u16(4_u16)
+            .u16(0_u16)
+            .u16(cid.chan);
+        assert_eq!(
+            parse_hdr(p.as_ref()),
+            Some((link, Some((0, cid.chan)), Default::default()))
+        );
+    }
 }

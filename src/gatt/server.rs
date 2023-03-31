@@ -3,7 +3,6 @@ use std::sync::{Arc, Weak};
 use std::vec;
 
 use structbuf::Unpack;
-use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace, warn};
 
 use ErrorCode::*;
@@ -567,7 +566,7 @@ impl ServerCtx {
             cc.cache.cccd.insert(hdl, new);
             return Ok(());
         }
-        let ct = CancellationToken::new();
+        let ct = tokio_util::sync::CancellationToken::new();
         // TODO: Drop cc during this call?
         debug_assert_ne!(cc.notify_mtu, 0);
         debug!("Enabling notifications for {vtyp} {vhdl}");
@@ -928,7 +927,7 @@ struct ClientCtx {
     db_hash_read: bool,
     write_queue: WriteQueue,
     notify_mtu: u16,
-    notify_cancel: BTreeMap<Handle, CancellationToken>,
+    notify_cancel: BTreeMap<Handle, tokio_util::sync::CancellationToken>,
     tx: tokio::sync::mpsc::Sender<NotifyVal>,
     rx: Option<tokio::sync::mpsc::Receiver<NotifyVal>>,
 }

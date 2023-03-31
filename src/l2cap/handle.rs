@@ -4,7 +4,7 @@ use std::num::NonZeroU16;
 use crate::{hci, name_of};
 
 /// LE-U logical link ([Vol 1] Part A, Section 3.5.5.2.2).
-#[derive(Clone, Copy, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[repr(transparent)]
 pub struct LeU(hci::ConnHandle);
 

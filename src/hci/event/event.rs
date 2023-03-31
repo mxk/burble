@@ -644,13 +644,6 @@ impl EventStream {
         }
     }
 
-    /// Returns connection information for the specified handle or [`None`] if
-    /// the handle is invalid.
-    #[inline(always)]
-    pub fn conn(&self, hdl: ConnHandle) -> Option<ConnWatch> {
-        self.router.conn(hdl)
-    }
-
     /// Calls `f` to update connection parameters. This is a no-op if the handle
     /// is invalid.
     #[inline]
