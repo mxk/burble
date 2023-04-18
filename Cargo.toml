@@ -27,8 +27,9 @@ keywords.workspace = true
 categories.workspace = true
 
 [features]
-default = ["fs"]
+default = ["fs", "usb"]
 fs = ["dep:dirs", "dep:serde_json"]
+usb = ["dep:rusb"]
 
 [workspace.dependencies]
 enum-iterator = "1.4.0"
@@ -52,7 +53,7 @@ once_cell = { version = "1.17.1", features = ["parking_lot"] }
 parking_lot = { version = "0.12.1", features = ["arc_lock", "hardware-lock-elision", "send_guard"] }
 paste.workspace = true
 pin-project = "1.0.12"
-rusb = "0.9.2"
+rusb = { version = "0.9.2", optional = true }
 serde.workspace = true
 serde_json = { version = "1.0.95", optional = true }
 smallvec = { version = "1.10.0", features = ["const_generics", "const_new", "union"] }

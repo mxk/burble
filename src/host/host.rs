@@ -5,8 +5,10 @@ use std::future::Future;
 use std::pin::Pin;
 use std::task::{ready, Context, Poll};
 
+#[cfg(feature = "usb")]
 pub use usb::*;
 
+#[cfg(feature = "usb")]
 mod usb;
 
 /// Local host errors.
