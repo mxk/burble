@@ -86,6 +86,7 @@ impl From<&Key> for u128 {
     }
 }
 
+#[allow(clippy::unreadable_literal)]
 #[allow(clippy::unusual_byte_groupings)]
 #[cfg(test)]
 mod tests {

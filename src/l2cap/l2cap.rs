@@ -3,9 +3,9 @@
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fmt::{Debug, Formatter};
-use std::mem;
 use std::ops::Deref;
 use std::sync::Arc;
+use std::mem;
 
 use structbuf::{Pack, Packer, StructBuf};
 use tracing::error;
@@ -421,7 +421,7 @@ struct Alloc {
     /// Host transport.
     transport: Arc<dyn host::Transport>,
     /// Transfer direction.
-    dir: host::Direction,
+    dir: hci::Direction,
     /// Maximum size of a PDU fragment in an ACL data packet.
     acl_data_len: u16,
 }
@@ -430,7 +430,7 @@ impl Alloc {
     /// Creates a new transfer allocator.
     #[inline]
     #[must_use]
-    fn new(t: &Arc<dyn host::Transport>, dir: host::Direction, acl_data_len: u16) -> Self {
+    fn new(t: &Arc<dyn host::Transport>, dir: hci::Direction, acl_data_len: u16) -> Self {
         assert!(acl_data_len >= hci::ACL_LE_MIN_DATA_LEN);
         Self {
             transport: Arc::clone(t),

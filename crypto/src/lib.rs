@@ -275,6 +275,7 @@ pub mod u128ser {
     }
 }
 
+#[allow(clippy::unreadable_literal)]
 #[allow(clippy::unusual_byte_groupings)]
 #[cfg(test)]
 mod tests {

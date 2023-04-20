@@ -75,9 +75,10 @@ impl Error {
     pub const fn is_timeout(&self) -> bool {
         use Error::*;
         match *self {
-            Host(e) => e.is_timeout(),
+            Host(host::Error::Timeout) |
             CommandTimeout { .. } => true,
-            Hci { .. }
+            Host(_)
+            | Hci { .. }
             | Init(_)
             | InvalidEvent(_)
             | UnknownEvent { .. }
@@ -92,6 +93,38 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 /// Reusable HCI command transfer.
 type CommandTransfer = SyncMutex<Option<Box<dyn host::Transfer>>>;
+
+/// Transfer direction.
+#[allow(clippy::exhaustive_enums)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Direction {
+    /// Controller to host transfer.
+    ToHost,
+    /// Host to controller transfer.
+    FromHost,
+}
+
+/// Transfer type.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum TransferType {
+    Command,
+    Event,
+    Acl(Direction),
+}
+
+impl TransferType {
+    /// Returns the transfer direction.
+    #[inline]
+    #[must_use]
+    pub const fn dir(self) -> Direction {
+        match self {
+            Self::Command => Direction::FromHost,
+            Self::Event => Direction::ToHost,
+            Self::Acl(dir) => dir,
+        }
+    }
+}
 
 /// Host-side of a Host Controller Interface.
 #[derive(Clone, Debug)]
@@ -371,15 +404,9 @@ impl EventLoop {
         // TODO: Is there a better place to do this?
         let mut reset = h.new_cmd();
         reset.append().u16(Opcode::Reset).u8(0);
-        match reset.submit() {
-            Ok(fut) => {
-                if let Err(e) = fut.await {
-                    warn!("Failed to reset controller: {e}");
-                } else {
-                    debug!("Submitted controller reset command");
-                }
-            }
-            Err(e) => warn!("Failed to submit reset command: {e}"),
+        match reset.exec().await {
+            Ok(_) => debug!("Submitted controller reset command"),
+            Err(e) => warn!("Failed to reset controller: {e}"),
         }
         r
     }

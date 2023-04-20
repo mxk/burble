@@ -26,7 +26,7 @@ impl Receiver {
     #[must_use]
     pub fn new(t: &Arc<dyn host::Transport>, acl_data_len: u16) -> Self {
         let (tx, rx) = tokio::sync::mpsc::channel(1);
-        let alloc = Alloc::new(t, host::Direction::In, acl_data_len);
+        let alloc = Alloc::new(t, hci::Direction::ToHost, acl_data_len);
         Self {
             xfer: rx,
             join: Some(tokio::task::spawn(Self::recv_loop(alloc, tx))),
@@ -124,7 +124,7 @@ impl Receiver {
     ) -> host::Result<()> {
         loop {
             tokio::select! {
-                xfer = alloc.xfer().submit()? => {
+                xfer = alloc.xfer().exec() => {
                     if tx.send(xfer?).await.is_err() {
                         break;
                     }

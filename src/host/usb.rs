@@ -12,6 +12,7 @@ use structbuf::{Pack, Packer};
 use tracing::{debug, error, info, trace, warn};
 
 use crate::hci;
+use crate::hci::{Direction, TransferType};
 
 use super::*;
 
@@ -149,10 +150,15 @@ impl UsbController {
 
 impl Transport for UsbController {
     fn command(&self) -> Box<dyn Transfer> {
+        use rusb::constants::{
+            LIBUSB_ENDPOINT_OUT, LIBUSB_RECIPIENT_INTERFACE, LIBUSB_REQUEST_TYPE_CLASS,
+        };
+        const CMD_REQUEST_TYPE: u8 =
+            LIBUSB_ENDPOINT_OUT | LIBUSB_RECIPIENT_INTERFACE | LIBUSB_REQUEST_TYPE_CLASS;
         let mut t = libusb::Transfer::new_control(&self.hdl, hci::CMD_BUF);
         // [Vol 4] Part B, Section 2.2.2
         t.control_setup(
-            libusb::CMD_REQUEST_TYPE,      // bmRequestType
+            CMD_REQUEST_TYPE,              // bmRequestType
             0x00,                          // bRequest
             0x00,                          // wValue
             u16::from(self.ep.main_iface), // wIndex
@@ -173,8 +179,8 @@ impl Transport for UsbController {
 
     fn acl(&self, dir: Direction, max_data_len: u16) -> Box<dyn Transfer> {
         let endpoint = match dir {
-            Direction::In => self.ep.acl_in,
-            Direction::Out => self.ep.acl_out,
+            Direction::ToHost => self.ep.acl_in,
+            Direction::FromHost => self.ep.acl_out,
         };
         Box::new(UsbTransfer::Idle(libusb::Transfer::new_bulk(
             &self.hdl,
@@ -199,8 +205,8 @@ impl Transfer for UsbTransfer {
                 Control => TransferType::Command,
                 Isochronous => unreachable!(),
                 Bulk => TransferType::Acl(match t.dir() {
-                    In => Direction::In,
-                    Out => Direction::Out,
+                    In => Direction::ToHost,
+                    Out => Direction::FromHost,
                 }),
                 Interrupt => TransferType::Event,
             },
@@ -208,12 +214,16 @@ impl Transfer for UsbTransfer {
         }
     }
 
-    fn submit(mut self: Box<Self>) -> Result<TransferFuture> {
-        *self = Self::Future(match *self {
-            Self::Idle(t) => t.submit()?,
+    fn exec(mut self: Box<Self>) -> Exec {
+        *self = match *self {
+            Self::Idle(t) => match t.submit() {
+                Ok(t) => Self::Future(t),
+                Err(e) => return Exec::ready(Err(e.into())),
+            },
             Self::Future(_) => unreachable!(),
-        });
-        Ok(TransferFuture(Some(self)))
+        };
+        let fut: Pin<Box<Self>> = Pin::new(self);
+        Exec::pending(fut)
     }
 
     fn reset(&mut self) {
@@ -237,10 +247,11 @@ impl Future for UsbTransfer {
     }
 }
 
-impl ActiveTransfer for UsbTransfer {
+impl PendingTransfer for UsbTransfer {
     #[inline(always)]
-    fn ready(self: Box<Self>) -> Box<dyn Transfer> {
-        self
+    unsafe fn ready(self: Pin<Box<Self>>) -> Box<dyn Transfer> {
+        let t: Box<Self> = Pin::into_inner(self);
+        t
     }
 }
 
@@ -347,6 +358,28 @@ impl Endpoints {
     }
 }
 
+impl From<rusb::Error> for Error {
+    fn from(e: rusb::Error) -> Self {
+        use rusb::Error::*;
+        match e {
+            Io => Self::Other("I/O error"),
+            InvalidParam => Self::Other("invalid parameter"),
+            Access => Self::Access,
+            NoDevice => Self::Broken,
+            NotFound => Self::NotFound,
+            Busy => Self::Other("resource busy"),
+            Timeout => Self::Timeout,
+            Overflow => Self::Other("overflow"),
+            Pipe => Self::Other("pipe error"),
+            Interrupted => Self::Other("system call interrupted"),
+            NoMem => Self::Other("insufficient memory"),
+            NotSupported => Self::Other("operation not supported"),
+            BadDescriptor => Self::Other("malformed descriptor"),
+            Other => Self::Other("other error"),
+        }
+    }
+}
+
 mod libusb {
     use std::ffi::{c_char, c_int, c_uint, c_void, CStr};
     use std::fmt::Debug;
@@ -377,9 +410,6 @@ mod libusb {
             }
         };
     }
-
-    pub(super) const CMD_REQUEST_TYPE: u8 =
-        LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_CLASS | LIBUSB_RECIPIENT_INTERFACE;
 
     /// Asynchronous transfer.
     #[derive(Debug)]
@@ -816,21 +846,10 @@ mod libusb {
     const fn api_error(rc: c_int) -> Error {
         /// Compile-time detection of new error variants.
         const fn _error_variants(e: Error) {
+            use Error::*;
             match e {
-                Error::Io
-                | Error::InvalidParam
-                | Error::Access
-                | Error::NoDevice
-                | Error::NotFound
-                | Error::Busy
-                | Error::Timeout
-                | Error::Overflow
-                | Error::Pipe
-                | Error::Interrupted
-                | Error::NoMem
-                | Error::NotSupported
-                | Error::BadDescriptor
-                | Error::Other => {}
+                Io | InvalidParam | Access | NoDevice | NotFound | Busy | Timeout | Overflow
+                | Pipe | Interrupted | NoMem | NotSupported | BadDescriptor | Other => {}
             }
         }
         match rc {

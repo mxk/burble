@@ -41,7 +41,7 @@ impl Command {
         xfer.at(CMD_HDR - 1).u8(n);
         trace!("Command: {:02X?}", xfer.as_ref());
         let cmd_guard = self.router.reserve(self.opcode).await;
-        *self.host_cmd.lock() = Some(self.xfer.submit()?.await?);
+        *self.host_cmd.lock() = Some(self.xfer.exec().await?);
         let mut events = cmd_guard.submitted();
         // Handle command status and completion events with a one-second timeout
         // ([Vol 4] Part E, Section 4.4).

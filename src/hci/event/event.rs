@@ -753,7 +753,7 @@ impl EventTransfer {
                 xfer
             },
         );
-        self.xfer = Some(xfer.submit()?.await?);
+        self.xfer = Some(xfer.exec().await?);
         Ok(())
     }
 

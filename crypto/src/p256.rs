@@ -72,6 +72,7 @@ impl PublicKey {
 
     /// Returns whether `self` is the debug public key
     /// ([Vol 3] Part H, Section 2.3.5.6.1).
+    #[allow(clippy::unreadable_literal)]
     #[allow(clippy::unusual_byte_groupings)]
     fn is_debug(&self) -> bool {
         let (x, y) = (&self.x.0 .0, &self.y.0);
@@ -168,6 +169,7 @@ pub(super) fn u256<T: From<[u8; 32]>>(hi: u128, lo: u128) -> T {
     T::from(b)
 }
 
+#[allow(clippy::unreadable_literal)]
 #[allow(clippy::unusual_byte_groupings)]
 #[cfg(test)]
 mod tests {

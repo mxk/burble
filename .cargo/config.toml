@@ -13,10 +13,12 @@ rustflags = [
     "-Aclippy::multiple_crate_versions", # bitflags v1 and v2
     "-Wclippy::nursery",
     "-Aclippy::significant_drop_in_scrutinee", # TODO: Remove
+    "-Aclippy::significant-drop-tightening", # TODO: Remove
     "-Aclippy::redundant_pub_crate",
     "-Wclippy::pedantic",
     "-Aclippy::enum_glob_use",
     "-Aclippy::inline_always",
+    "-Aclippy::let_underscore_untyped", # TODO: Remove?
     "-Aclippy::missing_errors_doc",
     "-Aclippy::module_name_repetitions",
     "-Aclippy::similar_names",

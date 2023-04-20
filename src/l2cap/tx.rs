@@ -18,7 +18,7 @@ impl Sender {
     #[inline]
     pub fn new(t: &Arc<dyn host::Transport>, max_pkts: u8, acl_data_len: u16) -> Arc<Self> {
         Arc::new(Self {
-            alloc: Alloc::new(t, host::Direction::Out, acl_data_len),
+            alloc: Alloc::new(t, hci::Direction::FromHost, acl_data_len),
             sched: SyncMutex::new(Scheduler::new(u16::from(max_pkts))),
         })
     }
@@ -319,7 +319,7 @@ impl SchedulerGuard {
 
         if let Some(xfer) = pdu.take_xfer() {
             // Fast path for a single-fragment PDU
-            debug_assert_eq!(xfer.typ(), host::TransferType::Acl(host::Direction::Out));
+            debug_assert_eq!(xfer.typ(), hci::TransferType::Acl(hci::Direction::FromHost));
             return self.send_frag(xfer, false, false).await.map(|_xfer| ());
         }
 
@@ -355,14 +355,11 @@ impl SchedulerGuard {
             if is_cont { " (cont.)" } else { "" },
             &(*xfer).as_ref()[ACL_HDR + L2CAP_HDR..]
         );
-        let e = match xfer.submit() {
-            Ok(fut) => match fut.await {
-                Ok(xfer) => {
-                    self.tx.sched.lock().sent(&self.ch, more);
-                    return Ok(xfer);
-                }
-                Err(e) => e,
-            },
+        let e = match xfer.exec().await {
+            Ok(xfer) => {
+                self.tx.sched.lock().sent(&self.ch, more);
+                return Ok(xfer);
+            }
             Err(e) => e,
         };
         self.ch.set_error();
