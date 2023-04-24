@@ -11,6 +11,8 @@ A cross-platform user-mode BLE stack implementation starting from the USB transp
 
 **Project status:** Under active development. Tested on Linux, macOS, and Windows. Not accepting external contributions at this time. The library implements all components for a BLE GATT server (peripheral role) and LE Secure Connections pairing. Minimum supported Bluetooth version is 5.0. All APIs are subject to change prior to v1.0.
 
+Burble exposes the full functionality of a BLE controller, so some familiarity with the Bluetooth Core Specification and other relevant documents is expected.
+
 Reference documents:
 
 * [Bluetooth Core Specification v5.4][Core] (LE Core Configuration as defined in [Vol 0] Part B, Section 4.4)
@@ -33,12 +35,12 @@ Profiles and services:
 [DIS]: https://www.bluetooth.com/specifications/specs/device-information-service-1-1/
 [HOGP]: https://www.bluetooth.com/specifications/specs/hid-over-gatt-profile-1-0/
 
-Example Server
---------------
+Getting Started
+---------------
 
-The [server](examples/server.rs) example brings up a demo GATT server to test controller functionality.
+The [server] example brings up a demo GATT server to test controller functionality. See OS-specific sections below for instructions on allowing `libusb` to access the controllers from user-space.
 
-See OS-specific sections below for instructions on allowing `libusb` to access the controllers from user-space.
+[server]: https://github.com/BlackrockNeurotech/burble/blob/main/examples/server.rs
 
 ### Listing available Bluetooth controllers
 
@@ -84,43 +86,7 @@ DEBUG burble::gatt::db: [0x0001] Service(GenericAttribute) <0x1801>
 DEBUG burble::gatt::db: [0x0002] |__ Characteristic(ServiceChanged) <0x2A05>
 DEBUG burble::gatt::db: [0x0003] |   |__ [Value <0x2A05>]
 DEBUG burble::gatt::db: [0x0004] |   |__ Descriptor(ClientCharacteristicConfiguration) <0x2902>
-DEBUG burble::gatt::db: [0x0005] |__ Characteristic(ClientSupportedFeatures) <0x2B29>
-DEBUG burble::gatt::db: [0x0006] |   |__ [Value <0x2B29>]
-DEBUG burble::gatt::db: [0x0007] |__ Characteristic(DatabaseHash) <0x2B2A>
-DEBUG burble::gatt::db: [0x0008] |   |__ [Value <0x2B2A>]
-DEBUG burble::gatt::db: [0x0009] |__ Characteristic(ServerSupportedFeatures) <0x2B3A>
-DEBUG burble::gatt::db: [0x000A]     |__ [Value <0x2B3A>]
-DEBUG burble::gatt::db: [0x000B] Service(GenericAccess) <0x1800>
-DEBUG burble::gatt::db: [0x000C] |__ Characteristic(DeviceName) <0x2A00>
-DEBUG burble::gatt::db: [0x000D] |   |__ [Value <0x2A00>]
-DEBUG burble::gatt::db: [0x000E] |__ Characteristic(Appearance) <0x2A01>
-DEBUG burble::gatt::db: [0x000F]     |__ [Value <0x2A01>]
-DEBUG burble::gatt::db: [0x0010] Service(DeviceInformation) <0x180A>
-DEBUG burble::gatt::db: [0x0011] |__ Characteristic(ManufacturerNameString) <0x2A29>
-DEBUG burble::gatt::db: [0x0012] |   |__ [Value <0x2A29>]
-DEBUG burble::gatt::db: [0x0013] |__ Characteristic(PnpId) <0x2A50>
-DEBUG burble::gatt::db: [0x0014]     |__ [Value <0x2A50>]
-DEBUG burble::gatt::db: [0x0015] Service(Battery) <0x180F>
-DEBUG burble::gatt::db: [0x0016] |__ Characteristic(BatteryLevel) <0x2A19>
-DEBUG burble::gatt::db: [0x0017]     |__ [Value <0x2A19>]
-DEBUG burble::gatt::db: [0x0018] Service(HumanInterfaceDevice) <0x1812>
-DEBUG burble::gatt::db: [0x0019] |__ Characteristic(HidInformation) <0x2A4A>
-DEBUG burble::gatt::db: [0x001A] |   |__ [Value <0x2A4A>]
-DEBUG burble::gatt::db: [0x001B] |__ Characteristic(HidControlPoint) <0x2A4C>
-DEBUG burble::gatt::db: [0x001C] |   |__ [Value <0x2A4C>]
-DEBUG burble::gatt::db: [0x001D] |__ Characteristic(Report) <0x2A4D>
-DEBUG burble::gatt::db: [0x001E] |   |__ [Value <0x2A4D>]
-DEBUG burble::gatt::db: [0x001F] |   |__ Descriptor(ClientCharacteristicConfiguration) <0x2902>
-DEBUG burble::gatt::db: [0x0020] |   |__ Descriptor(ReportReference) <0x2908>
-DEBUG burble::gatt::db: [0x0021] |__ Characteristic(Report) <0x2A4D>
-DEBUG burble::gatt::db: [0x0022] |   |__ [Value <0x2A4D>]
-DEBUG burble::gatt::db: [0x0023] |   |__ Descriptor(ReportReference) <0x2908>
-DEBUG burble::gatt::db: [0x0024] |__ Characteristic(Report) <0x2A4D>
-DEBUG burble::gatt::db: [0x0025] |   |__ [Value <0x2A4D>]
-DEBUG burble::gatt::db: [0x0026] |   |__ Descriptor(ClientCharacteristicConfiguration) <0x2902>
-DEBUG burble::gatt::db: [0x0027] |   |__ Descriptor(ReportReference) <0x2908>
-DEBUG burble::gatt::db: [0x0028] |__ Characteristic(ReportMap) <0x2A4B>
-DEBUG burble::gatt::db: [0x0029]     |__ [Value <0x2A4B>]
+...
  INFO server: Enabling advertisements
 ```
 
@@ -200,7 +166,9 @@ Burble supports all major operating systems and can take advantage of the featur
 
 ### What is Burble's approach to security?
 
-Burble places heavy emphasis on security and correctness. Legacy features that can lead to insecure operation are simply not implemented (e.g. LE legacy pairing, < 128-bit encryption keys). All cryptographic primitives used by the Security Manager are implemented in a [separate package](./crypto/) that forbids unsafe code to facilitate auditing.
+Burble places heavy emphasis on security and correctness. Legacy features that can lead to insecure operation are simply not implemented (e.g. LE legacy pairing, < 128-bit encryption keys). All cryptographic primitives used by the Security Manager are implemented in a [separate package][crypto] that forbids unsafe code to facilitate auditing.
+
+[crypto]: https://github.com/BlackrockNeurotech/burble/tree/main/crypto
 
 ### Can Burble be used in embedded (`no_std`) systems?
 
@@ -213,19 +181,19 @@ Below is a list of Bluetooth controllers that have been tested with this library
 
 ### Server
 
-| Device         | VID:PID   | BLE Version | Chip       | ACL Buffers |
-| -------------- | --------- |:-----------:|:----------:|:-----------:|
-| Edimax BT-8500 | 7392:C611 | 5.1         | RTL8761BUV | 8 * 251B    |
-| Intel AX210    | 8087:0032 | 5.3         | -          | 3 * 251B    |
-| Intel AX211    | 8087:0033 | 5.3         | -          | 3 * 251B    |
+| Device         | VID:PID   | BLE Version |    Chip    | ACL Buffers |
+|----------------|-----------|:-----------:|:----------:|:-----------:|
+| Edimax BT-8500 | 7392:C611 |     5.1     | RTL8761BUV |  8 * 251B   |
+| Intel AX210    | 8087:0032 |     5.3     |     -      |  3 * 251B   |
+| Intel AX211    | 8087:0033 |     5.3     |     -      |  3 * 251B   |
 
 ### Client
 
-| Device         | VID:PID   | BLE Version | Chip       |
-| -------------- | --------- |:-----------:|:----------:|
-| Edimax BT-8500 | 7392:C611 | 5.1         | RTL8761BUV |
-| Intel AX210    | 8087:0032 | 5.3         | -          |
-| Intel AX211    | 8087:0033 | 5.3         | -          |
+| Device         | VID:PID   | BLE Version |    Chip    |
+|----------------|-----------|:-----------:|:----------:|
+| Edimax BT-8500 | 7392:C611 |     5.1     | RTL8761BUV |
+| Intel AX210    | 8087:0032 |     5.3     |     -      |
+| Intel AX211    | 8087:0033 |     5.3     |     -      |
 
 Legal
 -----
