@@ -1,8 +1,8 @@
-//! Bluetooth LE assigned numbers.
+#![doc = include_str!("../README.md")]
+#![no_std]
 
-#![warn(unused_crate_dependencies)]
-
-use std::fmt::{Debug, Display, Formatter};
+use core::fmt;
+use core::fmt::{Debug, Display, Formatter};
 
 pub use uuid::*;
 
@@ -14,13 +14,6 @@ mod uuid;
 pub struct CompanyId(pub u16);
 
 impl CompanyId {
-    /// Returns the raw company ID.
-    #[inline(always)]
-    #[must_use]
-    pub const fn raw(self) -> u16 {
-        self.0
-    }
-
     /// Returns the associated company name or [`None`] if the identifier is
     /// unknown.
     #[must_use]
@@ -33,7 +26,7 @@ impl CompanyId {
         let off = Self::IDX[i - 1] as usize;
         // SAFETY: `TAB[IDX[i - 1]..IDX[i]]` contains a valid UTF-8 string
         Some(unsafe {
-            std::str::from_utf8_unchecked(std::slice::from_raw_parts(
+            core::str::from_utf8_unchecked(core::slice::from_raw_parts(
                 Self::TAB.as_ptr().add(off),
                 Self::IDX[i] as usize - off,
             ))
@@ -43,7 +36,7 @@ impl CompanyId {
 
 impl Debug for CompanyId {
     #[inline]
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let name = self.name().unwrap_or("<unknown>");
         f.debug_tuple("CompanyId")
             .field(&format_args!("{:#06X} => \"{name}\"", self.0))
@@ -53,15 +46,11 @@ impl Debug for CompanyId {
 
 impl Display for CompanyId {
     #[inline]
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.name().unwrap_or("<unknown>"))
-    }
-}
-
-impl From<CompanyId> for u16 {
-    #[inline(always)]
-    fn from(id: CompanyId) -> Self {
-        id.raw()
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self.name() {
+            Some(name) => f.write_str(name),
+            None => write!(f, "CompanyId({:#06X})", self.0),
+        }
     }
 }
 
@@ -102,6 +91,7 @@ mod tests {
 
     #[test]
     fn company_ids() {
+        assert_eq!(u16::MIN, CompanyId::MIN);
         assert_eq!(CompanyId(CompanyId::MIN).name(), Some(CompanyId::FIRST));
         assert_eq!(CompanyId(0x01F4).name(), Some("UTC Fire and Security"));
         assert_eq!(CompanyId(CompanyId::MAX).name(), Some(CompanyId::LAST));

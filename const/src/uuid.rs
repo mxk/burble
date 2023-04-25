@@ -1,8 +1,8 @@
-use std::fmt::{Debug, Display, Formatter};
-use std::hash::{Hash, Hasher};
-use std::num::{NonZeroU128, NonZeroU16};
-use std::ops::Deref;
-use std::ptr;
+use core::fmt::{Debug, Display, Formatter};
+use core::hash::{Hash, Hasher};
+use core::num::{NonZeroU128, NonZeroU16};
+use core::ops::Deref;
+use core::{fmt, mem, ptr};
 
 use num_enum::TryFromPrimitive;
 use structbuf::{Packer, Unpack};
@@ -12,6 +12,17 @@ const BASE: u128 = 0x00000000_0000_1000_8000_00805F9B34FB;
 const MASK_16: u128 = !((u16::MAX as u128) << SHIFT);
 const MASK_32: u128 = !((u32::MAX as u128) << SHIFT);
 
+/// Invalid UUID error.
+#[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
+pub struct InvalidUuidError;
+
+impl Display for InvalidUuidError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.write_str("invalid uuid")
+    }
+}
+
 /// 16-, 32-, or 128-bit UUID ([Vol 3] Part B, Section 2.5.1).
 #[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[repr(transparent)]
@@ -19,12 +30,7 @@ pub struct Uuid(NonZeroU128);
 
 impl Uuid {
     /// UUID size in bytes.
-    pub const BYTES: usize = std::mem::size_of::<Self>();
-    /// Maximum UUID value.
-    pub const MAX: Self = Self(
-        // SAFETY: Non-zero
-        unsafe { NonZeroU128::new_unchecked(u128::MAX) },
-    );
+    const BYTES: usize = mem::size_of::<Self>();
 
     /// Creates a UUID from a `u128`.
     #[inline]
@@ -106,7 +112,7 @@ impl From<Uuid16> for Uuid {
 }
 
 impl TryFrom<&[u8]> for Uuid {
-    type Error = ();
+    type Error = InvalidUuidError;
 
     #[inline]
     fn try_from(v: &[u8]) -> Result<Self, Self::Error> {
@@ -115,12 +121,12 @@ impl TryFrom<&[u8]> for Uuid {
             Uuid16::BYTES => Uuid16::new(v.unpack().u16()).map(Uuid16::as_uuid),
             _ => None,
         }
-        .ok_or(())
+        .ok_or(InvalidUuidError)
     }
 }
 
 impl Debug for Uuid {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         #[allow(clippy::cast_possible_truncation)]
         if let Some(v) = self.as_u16() {
             write!(f, "{v:#06X}")
@@ -143,7 +149,7 @@ impl Debug for Uuid {
 
 impl Display for Uuid {
     #[inline]
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self.typ() {
             UuidType::NonSig => Debug::fmt(self, f),
             typ => Debug::fmt(&typ, f),
@@ -165,7 +171,7 @@ pub struct Uuid16(NonZeroU16);
 
 impl Uuid16 {
     /// UUID size in bytes.
-    pub const BYTES: usize = std::mem::size_of::<Self>();
+    pub const BYTES: usize = mem::size_of::<Self>();
 
     /// Creates a 16-bit SIG UUID from a `u16`.
     #[inline]
@@ -211,14 +217,14 @@ impl Uuid16 {
 
 impl Debug for Uuid16 {
     #[inline]
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "{:#06X}", self.0.get())
     }
 }
 
 impl Display for Uuid16 {
-    #[inline(always)]
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    #[inline]
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         Debug::fmt(&self.typ(), f)
     }
 }
@@ -299,7 +305,7 @@ static UUID_MAP: UuidMap = {
 };
 
 impl Debug for UuidType {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         use UuidType::*;
         match *self {
             Protocol(u) => (f.debug_tuple("Protocol").field(&format_args!("{u:#06X}"))).finish(),
@@ -318,7 +324,7 @@ impl Debug for UuidType {
 
 impl Display for UuidType {
     #[inline(always)]
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         Debug::fmt(self, f)
     }
 }
@@ -412,20 +418,20 @@ macro_rules! uuid16_enum {
 
         impl $typ {
             ::paste::paste! {$(
-                pub const [<$item:snake:upper>]: $crate::Uuid16 = Self::$item.uuid16();
+                pub const [<$item:snake:upper>]: $crate::Uuid16 = uuid16(Self::$item as _);
             )+}
 
             /// Returns the `Uuid` representation of the variant.
             #[inline]
             #[must_use]
-            pub const fn uuid(self) -> $crate::Uuid {
-                self.uuid16().as_uuid()
+            pub const fn uuidx(self) -> $crate::Uuid {
+                uuid16(self as _).as_uuid()
             }
 
             /// Returns the `Uuid16` representation of the variant.
             #[inline(always)]
             #[must_use]
-            pub const fn uuid16(self) -> $crate::Uuid16 {
+            pub const fn uuid16x(self) -> $crate::Uuid16 {
                 uuid16(self as _)
             }
         }
@@ -451,7 +457,7 @@ macro_rules! uuid16_enum {
             #[inline(always)]
             fn eq(&self, rhs: &$crate::Uuid) -> bool {
                 // Converting to 128-bit avoids branches
-                self.uuid() == *rhs
+                Uuid::from(*self) == *rhs
             }
         }
 
@@ -465,7 +471,7 @@ macro_rules! uuid16_enum {
         impl ::core::cmp::PartialEq<$typ> for $crate::Uuid {
             #[inline(always)]
             fn eq(&self, rhs: &$typ) -> bool {
-                *self == rhs.uuid()
+                *self == Uuid::from(*rhs)
             }
         }
 
@@ -479,14 +485,14 @@ macro_rules! uuid16_enum {
         impl ::core::convert::From<$typ> for $crate::Uuid {
             #[inline]
             fn from(v: $typ) -> Self {
-                v.uuid()
+                uuid16(v as _).as_uuid()
             }
         }
 
         impl ::core::convert::From<$typ> for $crate::Uuid16 {
-            #[inline]
+            #[inline(always)]
             fn from(v: $typ) -> Self {
-                v.uuid16()
+                uuid16(v as _)
             }
         }
     }
@@ -504,22 +510,22 @@ mod tests {
     fn uuid_type() {
         assert_eq!(uuid16(0x0001).typ(), UuidType::Protocol(0x0001));
         for v in all::<ServiceClass>() {
-            assert_eq!(v.uuid16().typ(), UuidType::ServiceClass(v));
+            assert_eq!(Uuid16::from(v).typ(), UuidType::ServiceClass(v));
         }
         for v in all::<Service>() {
-            assert_eq!(v.uuid16().typ(), UuidType::Service(v));
+            assert_eq!(Uuid16::from(v).typ(), UuidType::Service(v));
         }
         for v in all::<Unit>() {
-            assert_eq!(v.uuid16().typ(), UuidType::Unit(v));
+            assert_eq!(Uuid16::from(v).typ(), UuidType::Unit(v));
         }
         for v in all::<Declaration>() {
-            assert_eq!(v.uuid16().typ(), UuidType::Declaration(v));
+            assert_eq!(Uuid16::from(v).typ(), UuidType::Declaration(v));
         }
         for v in all::<Descriptor>() {
-            assert_eq!(v.uuid16().typ(), UuidType::Descriptor(v));
+            assert_eq!(Uuid16::from(v).typ(), UuidType::Descriptor(v));
         }
         for v in all::<Characteristic>() {
-            assert_eq!(v.uuid16().typ(), UuidType::Characteristic(v));
+            assert_eq!(Uuid16::from(v).typ(), UuidType::Characteristic(v));
         }
         assert_eq!(uuid16(0xFEFF).typ(), UuidType::Member(0xFEFF));
         assert_eq!(uuid16(0xFFFF).typ(), UuidType::Unknown(0xFFFF));

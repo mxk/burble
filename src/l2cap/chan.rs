@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::future::Future;
@@ -62,18 +63,18 @@ impl Chan {
     pub fn set_mtu(&mut self, mtu: u16) {
         // The MTU can only be changed once, so the current one is the minimum
         // allowed for the channel.
-        if mtu <= self.mtu {
-            if mtu < self.mtu {
-                error!(
-                    "Refusing {} MTU change: {} -> {mtu}",
-                    self.raw.cid, self.mtu
-                );
+        match mtu.cmp(&self.mtu) {
+            Ordering::Less => error!(
+                "Refusing {} MTU change: {} -> {mtu}",
+                self.raw.cid, self.mtu
+            ),
+            Ordering::Equal => {}
+            Ordering::Greater => {
+                info!("{} MTU change: {} -> {mtu}", self.raw.cid, self.mtu);
+                self.mtu = mtu;
+                self.raw.state.lock().max_frame_len = L2CAP_HDR + mtu as usize;
             }
-            return;
         }
-        info!("{} MTU change: {} -> {mtu}", self.raw.cid, self.mtu);
-        self.mtu = mtu;
-        self.raw.state.lock().max_frame_len = L2CAP_HDR + mtu as usize;
     }
 
     /// Sets channel error flag.

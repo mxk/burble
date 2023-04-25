@@ -1,7 +1,7 @@
 Blackrock User-Mode Bluetooth LE Library
 ========================================
 
-Bluetooth LE cryptographic toolbox for [burble].
+Bluetooth LE cryptographic toolbox for [burble] ([Vol 3] Part H, Section 2.2).
 
 [burble]: https://github.com/BlackrockNeurotech/burble/
 

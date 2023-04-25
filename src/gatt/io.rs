@@ -105,7 +105,7 @@ pub enum IoReq<'a> {
 pub struct ReadReq {
     pub(super) op: Opcode,
     pub(super) hdl: Handle,
-    pub(super) uuid: Uuid,
+    pub(super) uuid: Option<Uuid>,
     pub(super) off: u16,
     pub(super) buf: StructBuf,
 }
@@ -117,7 +117,7 @@ impl ReadReq {
         Self {
             op,
             hdl: Handle::MAX,
-            uuid: Uuid::MAX,
+            uuid: None,
             off: 0,
             buf: StructBuf::new(mtu as _),
         }
@@ -127,7 +127,7 @@ impl ReadReq {
     #[inline(always)]
     pub(super) fn with(&mut self, hdl: Handle, uuid: Uuid, off: u16) -> &mut Self {
         self.hdl = hdl;
-        self.uuid = uuid;
+        self.uuid = Some(uuid);
         self.off = off;
         self.buf.clear();
         self
@@ -143,8 +143,8 @@ impl ReadReq {
     /// Returns the attribute UUID.
     #[inline(always)]
     #[must_use]
-    pub const fn uuid(&self) -> Uuid {
-        self.uuid
+    pub fn uuid(&self) -> Uuid {
+        self.uuid.expect("request parameters not set")
     }
 
     /// Returns the value offset.

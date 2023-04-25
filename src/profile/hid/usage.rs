@@ -1,6 +1,6 @@
 use super::kbd::{KbdMap, Key};
 
-/// Keyboard/keypad usage page ([HUT] Section 10).
+/// Keyboard/keypad usage page (\[HUT\] Section 10).
 #[derive(
     Clone,
     Copy,

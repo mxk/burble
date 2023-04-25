@@ -188,7 +188,7 @@ pub(crate) enum PduType {
 }
 
 /// ATT and Common Profile and Service error codes
-/// ([Vol 3] Part F, Section 3.4.1.1 and [CSS] Part B, Section 1.2).
+/// ([Vol 3] Part F, Section 3.4.1.1 and \[CSS\] Part B, Section 1.2).
 #[derive(
     Clone,
     Copy,

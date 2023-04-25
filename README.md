@@ -44,7 +44,7 @@ The [server] example brings up a demo GATT server to test controller functionali
 
 ### Listing available Bluetooth controllers
 
-```ignore
+```text
 $ cargo run --example server
 Available controllers (pass 'ID <VID>:<PID>' to '--vid' and '--pid' options):
 Bus 002 Device 012: ID 7392:c611
@@ -59,7 +59,7 @@ Some clients may not support extended LE advertising. Use the `--legacy` option 
 
 [nRF]: https://play.google.com/store/apps/details?id=no.nordicsemi.android.mcp
 
-```ignore
+```text
 $ RUST_LOG=debug cargo run --example server -- --vid 7392 --pid c611
  INFO burble::host::usb::libusb: libusb version: 1.0.26.11724
 DEBUG burble::host::usb::libusb: - LIBUSB_CAP_HAS_CAPABILITY = true
@@ -95,7 +95,7 @@ Linux
 
 Burble requires read/write access to the USB device node, which is normally restricted to root. On systems with [udev], the following rules file can be used to provide access to the logged-in user (adjust the example as needed to restrict access, and set `vendor_id` and `product_id`):
 
-```ignore
+```text
 /etc/udev/rules.d/99-burble.rules:
 
 SUBSYSTEMS=="usb", ATTRS{idVendor}=="vendor_id", ATTRS{idProduct}=="product_id", MODE="0660", TAG+="uaccess"

@@ -1,5 +1,4 @@
-//! Bluetooth LE cryptographic toolbox ([Vol 3] Part H, Section 2.2).
-
+#![doc = include_str!("../README.md")]
 #![forbid(unsafe_code)]
 #![warn(unused_crate_dependencies)]
 

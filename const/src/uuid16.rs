@@ -142,7 +142,7 @@ impl Service {
     /// Returns whether the server can host at most one instances of this
     /// service.
     #[must_use]
-    pub const fn singleton(self) -> bool {
+    pub const fn is_singleton(self) -> bool {
         use Service::*;
         #[allow(clippy::match_same_arms)]
         match self {

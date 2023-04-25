@@ -135,7 +135,7 @@ impl Builder<Db> {
         let uuid = self.morph(uuid);
         if let Some((UuidType::Service(s), uuid16)) = uuid.as_uuid16().map(|u| (u.typ(), u)) {
             assert!(
-                !s.singleton() || !self.attr.iter().any(|at| at.typ == Some(uuid16)),
+                !s.is_singleton() || !self.attr.iter().any(|at| at.typ == Some(uuid16)),
                 "only one instance of the {s} service is allowed"
             );
         }
@@ -322,7 +322,7 @@ impl Builder<CharacteristicDef> {
         self.flag.remove(Bld::NEED_CCCD);
         self.flag.insert(Bld::HAVE_CCCD);
         self.attr(
-            Descriptor::ClientCharacteristicConfiguration.uuid(),
+            Descriptor::CLIENT_CHARACTERISTIC_CONFIGURATION.as_uuid(),
             perms.into(),
         )
     }
@@ -547,7 +547,7 @@ mod tests {
         assert!(it.next().is_none());
         drop(it);
 
-        let mut it = s.primary_services(Handle::MIN, Some(GenericAttribute.uuid()));
+        let mut it = s.primary_services(Handle::MIN, Some(GenericAttribute.into()));
         group_eq(it.next(), 0x0006, 0x000D, GenericAttribute);
         assert!(it.next().is_none());
         drop(it);
@@ -599,7 +599,7 @@ mod tests {
         assert_eq!(v.handle(), hdl);
         assert_eq!(
             v.uuid(),
-            Descriptor::ClientCharacteristicConfiguration.uuid()
+            Uuid::from(Descriptor::ClientCharacteristicConfiguration)
         );
         assert!(it.next().is_none());
 

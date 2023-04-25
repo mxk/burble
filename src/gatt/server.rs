@@ -853,16 +853,14 @@ impl ServerCtx {
             cc.write_queue.clear();
             return br.execute_write_rsp();
         }
-        let mut w = WriteReq {
-            op: pdu.opcode(),
-            hdl: Handle::MAX,
-            uuid: Uuid::MAX,
-            off: 0,
-            val: &[],
-        };
         for (hdl, off, val) in cc.write_queue.iter() {
-            (w.hdl, w.uuid, w.off, w.val) = (hdl, self.uuid(hdl), off, val);
-            self.do_write(&w)?;
+            self.do_write(&WriteReq {
+                op: pdu.opcode(),
+                hdl,
+                uuid: self.uuid(hdl),
+                off,
+                val,
+            })?;
         }
         br.execute_write_rsp()
     }
