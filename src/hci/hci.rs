@@ -75,8 +75,7 @@ impl Error {
     pub const fn is_timeout(&self) -> bool {
         use Error::*;
         match *self {
-            Host(host::Error::Timeout) |
-            CommandTimeout { .. } => true,
+            Host(host::Error::Timeout) | CommandTimeout { .. } => true,
             Host(_)
             | Hci { .. }
             | Init(_)

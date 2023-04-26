@@ -699,7 +699,7 @@ impl ServerCtx {
         if typ != Declaration::PrimaryService {
             return pdu.err(UnsupportedGroupType);
         }
-        let (Ok(uuid), true) = (Uuid::try_from(uuid), hdls.end() == Handle::MAX) else {
+        let (Some(uuid), true) = (Uuid::from_le_bytes(uuid), hdls.end() == Handle::MAX) else {
             return pdu.hdl_err(AttributeNotFound, hdls.start());
         };
         let it = (self.srv.db.primary_services(hdls.start(), Some(uuid))).map(|v| {

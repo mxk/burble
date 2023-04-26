@@ -80,7 +80,7 @@ impl Db {
         uuid: Option<Uuid>,
     ) -> impl Iterator<Item = DbEntry<ServiceDef>> {
         let i = self.try_get(start).map_or_else(|i| i, |at| self.index(at));
-        let uuid = uuid.map_or_else(UuidVec::default, UuidVec::new);
+        let uuid = uuid.map_or_else(UuidVec::default, Uuid::to_vec);
         // SAFETY: 0 <= i <= self.attr.len()
         GroupIter::new(self, unsafe { self.attr.get_unchecked(i..) }, move |at| {
             at.is_primary_service() && (uuid.is_empty() || self.value(at) == uuid.as_ref())
@@ -195,7 +195,7 @@ impl Db {
                                 .map_or(Handle::MIN, |at| at.hdl);
                             let sec = ((!at.is_primary_service()).then_some("Secondary"))
                                 .unwrap_or_default();
-                            let uuid = Uuid::try_from(v.as_ref()).unwrap();
+                            let uuid = Uuid::from_le_bytes(v.as_ref()).unwrap();
                             if let UuidType::Service(_) = uuid.typ() {
                                 log!(at, "{sec}{uuid} <{uuid:?}>");
                             } else {
@@ -207,7 +207,7 @@ impl Db {
                             cont = if at.hdl < last_char_hdl { '|' } else { ' ' };
                             let _prop = Prop::from_bits(v.u8()).unwrap(); // TODO
                             vhdl = Handle::new(v.u16()).unwrap();
-                            let uuid = Uuid::try_from(v.as_ref()).unwrap();
+                            let uuid = Uuid::from_le_bytes(v.as_ref()).unwrap();
                             if let UuidType::Characteristic(_) = uuid.typ() {
                                 log!(at, "|__ {uuid} <{uuid:?}>");
                             } else {
@@ -515,8 +515,8 @@ impl<T: Group> DbEntry<'_, T> {
     #[must_use]
     pub fn uuid(&self) -> Uuid {
         // SAFETY: Attribute value contains the UUID at UUID_OFF.
-        Uuid::try_from(unsafe { self.val.get_unchecked(T::UUID_OFF..) })
-            .map_or_else(|_| unreachable!("corrupt database"), |u| u)
+        Uuid::from_le_bytes(unsafe { self.val.get_unchecked(T::UUID_OFF..) })
+            .map_or_else(|| unreachable!("corrupt database"), |u| u)
     }
 }
 

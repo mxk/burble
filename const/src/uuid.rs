@@ -12,17 +12,6 @@ const BASE: u128 = 0x00000000_0000_1000_8000_00805F9B34FB;
 const MASK_16: u128 = !((u16::MAX as u128) << SHIFT);
 const MASK_32: u128 = !((u32::MAX as u128) << SHIFT);
 
-/// Invalid UUID error.
-#[derive(Clone, Copy, Debug)]
-#[non_exhaustive]
-pub struct InvalidUuidError;
-
-impl Display for InvalidUuidError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.write_str("invalid uuid")
-    }
-}
-
 /// 16-, 32-, or 128-bit UUID ([Vol 3] Part B, Section 2.5.1).
 #[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[repr(transparent)]
@@ -48,13 +37,25 @@ impl Uuid {
     /// # Safety
     ///
     /// The value must not be zero.
-    #[inline]
+    #[inline(always)]
     #[must_use]
     pub const unsafe fn new_unchecked(v: u128) -> Self {
         Self(NonZeroU128::new_unchecked(v))
     }
 
-    /// Returns the UUID type. Returns [`UuidType::NonSig`] for non-SIG UUID.
+    /// Creates a UUID from a little-endian byte slice, which must be either 16-
+    /// or 2-bytes long.
+    #[inline]
+    #[must_use]
+    pub fn from_le_bytes(v: &[u8]) -> Option<Self> {
+        match v.len() {
+            Self::BYTES => Self::new(v.unpack().u128()),
+            Uuid16::BYTES => Uuid16::new(v.unpack().u16()).map(Uuid16::as_uuid),
+            _ => None,
+        }
+    }
+
+    /// Returns the UUID type. Returns [`UuidType::NonSig`] for non-SIG UUIDs.
     #[inline]
     #[must_use]
     pub fn typ(self) -> UuidType {
@@ -62,15 +63,16 @@ impl Uuid {
     }
 
     /// Returns a [`Uuid16`] representation or [`None`] if the UUID is not an
-    /// assigned 16-bit UUID.
+    /// assigned 16-bit SIG UUID.
     #[inline]
     #[must_use]
     pub fn as_uuid16(self) -> Option<Uuid16> {
-        self.as_u16().map(uuid16)
+        // SAFETY: `u` is non-zero
+        self.as_u16().map(|u| unsafe { Uuid16::new_unchecked(u) })
     }
 
-    /// Converts an assigned 16-bit Bluetooth SIG UUID to `u16`. This is
-    /// mutually exclusive with `as_u32` and `as_u128`.
+    /// Converts an assigned 16-bit SIG UUID to `u16`. This is mutually
+    /// exclusive with `as_u32` and `as_u128`.
     #[inline]
     #[must_use]
     pub fn as_u16(self) -> Option<u16> {
@@ -79,8 +81,8 @@ impl Uuid {
         (self.0.get() & MASK_16 == BASE && v > 0).then_some(v)
     }
 
-    /// Converts an assigned 32-bit Bluetooth SIG UUID to `u32`. This is
-    /// mutually exclusive with `as_u16` and `as_u128`.
+    /// Converts an assigned 32-bit SIG UUID to `u32`. This is mutually
+    /// exclusive with `as_u16` and `as_u128`.
     #[inline]
     #[must_use]
     pub fn as_u32(self) -> Option<u32> {
@@ -96,32 +98,27 @@ impl Uuid {
         (self.0.get() & MASK_32 != BASE).then_some(self.0.get())
     }
 
-    /// Returns the UUID as a little-endian byte array.
+    /// Returns a 2- or 16-byte vector representation of the UUID.
     #[inline]
     #[must_use]
-    pub const fn to_bytes(self) -> [u8; Self::BYTES] {
-        self.0.get().to_le_bytes()
+    pub fn to_vec(self) -> UuidVec {
+        #[allow(clippy::cast_possible_truncation)]
+        let (n, v) = self.as_u16().map_or_else(
+            || (Self::BYTES as u8, self.0.get().to_le_bytes()),
+            |u| {
+                let mut v = [0; Self::BYTES];
+                v[..Uuid16::BYTES].copy_from_slice(&u.to_le_bytes());
+                (Uuid16::BYTES as u8, v)
+            },
+        );
+        UuidVec { n, v }
     }
 }
 
 impl From<Uuid16> for Uuid {
-    #[inline]
+    #[inline(always)]
     fn from(u: Uuid16) -> Self {
         u.as_uuid()
-    }
-}
-
-impl TryFrom<&[u8]> for Uuid {
-    type Error = InvalidUuidError;
-
-    #[inline]
-    fn try_from(v: &[u8]) -> Result<Self, Self::Error> {
-        match v.len() {
-            Self::BYTES => Self::new(v.unpack().u128()),
-            Uuid16::BYTES => Uuid16::new(v.unpack().u16()).map(Uuid16::as_uuid),
-            _ => None,
-        }
-        .ok_or(InvalidUuidError)
     }
 }
 
@@ -158,7 +155,7 @@ impl Display for Uuid {
 }
 
 impl From<Uuid> for u128 {
-    #[inline]
+    #[inline(always)]
     fn from(u: Uuid) -> Self {
         u.0.get()
     }
@@ -171,9 +168,9 @@ pub struct Uuid16(NonZeroU16);
 
 impl Uuid16 {
     /// UUID size in bytes.
-    pub const BYTES: usize = mem::size_of::<Self>();
+    const BYTES: usize = mem::size_of::<Self>();
 
-    /// Creates a 16-bit SIG UUID from a `u16`.
+    /// Creates an assigned 16-bit SIG UUID from a `u16`.
     #[inline]
     #[must_use]
     pub const fn new(v: u16) -> Option<Self> {
@@ -181,6 +178,18 @@ impl Uuid16 {
             Some(nz) => Some(Self(nz)),
             None => None,
         }
+    }
+
+    /// Creates an assigned 16-bit SIG UUID from a `u16` without checking
+    /// whether the value is non-zero.
+    ///
+    /// # Safety
+    ///
+    /// The value must not be zero.
+    #[inline(always)]
+    #[must_use]
+    pub const unsafe fn new_unchecked(v: u16) -> Self {
+        Self(NonZeroU16::new_unchecked(v))
     }
 
     /// Returns the UUID type.
@@ -198,20 +207,6 @@ impl Uuid16 {
         // TODO: Use NonZeroU128::from() when it is const
         // SAFETY: Always non-zero
         unsafe { Uuid::new_unchecked((self.0.get() as u128) << SHIFT | BASE) }
-    }
-
-    /// Returns the raw 16-bit UUID value.
-    #[inline(always)]
-    #[must_use]
-    pub(crate) const fn raw(self) -> u16 {
-        self.0.get()
-    }
-
-    /// Returns the UUID as a little-endian byte array.
-    #[inline]
-    #[must_use]
-    pub const fn to_bytes(self) -> [u8; Self::BYTES] {
-        self.0.get().to_le_bytes()
     }
 }
 
@@ -238,9 +233,9 @@ impl Hash for Uuid16 {
 }
 
 impl From<Uuid16> for u16 {
-    #[inline]
+    #[inline(always)]
     fn from(u: Uuid16) -> Self {
-        u.raw()
+        u.0.get()
     }
 }
 
@@ -260,20 +255,6 @@ pub enum UuidType {
     Member(u16),
     Unknown(u16),
     NonSig,
-}
-
-impl From<Uuid> for UuidType {
-    #[inline(always)]
-    fn from(u: Uuid) -> Self {
-        u.typ()
-    }
-}
-
-impl From<Uuid16> for UuidType {
-    #[inline(always)]
-    fn from(u: Uuid16) -> Self {
-        u.typ()
-    }
 }
 
 type UuidMap = [fn(u16) -> UuidType; 256];
@@ -336,24 +317,6 @@ pub struct UuidVec {
     v: [u8; Uuid::BYTES],
 }
 
-impl UuidVec {
-    /// Creates a vector representation of a UUID.
-    #[inline]
-    #[must_use]
-    pub fn new(u: Uuid) -> Self {
-        let (n, v) = u.as_uuid16().map_or_else(
-            || (Uuid::BYTES, u.to_bytes()),
-            |u| {
-                let mut v = [0; Uuid::BYTES];
-                v[..Uuid16::BYTES].copy_from_slice(&u.to_bytes());
-                (Uuid16::BYTES, v)
-            },
-        );
-        #[allow(clippy::cast_possible_truncation)]
-        Self { n: n as _, v }
-    }
-}
-
 impl Deref for UuidVec {
     type Target = [u8];
 
@@ -379,14 +342,6 @@ impl UuidPacker for Packer<'_> {
             None => self.u128(u),
         };
     }
-}
-
-/// Creates an assigned 16-bit SIG UUID from a `u16`.
-#[inline]
-#[must_use]
-const fn uuid16(v: u16) -> Uuid16 {
-    // SAFETY: All crate uses guarantee that v != 0
-    Uuid16(unsafe { NonZeroU16::new_unchecked(v) })
 }
 
 /// Provides implementations for a 16-bit UUID enum.
@@ -418,22 +373,11 @@ macro_rules! uuid16_enum {
 
         impl $typ {
             ::paste::paste! {$(
-                pub const [<$item:snake:upper>]: $crate::Uuid16 = uuid16(Self::$item as _);
+                // SAFETY: All crate uses guarantee non-zero discriminants
+                pub const [<$item:snake:upper>]: $crate::Uuid16 = unsafe {
+                    $crate::Uuid16::new_unchecked(Self::$item as _)
+                };
             )+}
-
-            /// Returns the `Uuid` representation of the variant.
-            #[inline]
-            #[must_use]
-            pub const fn uuidx(self) -> $crate::Uuid {
-                uuid16(self as _).as_uuid()
-            }
-
-            /// Returns the `Uuid16` representation of the variant.
-            #[inline(always)]
-            #[must_use]
-            pub const fn uuid16x(self) -> $crate::Uuid16 {
-                uuid16(self as _)
-            }
         }
 
         impl ::core::fmt::Display for $typ {
@@ -449,7 +393,7 @@ macro_rules! uuid16_enum {
             #[inline]
             fn try_from(u: $crate::Uuid16) -> Result<Self, Self::Error> {
                 use ::num_enum::TryFromPrimitive;
-                Self::try_from_primitive(u.raw())
+                Self::try_from_primitive(u.0.get())
             }
         }
 
@@ -464,7 +408,7 @@ macro_rules! uuid16_enum {
         impl ::core::cmp::PartialEq<$crate::Uuid16> for $typ {
             #[inline(always)]
             fn eq(&self, rhs: &$crate::Uuid16) -> bool {
-                *self as u16 == rhs.raw()
+                *self as u16 == rhs.0.get()
             }
         }
 
@@ -478,21 +422,23 @@ macro_rules! uuid16_enum {
         impl ::core::cmp::PartialEq<$typ> for $crate::Uuid16 {
             #[inline(always)]
             fn eq(&self, rhs: &$typ) -> bool {
-                self.raw() == *rhs as u16
+                self.0.get() == *rhs as u16
             }
         }
 
         impl ::core::convert::From<$typ> for $crate::Uuid {
             #[inline]
             fn from(v: $typ) -> Self {
-                uuid16(v as _).as_uuid()
+                // SAFETY: All crate uses guarantee non-zero discriminants
+                unsafe { $crate::Uuid16::new_unchecked(v as _) }.as_uuid()
             }
         }
 
         impl ::core::convert::From<$typ> for $crate::Uuid16 {
             #[inline(always)]
             fn from(v: $typ) -> Self {
-                uuid16(v as _)
+                // SAFETY: All crate uses guarantee non-zero discriminants
+                unsafe { $crate::Uuid16::new_unchecked(v as _) }
             }
         }
     }
@@ -508,7 +454,13 @@ mod tests {
 
     #[test]
     fn uuid_type() {
-        assert_eq!(uuid16(0x0001).typ(), UuidType::Protocol(0x0001));
+        // SAFETY: Uuid16 values are non-zero
+        unsafe {
+            assert_eq!(
+                Uuid16::new_unchecked(0x0001).typ(),
+                UuidType::Protocol(0x0001)
+            );
+        };
         for v in all::<ServiceClass>() {
             assert_eq!(Uuid16::from(v).typ(), UuidType::ServiceClass(v));
         }
@@ -527,7 +479,16 @@ mod tests {
         for v in all::<Characteristic>() {
             assert_eq!(Uuid16::from(v).typ(), UuidType::Characteristic(v));
         }
-        assert_eq!(uuid16(0xFEFF).typ(), UuidType::Member(0xFEFF));
-        assert_eq!(uuid16(0xFFFF).typ(), UuidType::Unknown(0xFFFF));
+        // SAFETY: Uuid16 values are non-zero
+        unsafe {
+            assert_eq!(
+                Uuid16::new_unchecked(0xFEFF).typ(),
+                UuidType::Member(0xFEFF)
+            );
+            assert_eq!(
+                Uuid16::new_unchecked(0xFFFF).typ(),
+                UuidType::Unknown(0xFFFF)
+            );
+        }
     }
 }

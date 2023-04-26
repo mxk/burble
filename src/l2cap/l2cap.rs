@@ -3,9 +3,9 @@
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fmt::{Debug, Formatter};
+use std::mem;
 use std::ops::Deref;
 use std::sync::Arc;
-use std::mem;
 
 use structbuf::{Pack, Packer, StructBuf};
 use tracing::error;
