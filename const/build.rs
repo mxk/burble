@@ -11,7 +11,6 @@ mod generate {
     use std::process::{Command, Stdio};
     use std::{env, fs, io, thread};
 
-    use quote::quote;
     use zip::ZipArchive;
 
     pub(super) fn main() {
@@ -21,7 +20,7 @@ mod generate {
 
     fn gen_company_ids<R: Read + io::Seek>(zip: &mut ZipArchive<R>) {
         const OUT: &'static str = "src/company_ids.rs";
-        const SEP: char = '`';
+        println!("cargo:rerun-if-changed={OUT}");
         #[derive(serde::Deserialize)]
         struct CompanyId {
             value: u16,
@@ -36,40 +35,44 @@ mod generate {
             f.company_identifiers.sort_unstable_by_key(|c| c.value);
             f.company_identifiers
         };
-        let mut tab = String::with_capacity(ids.iter().fold(ids.len(), |n, id| n + id.name.len()));
-        tab.push(SEP);
+
+        let mut tab = String::with_capacity(2 * ids.iter().fold(0, |n, id| n + id.name.len()));
         let mut end = Vec::<u16>::with_capacity(ids.len());
-        for id in &ids {
-            assert_eq!(usize::from(id.value), end.len());
-            tab.push_str(&id.name);
-            tab.push(SEP);
-            let off = end.last().map_or(0, |&n| n as usize);
-            end.push(u16::try_from(off + id.name.len()).expect("u16 overflow"));
+        let mut off = 0;
+        for (i, id) in ids.iter().enumerate() {
+            assert_eq!(usize::from(id.value), i);
+            tab.push_str("\\\n        ");
+            tab.push_str(&id.name.escape_debug().to_string());
+            off += id.name.len();
+            end.push(u16::try_from(off).expect("u16 overflow"));
         }
+        tab.push_str("\\\n    ");
+
         let (max, last) = ids.last().map(|id| (id.value, &id.name)).unwrap();
-        let tok = quote! {
+        let src = format!(
+            r#"
             use super::CompanyId;
 
-            impl CompanyId {
-                pub(super) const TAB: &'static str = #tab;
-                pub(super) const END: [u16; #max as usize + 1] = [#(#end),*];
-            }
+            impl CompanyId {{
+                pub(super) const TAB: &'static str = "{tab}";
+                pub(super) const END: [u16; {max} as usize + 1] = {end:?};
+            }}
 
             #[cfg(test)]
-            mod tests {
+            mod tests {{
                 #[test]
-                fn company_ids() {
+                fn company_ids() {{
                     use super::CompanyId;
                     assert_eq!(CompanyId(0).name(), Some("Ericsson AB"));
                     assert_eq!(CompanyId(0x0600).name(), Some("iRobot Corporation"));
-                    assert_eq!(CompanyId(#max).name(), Some(#last));
-                    assert_eq!(CompanyId(#max + 1).name(), None);
+                    assert_eq!(CompanyId({max:#06X}).name(), Some("{last}"));
+                    assert_eq!(CompanyId({max:#06X} + 1).name(), None);
                     assert_eq!(CompanyId(u16::MAX).name(), None);
-                }
-            }
-        };
-        println!("cargo:rerun-if-changed={OUT}");
-        write(OUT, tok.to_string().replace(SEP, "\\\n        "));
+                }}
+            }}
+            "#
+        );
+        write(OUT, src);
     }
 
     fn fetch(url: impl AsRef<str>) -> ZipArchive<io::Cursor<Vec<u8>>> {
