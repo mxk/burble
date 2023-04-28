@@ -6,6 +6,9 @@ use core::fmt::{Debug, Display, Formatter};
 
 pub use uuid::*;
 
+#[allow(clippy::decimal_literal_representation)]
+#[allow(clippy::unseparated_literal_suffix)]
+mod company_ids;
 mod uuid;
 
 /// Company identifier ([Assigned Numbers] Section 7.1).
@@ -18,17 +21,20 @@ impl CompanyId {
     /// unknown.
     #[must_use]
     pub const fn name(self) -> Option<&'static str> {
-        let i = match self.0.checked_sub(Self::MIN) {
-            Some(0) => return Some(Self::FIRST),
-            Some(i) if (i as usize) < Self::IDX.len() => i as usize,
-            _ => return None,
+        if self.0 as usize >= Self::END.len() {
+            return None;
+        }
+        let end = Self::END[self.0 as usize] as usize;
+        let off = if let Some(prev) = self.0.checked_sub(1) {
+            Self::END[prev as usize] as usize
+        } else {
+            0
         };
-        let off = Self::IDX[i - 1] as usize;
-        // SAFETY: `TAB[IDX[i - 1]..IDX[i]]` contains a valid UTF-8 string
+        // SAFETY: `TAB[off..end]` contains a valid UTF-8 string
         Some(unsafe {
             core::str::from_utf8_unchecked(core::slice::from_raw_parts(
                 Self::TAB.as_ptr().add(off),
-                Self::IDX[i] as usize - off,
+                end - off,
             ))
         })
     }
@@ -51,51 +57,5 @@ impl Display for CompanyId {
             Some(name) => f.write_str(name),
             None => write!(f, "CompanyId({:#06X})", self.0),
         }
-    }
-}
-
-/// Generates company name look-up table. This representation saves several KB
-/// in the release binary over a `match` table.
-macro_rules! id_map {
-    {$first:literal => $name:literal, $($id:literal => $name_:literal,)+} => {
-        impl CompanyId {
-            const MIN: u16 = $first;
-            #[allow(clippy::no_effect)]
-            const MAX: u16 = { $($id);+ };
-            const FIRST: &'static str = $name;
-            #[allow(clippy::no_effect)]
-            #[cfg(test)]
-            const LAST: &'static str = { $($name_);+ };
-            const TAB: &'static [u8] = concat!($($name_),*).as_bytes();
-            const IDX: [u16; Self::MAX as usize - $first + 1] = {
-                let mut v = [0_u16; Self::MAX as usize - $first + 1];
-                let mut i = 0;
-                $(
-                    i += 1;
-                    assert!(i == $id - $first);
-                    let (n, overflow) = v[i - 1].overflowing_add($name_.len() as u16);
-                    assert!(!overflow);
-                    v[i] = n;
-                )+
-                v
-            };
-        }
-    };
-}
-
-include!("company_id.rs");
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn company_ids() {
-        assert_eq!(u16::MIN, CompanyId::MIN);
-        assert_eq!(CompanyId(CompanyId::MIN).name(), Some(CompanyId::FIRST));
-        assert_eq!(CompanyId(0x01F4).name(), Some("UTC Fire and Security"));
-        assert_eq!(CompanyId(CompanyId::MAX).name(), Some(CompanyId::LAST));
-        assert_eq!(CompanyId(CompanyId::MAX + 1).name(), None);
-        assert_eq!(CompanyId(u16::MAX).name(), None);
     }
 }

@@ -17,3 +17,13 @@ structbuf.workspace = true
 
 [dev-dependencies]
 enum-iterator.workspace = true
+
+[build-dependencies]
+quote = { version = "1.0.26", optional = true }
+serde.workspace = true
+serde_yaml = { version = "0.9.21", optional = true }
+ureq = { version = "2.6.2", optional = true }
+zip = { version = "0.6.4", optional = true }
+
+[features]
+generate = ["dep:quote", "dep:serde_yaml", "dep:ureq", "dep:zip"]
