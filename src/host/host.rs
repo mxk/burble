@@ -28,7 +28,7 @@ pub enum Error {
     /// disconnected.
     #[error("controller connection broken")]
     Broken,
-    /// Communication timed out, but the operation may be retried.
+    /// Communication timed out, but the operation can be retried.
     #[error("controller timeout")]
     Timeout,
     /// Controller could not be found or configured.
@@ -58,9 +58,7 @@ pub trait Transport: Debug + Send + Sync {
 }
 
 /// Asynchronous I/O transfer.
-pub trait Transfer:
-    AsRef<[u8]> + Debug + Send + Sync + structbuf::Pack + structbuf::Unpack
-{
+pub trait Transfer: AsRef<[u8]> + Debug + Send + Sync + structbuf::Pack {
     /// Returns the transfer type.
     #[must_use]
     fn typ(&self) -> hci::TransferType;
