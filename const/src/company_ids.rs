@@ -3,7 +3,7 @@
 use super::CompanyId;
 
 impl CompanyId {
-    pub(super) const TAB: &'static str = "\
+    pub(super) const TAB: &str = "\
         Ericsson AB\
         Nokia Mobile Phones\
         Intel Corp.\
@@ -3213,8 +3213,11 @@ impl CompanyId {
         Qingdao Eastsoft Communication Technology Co.,Ltd\
         Weltek Technologies Company Limited\
         Nextivity Inc.\
+        AGZZX OPTOELECTRONICS TECHNOLOGY CO., LTD\
+        ARTISTIC&CO.GLOBAL Ltd.\
+        Heavys Inc\
     ";
-    pub(super) const END: [u16; 3208 as usize + 1] = [
+    pub(super) const END: [u16; 3211 + 1] = [
         11, 30, 41, 50, 63, 67, 76, 82, 90, 114, 162, 174, 188, 210, 235, 255, 274, 287, 298, 315,
         346, 353, 371, 379, 395, 424, 438, 463, 484, 492, 500, 510, 525, 537, 552, 581, 588, 596,
         610, 624, 641, 652, 677, 684, 715, 732, 747, 769, 788, 802, 828, 838, 883, 907, 938, 958,
@@ -3455,7 +3458,7 @@ impl CompanyId {
         60677, 60697, 60708, 60750, 60777, 60787, 60806, 60839, 60859, 60871, 60890, 60906, 60924,
         60950, 60982, 60992, 61007, 61019, 61028, 61038, 61058, 61099, 61117, 61151, 61159, 61193,
         61234, 61250, 61279, 61292, 61327, 61354, 61373, 61387, 61404, 61426, 61454, 61473, 61491,
-        61511, 61533, 61546, 61595, 61630, 61644,
+        61511, 61533, 61546, 61595, 61630, 61644, 61685, 61708, 61718,
     ];
 }
 
@@ -3466,8 +3469,8 @@ mod tests {
         use super::CompanyId;
         assert_eq!(CompanyId(0).name(), Some("Ericsson AB"));
         assert_eq!(CompanyId(0x0600).name(), Some("iRobot Corporation"));
-        assert_eq!(CompanyId(0x0C88).name(), Some("Nextivity Inc."));
-        assert_eq!(CompanyId(0x0C88 + 1).name(), None);
+        assert_eq!(CompanyId(0x0C8B).name(), Some("Heavys Inc"));
+        assert_eq!(CompanyId(0x0C8B + 1).name(), None);
         assert_eq!(CompanyId(u16::MAX).name(), None);
     }
 }

@@ -446,6 +446,25 @@ macro_rules! uuid16_enum {
 
 include!("uuid16.rs");
 
+impl Service {
+    /// Returns whether the server can host at most one instances of this
+    /// service.
+    #[must_use]
+    pub const fn is_singleton(self) -> bool {
+        use Service::*;
+        #[allow(clippy::match_same_arms)]
+        match self {
+            GenericAccess => true,
+            GenericAttribute => true,
+            DeviceInformation => true,
+            Battery => false,
+            HumanInterfaceDevice => false,
+            ScanParameters => true,
+            _ => true, // TODO: Specify for all
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use enum_iterator::all;

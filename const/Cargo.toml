@@ -19,10 +19,11 @@ structbuf.workspace = true
 enum-iterator.workspace = true
 
 [build-dependencies]
+heck = { version = "0.4.1", optional = true }
 serde.workspace = true
 serde_yaml = { version = "0.9.21", optional = true }
 ureq = { version = "2.6.2", optional = true }
 zip = { version = "0.6.4", optional = true }
 
 [features]
-generate = ["dep:serde_yaml", "dep:ureq", "dep:zip"]
+generate = ["dep:heck", "dep:serde_yaml", "dep:ureq", "dep:zip"]
