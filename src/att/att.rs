@@ -22,7 +22,7 @@ mod perm;
 #[non_exhaustive]
 pub enum Error {
     #[error(transparent)]
-    L2Cap(#[from] l2cap::Error),
+    L2cap(#[from] l2cap::Error),
     #[error(transparent)]
     Att(#[from] ErrorRsp),
     #[error("timeout while waiting for {0}")]

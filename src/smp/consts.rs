@@ -195,7 +195,7 @@ pub enum Reason {
     NumericComparisonFailed = 0x0C,
     /// Pairing over the LE transport failed due to an in-progress Pairing
     /// Request sent over the BR/EDR transport.
-    BredrPairingInProgress = 0x0D,
+    BrEdrPairingInProgress = 0x0D,
     /// Link Key generated on the BR/EDR transport cannot be used to derive and
     /// distribute keys for the LE transport, or the LTK generated on the LE
     /// transport cannot be used to derive a key for the BR/EDR transport.
