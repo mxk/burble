@@ -21,7 +21,6 @@ use crate::att::{Access, ErrorCode};
 use crate::gatt::{Builder, Db, Io, IoReq, IoResult, Notify, NotifyReq, Prop};
 use crate::hid::kbd::*;
 use crate::hid::mouse::*;
-use crate::hid::ReportDescriptor;
 use crate::hid::{Dev, InputDev, OutputDev};
 use crate::{att, SyncMutex};
 
@@ -163,10 +162,9 @@ impl HidService {
             );
 
             let srv = self.srv.lock();
-            let mut rd = ReportDescriptor::new();
-            rd.concat(srv.kbd.dev.report_descriptor(1));
-            rd.concat(srv.mouse.dev.report_descriptor(2));
-            db.ro_characteristic(ReportMap, RO, &rd.to_bytes(), |_| {});
+            let mut rd = srv.kbd.dev.report_descriptor(1);
+            rd.append(&srv.mouse.dev.report_descriptor(2));
+            db.ro_characteristic(ReportMap, RO, rd.as_ref(), |_| {});
         });
     }
 }

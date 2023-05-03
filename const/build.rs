@@ -8,6 +8,8 @@
 //!
 //! [YAML repository]: https://bitbucket.org/bluetooth-SIG/public/
 
+use serde as _;
+
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     #[cfg(feature = "generate")]

@@ -12,17 +12,13 @@ pub mod kbd;
 pub mod mouse;
 pub mod usage;
 
-/// Collection of HID report descriptor items that can be converted to a byte
-/// vector.
-pub type ReportDescriptor = descriptor::Items;
-
 /// Basic HID.
 pub trait Dev {
     /// Resets the device state.
     fn reset(&mut self);
 
     /// Returns a description of device report types and data formats.
-    fn report_descriptor(&self, report_id: u8) -> ReportDescriptor;
+    fn report_descriptor(&self, report_id: u8) -> descriptor::ReportDescriptor;
 }
 
 /// HID that generates input reports.

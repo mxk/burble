@@ -53,13 +53,13 @@ impl Dev for Mouse {
     }
 
     #[rustfmt::skip]
-    fn report_descriptor(&self, report_id: u8) -> Items {
+    fn report_descriptor(&self, report_id: u8) -> ReportDescriptor {
         use Item::*;
-        Items::from([
+        ReportDescriptor::new([
             GUsagePage(0x01), // Generic Desktop Page
             LUsage(0x02),     // Mouse
-            MApplication([
-                GReportID(report_id),
+            Collection::application([
+                GReportId(report_id),
 
                 //
                 // Input
@@ -73,7 +73,7 @@ impl Dev for Mouse {
                 GLogicalMax(1),
                 LUsageMin(0x01), // Button 1 (primary/trigger)
                 LUsageMax(0x08), // Button 8
-                MInput(Attr::VAR),
+                MInput(Flag::VAR),
 
                 // Movement and scrolling
                 GUsagePage(0x01), // Generic Desktop Page
@@ -84,8 +84,8 @@ impl Dev for Mouse {
                 LUsage(0x30), // X
                 LUsage(0x31), // Y
                 LUsage(0x38), // Wheel
-                MInput(Attr::VAR | Attr::REL),
-            ].into()),
+                MInput(Flag::VAR | Flag::REL),
+            ]),
         ])
     }
 }
@@ -114,7 +114,7 @@ mod tests {
     #[test]
     fn dev() {
         let m = Mouse::default();
-        assert!(!m.report_descriptor(1).to_bytes().is_empty());
+        assert!(!m.report_descriptor(1).as_ref().is_empty());
     }
 
     #[test]

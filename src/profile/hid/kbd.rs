@@ -108,14 +108,14 @@ impl Dev for Kbd {
     }
 
     #[rustfmt::skip]
-    fn report_descriptor(&self, report_id: u8) -> Items {
+    fn report_descriptor(&self, report_id: u8) -> ReportDescriptor {
         use Item::*;
         use super::usage::KeyUsage::*;
-        Items::from([
+        ReportDescriptor::new([
             GUsagePage(0x01), // Generic Desktop Page
             LUsage(0x06),     // Keyboard
-            MApplication([
-                GReportID(report_id),
+            Collection::application([
+                GReportId(report_id),
 
                 //
                 // Input
@@ -129,7 +129,7 @@ impl Dev for Kbd {
                 GLogicalMax(1),
                 LUsageMin(0xE0), // Keyboard LeftControl
                 LUsageMax(0xE7), // Keyboard Right GUI
-                MInput(Attr::VAR),
+                MInput(Flag::VAR),
 
                 // Keys
                 GReportSize(8),
@@ -138,7 +138,7 @@ impl Dev for Kbd {
                 GLogicalMax(KeypadHex as i32),
                 LUsageMin(0x01),
                 LUsageMax(KeypadHex as u32),
-                MInput(Attr::empty()),
+                MInput(Flag::empty()),
 
                 //
                 // Output
@@ -152,13 +152,13 @@ impl Dev for Kbd {
                 GLogicalMax(1),
                 LUsageMin(0x01), // Num Lock
                 LUsageMax(0x05), // Kana
-                MOutput(Attr::VAR),
+                MOutput(Flag::VAR),
 
                 // Padding
                 GReportSize(3),
                 GReportCount(1),
-                MOutput(Attr::CONST),
-            ].into()),
+                MOutput(Flag::CONST),
+            ]),
         ])
     }
 }
@@ -299,7 +299,7 @@ mod tests {
     #[test]
     fn dev() {
         let b = Kbd::default();
-        assert!(!b.report_descriptor(1).to_bytes().is_empty());
+        assert!(!b.report_descriptor(1).as_ref().is_empty());
     }
 
     #[test]
