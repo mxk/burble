@@ -1,9 +1,10 @@
 use std::ops;
 
-/// Unit definition (\[HID\] Section 6.2.2.6). A unit is a `u32` Report
-/// Descriptor item consisting of 7 nibbles, where the low nibble defines the
-/// unit system (1-4) and the remaining 6 nibbles contain the exponents in the
-/// range `-8..=7` for each unit type.
+/// Unit definition (\[HID\] Section 6.2.2.6).
+///
+/// A unit is a `u32` Report Descriptor item consisting of 7 nibbles, where the
+/// low nibble defines the unit system (1-4) and the remaining 6 nibbles contain
+/// the exponents in the range `[-8,7]` for each unit type.
 ///
 /// # Example
 ///
@@ -23,6 +24,11 @@ pub struct Unit {
 }
 
 impl Unit {
+    /// No units (used to reset the global Unit item).
+    pub const NONE: Self = Self {
+        sys: 0,
+        exp: [0; Self::N],
+    };
     /// SI linear length.
     pub const CENTIMETERS: Self = Self::new(1, 0b0001);
     /// SI rotation.
@@ -33,17 +39,17 @@ impl Unit {
     pub const DEGREES: Self = Self::new(1, 0b1000);
     /// SI mass.
     pub const GRAMS: Self = Self::new(2, 0b0011);
-    // English mass.
+    /// English mass.
     pub const SLUGS: Self = Self::new(2, 0b1100);
-    // Time.
+    /// Time.
     pub const SECONDS: Self = Self::new(3, 0b1111);
-    // SI temperature.
+    /// SI temperature.
     pub const KELVIN: Self = Self::new(4, 0b0011);
-    // English temperature.
+    /// English temperature.
     pub const FAHRENHEIT: Self = Self::new(4, 0b1100);
-    // Current.
+    /// Current.
     pub const AMPERES: Self = Self::new(5, 0b1111);
-    // Luminous intensity.
+    /// Luminous intensity.
     pub const CANDELAS: Self = Self::new(6, 0b1111);
 
     /// Number of unit types.
@@ -129,6 +135,7 @@ mod tests {
     #[test]
     fn units() {
         use Unit as U;
+        assert_eq!(U::NONE.raw(), 0);
         assert_eq!(U::RADIANS.raw(), 0x12);
         assert_eq!(U::INCHES.raw(), 0x13);
         assert_eq!(U::DEGREES.raw(), 0x14);

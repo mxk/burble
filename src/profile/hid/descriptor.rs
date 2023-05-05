@@ -1,4 +1,8 @@
+//! HID descriptor data types.
+
 pub use unit::*;
+
+use crate::hid::usage::Page;
 
 #[path = "unit.rs"]
 mod unit;
@@ -15,81 +19,78 @@ pub enum Locale {
     Belgian = 2,
     CanadianBilingual = 3,
     CanadianFrench = 4,
-    CzechRepublic = 5,
+    Czech = 5,
     Danish = 6,
     Finnish = 7,
     French = 8,
     German = 9,
     Greek = 10,
     Hebrew = 11,
-    Hungary = 12,
+    Hungarian = 12,
     International = 13,
     Italian = 14,
-    JapanKatakana = 15,
+    JapaneseKatakana = 15,
     Korean = 16,
     LatinAmerican = 17,
-    NetherlandsDutch = 18,
+    Dutch = 18,
     Norwegian = 19,
     PersianFarsi = 20,
-    Poland = 21,
+    Polish = 21,
     Portuguese = 22,
-    Russia = 23,
-    Slovakia = 24,
+    Russian = 23,
+    Slovakian = 24,
     Spanish = 25,
     Swedish = 26,
     SwissFrench = 27,
     SwissGerman = 28,
-    Switzerland = 29,
-    Taiwan = 30,
+    Swiss = 29,
+    Taiwanese = 30,
     TurkishQ = 31,
     Uk = 32,
     Us = 33,
-    Yugoslavia = 34,
+    Yugoslavian = 34,
     TurkishF = 35,
 }
 
-/// An encoded HID report descriptor (\[HID\] Section 6.2.2).
+/// An encoded HID report descriptor (\[HID\] Section 5.2, 6.2.2).
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ReportDescriptor(Vec<u8>);
 
 impl ReportDescriptor {
     /// Creates a new report descriptor.
-    #[must_use]
-    pub fn new(it: impl AsRef<[Item]>) -> Self {
-        fn bytes(it: &[Item]) -> usize {
-            let mut n = 0;
-            for v in it {
-                n += match *v {
-                    Item::MCollection(_, ref v) | Item::LDelim(ref v) => 4 + bytes(v),
-                    _ => 2,
-                };
-            }
-            n
+    #[inline]
+    pub fn new(items: impl AsRef<[Item]>) -> Self {
+        fn bytes(items: &[Item]) -> usize {
+            items.iter().fold(0, |n, v| match *v {
+                Item::MCollection(_, ref v) | Item::LDelim(ref v) => n + 4 + bytes(v),
+                _ => n + 3,
+            })
         }
-        let it = it.as_ref();
-        let mut rd = Self(Vec::with_capacity(bytes(it)));
-        rd.extend(it);
+        let items = items.as_ref();
+        let mut rd = Self(Vec::with_capacity(bytes(items)));
+        rd.extend(items);
         rd
     }
 
-    /// Appends the contents of another report descriptor.
+    /// Appends the contents of another report descriptor to this one.
     #[inline]
     pub fn append(&mut self, other: &Self) {
         self.0.extend_from_slice(&other.0);
     }
 
-    /// Appends all items in `it` to the descriptor.
+    /// Appends all `items` to the report descriptor.
     #[inline]
-    pub fn extend(&mut self, it: impl AsRef<[Item]>) {
-        for v in it.as_ref() {
-            self.put(v);
+    pub fn extend(&mut self, items: impl AsRef<[Item]>) {
+        for v in items.as_ref() {
+            self.push(v);
         }
     }
 
     /// Appends item `v` to the descriptor.
-    fn put(&mut self, v: &Item) {
+    fn push(&mut self, v: &Item) {
         use {Item::*, Tag::*};
         match *v {
+            // Main
             MInput(v) => self.u32(Input, u32::from(v.bits())),
             MOutput(v) => self.u32(Output, u32::from(v.bits())),
             MFeature(v) => self.u32(Feature, u32::from(v.bits())),
@@ -99,7 +100,8 @@ impl ReportDescriptor {
                 self.0.push(EndCollection as _);
             }
 
-            GUsagePage(v) => self.u32(UsagePage, u32::from(v)),
+            // Global
+            GUsagePage(v) => self.u32(UsagePage, v as _),
             GLogicalMin(v) => self.i32(LogicalMin, v),
             GLogicalMax(v) => self.i32(LogicalMax, v),
             GPhysicalMin(v) => self.i32(PhysicalMin, v),
@@ -116,12 +118,13 @@ impl ReportDescriptor {
             GPush => self.0.push(Push as _),
             GPop => self.0.push(Pop as _),
 
+            // Local
             LUsage(v) => self.u32(Usage, v),
             LUsageMin(v) => self.u32(UsageMin, v),
             LUsageMax(v) => self.u32(UsageMax, v),
-            LDesigIndex(v) => self.u32(DesigIndex, v),
-            LDesigMin(v) => self.u32(DesigMin, v),
-            LDesigMax(v) => self.u32(DesigMax, v),
+            LDesignatorIndex(v) => self.u32(DesignatorIndex, v),
+            LDesignatorMin(v) => self.u32(DesignatorMin, v),
+            LDesignatorMax(v) => self.u32(DesignatorMax, v),
             LStringIndex(v) => self.u32(StringIndex, v),
             LStringMin(v) => self.u32(StringMin, v),
             LStringMax(v) => self.u32(StringMax, v),
@@ -136,38 +139,29 @@ impl ReportDescriptor {
     /// Appends a short `i32` item.
     fn i32(&mut self, t: Tag, v: i32) {
         #[allow(clippy::cast_possible_truncation)]
-        let v = if i32::from(v as i16) == v {
-            if i32::from(v as i8) == v {
-                v & 0xFF
-            } else {
-                v & 0xFFFF
-            }
-        } else {
-            v
-        };
-        #[allow(clippy::cast_sign_loss)]
-        self.u32(t, v as _);
+        let n = (usize::from(i32::from(v as i16) != v) * 2)
+            + (usize::from(i32::from(v as i8) != v) + 1);
+        self.put(t, v.to_le_bytes(), n);
     }
 
     /// Appends a short `u32` item.
     fn u32(&mut self, t: Tag, v: u32) {
-        // Windows does not handle some zero-size items correctly, so we always
-        // output a 0 byte. This also matches the HID Descriptor Tool behavior.
-        let n: usize = match v.leading_zeros() {
-            z if z >= u32::BITS - u8::BITS => 1,
-            z if z >= u32::BITS - u16::BITS => 2,
-            _ => 4,
-        };
         #[allow(clippy::cast_possible_truncation)]
-        self.0.extend_from_slice(
-            &[
-                t as u8 | (n.trailing_zeros() as u8 + 1),
-                v as u8,
-                (v >> 8) as u8,
-                (v >> 16) as u8,
-                (v >> 24) as u8,
-            ][..=n],
-        );
+        let n = (usize::from(u32::from(v as u16) != v) * 2)
+            + (usize::from(u32::from(v as u8) != v) + 1);
+        self.put(t, v.to_le_bytes(), n);
+    }
+
+    /// Appends `n` bytes of a short value. Windows does not handle some
+    /// zero-size items correctly, so `n` must be 1, 2, or 4, which also matches
+    /// the HID Descriptor Tool behavior.
+    #[inline]
+    fn put(&mut self, t: Tag, v: [u8; 4], n: usize) {
+        #[allow(clippy::cast_possible_truncation)]
+        let hdr = t as u8 | (n.trailing_zeros() as u8 + 1);
+        let item = [hdr, v[0], v[1], v[2], v[3]];
+        // SAFETY: 1 + n <= full.len()
+        unsafe { self.0.extend_from_slice(item.get_unchecked(..=n)) };
     }
 }
 
@@ -175,6 +169,185 @@ impl AsRef<[u8]> for ReportDescriptor {
     #[inline(always)]
     fn as_ref(&self) -> &[u8] {
         &self.0
+    }
+}
+
+/// Report descriptor item (\[HID\] Section 5.2, 6.2.2).
+///
+/// Variants are prefixed with `M`, `G`, or `L` for Main, Global, or Local type,
+/// respectively. One or more fields of data from controls are defined by a Main
+/// item and further described by the preceding Global and Local items. Local
+/// items only describe the data fields defined by the next Main item. Global
+/// items become the default attributes for all subsequent data fields.
+///
+/// The following items are required:
+///
+/// * [`Item::GUsagePage`]
+/// * [`Item::GLogicalMin`]
+/// * [`Item::GLogicalMax`]
+/// * [`Item::GReportSize`]
+/// * [`Item::GReportCount`]
+/// * [`Item::LUsage`]
+/// * [`Item::MInput`] or [`Item::MOutput`] or [`Item::MFeature`]
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub enum Item {
+    /// Data from one or more similar controls on a device. For example,
+    /// variable data reading the position of a single axis or a group of
+    /// levers, or array data from one or more push buttons or switches.
+    MInput(Flag),
+
+    /// Data to one or more similar controls on a device. For example, variable
+    /// data setting the position of a single axis or a group of levers, or
+    /// array data to one or more LEDs.
+    MOutput(Flag),
+
+    /// Device input and output not intended for consumption by the end user.
+    /// For example, a software feature or Control Panel toggle.
+    MFeature(Flag),
+
+    /// A meaningful grouping of Input, Output, and Feature items. For example,
+    /// mouse, keyboard, joystick, and pointer.
+    MCollection(Collection, Vec<Item>),
+
+    /// Current Usage Page. Since usages are 32-bit values, Usage Page items can
+    /// be used to conserve space in a report descriptor by setting the high
+    /// order 16 bits of subsequent usages. Any Usage that follows which defines
+    /// 16 bits or fewer is interpreted as a Usage ID and concatenated with the
+    /// Usage Page to form a 32-bit usage.
+    GUsagePage(Page),
+
+    /// Extent value in logical units. This is the minimum value that a variable
+    /// or array item will report. For example, a mouse reporting X position
+    /// values from 0 to 128 would have a Logical Minimum of 0 and a Logical
+    /// Maximum of 128.
+    GLogicalMin(i32),
+
+    /// Extent value in logical units. This is the maximum value that a variable
+    /// or array item will report.
+    GLogicalMax(i32),
+
+    /// Minimum value for the physical extent of a variable item. This
+    /// represents the Logical Minimum with units applied to it.
+    GPhysicalMin(i32),
+
+    /// Maximum value for the physical extent of a variable item.
+    GPhysicalMax(i32),
+
+    /// Value of the unit exponent. See [`Item::unit_exp_compat`] for more
+    /// information.
+    GUnitExp(i8),
+
+    /// Physical units.
+    GUnit(Unit),
+
+    /// Size of the report fields in bits. This allows the parser to build an
+    /// item map for the report handler to use.
+    GReportSize(u8),
+
+    /// Allows the host to distinguish different types of reports arriving over
+    /// a single interrupt in pipe, and allows the device to distinguish
+    /// different types of reports arriving over a single interrupt out pipe.
+    /// Report ID zero is reserved and will be omitted from the descriptor.
+    ///
+    /// If a Report ID is used anywhere in the descriptor, it must be declared
+    /// prior to the first Input, Output, or Feature item, and all data reports
+    /// for the device must specify the associated report ID. USB reports
+    /// specify the Report ID with a 1-byte prefix. Bluetooth reports specify
+    /// the Report ID in the Report Reference characteristic descriptor.
+    GReportId(u8),
+
+    /// Determines how many fields are included in the report for this
+    /// particular item (and consequently how many bits are added to the
+    /// report).
+    GReportCount(u8),
+
+    /// Places a copy of the global item state table on the stack.
+    GPush,
+
+    /// Replaces the item state table with the top structure from the stack.
+    GPop,
+
+    /// Represents a suggested usage for the item or collection. In the case
+    /// where an item represents multiple controls, a Usage tag may suggest a
+    /// usage for every variable or element in an array.
+    ///
+    /// While Local items do not carry over to the next Main item, they may
+    /// apply to more than one control within a single item. For example, if an
+    /// Input item defining five controls is preceded by three Usage tags, the
+    /// three usages would be assigned sequentially to the first three controls,
+    /// and the third usage would also be assigned to the fourth and fifth
+    /// controls.
+    LUsage(u32),
+
+    /// Defines the starting usage associated with an array or bitmap. If a
+    /// Usage Minimum is declared as and extended (32-bit) usage then the
+    /// associated Usage Maximum must also be declared as an extended usage.
+    LUsageMin(u32),
+
+    /// Defines the ending usage associated with an array or bitmap.
+    LUsageMax(u32),
+
+    /// Determines the body part used for a control. Index points to a
+    /// designator in the Physical descriptor.
+    LDesignatorIndex(u32),
+
+    /// Defines the index of the starting designator associated with an array or
+    /// bitmap.
+    LDesignatorMin(u32),
+
+    /// Defines the index of the ending designator associated with an array or
+    /// bitmap.
+    LDesignatorMax(u32),
+
+    /// String index in the string descriptor. Allows a string to be associated
+    /// with a particular item or control.
+    LStringIndex(u32),
+
+    /// Specifies the first string index when assigning a group of sequential
+    /// strings to controls in an array or bitmap.
+    LStringMin(u32),
+
+    /// Specifies the last string index when assigning a group of sequential
+    /// strings to controls in an array or bitmap.
+    LStringMax(u32),
+
+    /// Allows aliases to be defined for a control so that an application can
+    /// access it in more than one way. The usages that form a delimited set are
+    /// organized in order of preference, where the first usage declared is the
+    /// most preferred usage for the control.
+    LDelim(Vec<Item>),
+}
+
+impl Item {
+    /// Returns a Unit Exponent using 4-bit encoding for the range `[-8,7]`.
+    ///
+    /// There is a disagreement between the HID spec and parser implementations
+    /// about the representation of Unit Exponent items. The value should be a
+    /// regular signed integer, but some parsers and the HID Descriptor Tool
+    /// treat it the same as the 4-bit exponents used in Unit items (likely due
+    /// to unclear wording in the spec). This helper method returns the 4-bit
+    /// encoding for exponents in the range `[-8,7]` and standard encoding for
+    /// ranges `[-128,-9]` and `[16,127]`. Range `[8,15]` is ambiguous.
+    ///
+    /// # References
+    ///
+    /// * Linux: [[PATCH 1/1] HID: Fix unit exponent parsing again][linux]
+    /// * Windows: [Unit Exponent item value encoding in HID report descriptors][windows]
+    ///
+    /// [linux]: https://lore.kernel.org/all/1381666192-25309-1-git-send-email-spbnick@gmail.com/
+    /// [windows]: https://social.msdn.microsoft.com/Forums/WINDOWS/en-US/e87d0db1-486e-42ae-bf95-d1ac5ffc0b02/unit-exponent-item-value-encoding-in-hid-report-descriptors?forum=whck
+    #[inline(always)]
+    #[must_use]
+    pub const fn unit_exp_compat(exp: i8) -> Self {
+        Self::GUnitExp(if exp == exp << 4 >> 4 { exp & 0xF } else { exp })
+    }
+
+    /// Defines a delimited set of items.
+    #[inline(always)]
+    #[must_use]
+    pub fn delim(items: impl AsRef<[Self]>) -> Self {
+        Self::LDelim(items.as_ref().to_vec())
     }
 }
 
@@ -209,12 +382,12 @@ enum Tag {
     Usage = 0b0000_10 << 2,
     UsageMin = 0b0001_10 << 2,
     UsageMax = 0b0010_10 << 2,
-    DesigIndex = 0b0011_10 << 2,
-    DesigMin = 0b0100_10 << 2,
-    DesigMax = 0b0101_10 << 2,
-    StringIndex = 0b0111_10 << 2,
-    StringMin = 0b1000_10 << 2,
-    StringMax = 0b1001_10 << 2,
+    DesignatorIndex = 0b0011_10 << 2,
+    DesignatorMin = 0b0100_10 << 2,
+    DesignatorMax = 0b0101_10 << 2,
+    StringIndex = 0b0111_10 << 2, // HID Descriptor Tool does not encode String
+    StringMin = 0b1000_10 << 2,   // Index, Min, and Max correctly. It uses tags
+    StringMax = 0b1001_10 << 2,   // 6, 7, 8 instead of 7, 8, 9.
     Delim = 0b1010_10 << 2,
 
     // Long
@@ -222,7 +395,7 @@ enum Tag {
 }
 
 bitflags::bitflags! {
-    /// Input, output, and feature item data flags (\[HID\] Section 6.2.2.5).
+    /// Input, Output, and Feature item data flags (\[HID\] Section 6.2.2.5).
     #[derive(Clone, Copy, Debug, Default)]
     pub struct Flag: u16 {
         /// Data / constant. Indicates whether the item is data or a constant
@@ -392,180 +565,195 @@ impl Collection {
     /// Defines a physical collection.
     #[inline(always)]
     #[must_use]
-    pub fn physical(it: impl AsRef<[Item]>) -> Item {
-        Item::MCollection(Self::Physical, it.as_ref().to_vec())
+    pub fn physical(items: impl AsRef<[Item]>) -> Item {
+        Item::MCollection(Self::Physical, items.as_ref().to_vec())
     }
 
     /// Defines an application collection.
     #[inline(always)]
     #[must_use]
-    pub fn application(it: impl AsRef<[Item]>) -> Item {
-        Item::MCollection(Self::Application, it.as_ref().to_vec())
+    pub fn application(items: impl AsRef<[Item]>) -> Item {
+        Item::MCollection(Self::Application, items.as_ref().to_vec())
     }
 
     /// Defines a logical collection.
     #[inline(always)]
     #[must_use]
-    pub fn logical(it: impl AsRef<[Item]>) -> Item {
-        Item::MCollection(Self::Logical, it.as_ref().to_vec())
+    pub fn logical(items: impl AsRef<[Item]>) -> Item {
+        Item::MCollection(Self::Logical, items.as_ref().to_vec())
     }
 
     /// Defines a report collection.
     #[inline(always)]
     #[must_use]
-    pub fn report(it: impl AsRef<[Item]>) -> Item {
-        Item::MCollection(Self::Report, it.as_ref().to_vec())
+    pub fn report(items: impl AsRef<[Item]>) -> Item {
+        Item::MCollection(Self::Report, items.as_ref().to_vec())
     }
 
     /// Defines a named array collection.
     #[inline(always)]
     #[must_use]
-    pub fn named_array(it: impl AsRef<[Item]>) -> Item {
-        Item::MCollection(Self::NamedArray, it.as_ref().to_vec())
+    pub fn named_array(items: impl AsRef<[Item]>) -> Item {
+        Item::MCollection(Self::NamedArray, items.as_ref().to_vec())
     }
 
     /// Defines a usage switch collection.
     #[inline(always)]
     #[must_use]
-    pub fn usage_switch(it: impl AsRef<[Item]>) -> Item {
-        Item::MCollection(Self::UsageSwitch, it.as_ref().to_vec())
+    pub fn usage_switch(items: impl AsRef<[Item]>) -> Item {
+        Item::MCollection(Self::UsageSwitch, items.as_ref().to_vec())
     }
 
     /// Defines a usage modifier collection.
     #[inline(always)]
     #[must_use]
-    pub fn usage_modifier(it: impl AsRef<[Item]>) -> Item {
-        Item::MCollection(Self::UsageModifier, it.as_ref().to_vec())
-    }
-}
-
-/// HID report descriptor items (\[HID\] Section 5.2).
-///
-/// Variants are prefixed with `M`, `G`, or `L` for Main, Global, or Local type,
-/// respectively. Local items only describe the data fields defined by the next
-/// Main item. Global items become the default attributes for all subsequent
-/// data fields.
-#[derive(Clone, Debug)]
-#[non_exhaustive]
-pub enum Item {
-    /// Data from one or more similar controls on a device. For example,
-    /// variable data such as reading the position of a single axis or a group
-    /// of levers or array data such as one or more push buttons or switches.
-    MInput(Flag),
-
-    /// Data to one or more similar controls on a device such as setting the
-    /// position of a single axis or a group of levers (variable data). Or, it
-    /// can represent data to one or more LEDs (array data).
-    MOutput(Flag),
-
-    /// Device input and output not intended for consumption by the end user -
-    /// for example, a software feature or Control Panel toggle.
-    MFeature(Flag),
-
-    /// A meaningful grouping of Input, Output, and Feature items - for example,
-    /// mouse, keyboard, joystick, and pointer.
-    MCollection(Collection, Vec<Item>),
-
-    // Global
-    GUsagePage(u16),
-    GLogicalMin(i32),
-    GLogicalMax(i32),
-    GPhysicalMin(i32),
-    GPhysicalMax(i32),
-    GUnitExp(i8),
-    GUnit(Unit),
-    GReportSize(u8),
-    GReportId(u8),
-    GReportCount(u8),
-    GPush,
-    GPop,
-
-    // Local
-    LUsage(u32),
-    LUsageMin(u32),
-    LUsageMax(u32),
-    LDesigIndex(u32),
-    LDesigMin(u32),
-    LDesigMax(u32),
-    LStringIndex(u32),
-    LStringMin(u32),
-    LStringMax(u32),
-    LDelim(Vec<Item>),
-}
-
-impl Item {
-    /// Defines a delimited set of items.
-    #[inline(always)]
-    #[must_use]
-    pub fn delim(it: impl AsRef<[Self]>) -> Self {
-        Self::LDelim(it.as_ref().to_vec())
+    pub fn usage_modifier(items: impl AsRef<[Item]>) -> Item {
+        Item::MCollection(Self::UsageModifier, items.as_ref().to_vec())
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::hid::usage::GenericDesktop;
+
     use super::*;
 
+    /// Keyboard report descriptor (\[HID\] Section E.6).
     #[test]
-    fn e10_mouse_report_descriptor() {
+    fn keyboard_report_descriptor_e6() {
         use Item::*;
-        // https://www.usb.org/sites/default/files/hid1_11.pdf E.10
         assert_eq!(
-            ReportDescriptor(vec![
-                0x05, 0x01, //
-                0x09, 0x02, //
-                0xA1, 0x01, // Collection (Application)
-                0x09, 0x01, //
-                0xA1, 0x00, // Collection (Physical)
-                0x05, 0x09, //
-                0x19, 0x01, //
-                0x29, 0x03, //
-                0x15, 0x00, //
-                0x25, 0x01, //
-                0x95, 0x03, //
-                0x75, 0x01, //
-                0x81, 0x02, // 3 button bits
-                0x95, 0x01, //
-                0x75, 0x05, //
-                0x81, 0x01, // 5 bit padding
-                0x05, 0x01, //
-                0x09, 0x30, //
-                0x09, 0x31, //
-                0x15, 0x81, //
-                0x25, 0x7F, //
-                0x75, 0x08, //
-                0x95, 0x02, //
-                0x81, 0x06, // 2 position bytes (X & Y)
-                0xC0, // End Collection
-                0xC0, // End Collection
-            ]),
             ReportDescriptor::new([
-                GUsagePage(0x01),
-                LUsage(0x02),
+                GUsagePage(Page::GenericDesktop),
+                LUsage(GenericDesktop::Keyboard as _),
                 Collection::application([
-                    LUsage(0x01),
+                    GUsagePage(Page::Key),
+                    LUsageMin(224),
+                    LUsageMax(231),
+                    GLogicalMin(0),
+                    GLogicalMax(1),
+                    GReportSize(1),
+                    GReportCount(8),
+                    MInput(Flag::VAR), // Modifier byte
+                    GReportCount(1),
+                    GReportSize(8),
+                    MInput(Flag::CONST), // Reserved byte
+                    GReportCount(5),
+                    GReportSize(1),
+                    GUsagePage(Page::Led),
+                    LUsageMin(1),
+                    LUsageMax(5),
+                    MOutput(Flag::VAR), // LED report
+                    GReportCount(1),
+                    GReportSize(3),
+                    MOutput(Flag::CONST), // LED report padding
+                    GReportCount(6),
+                    GReportSize(8),
+                    GLogicalMin(0),
+                    GLogicalMax(101),
+                    GUsagePage(Page::Key),
+                    LUsageMin(0),
+                    LUsageMax(101),
+                    MInput(Flag::empty()), // Key arrays (6 bytes)
+                ]),
+            ]),
+            ReportDescriptor(vec![
+                0x05, 0x01, // Usage Page (Generic Desktop)
+                0x09, 0x06, // Usage (Keyboard)
+                0xA1, 0x01, // Collection (Application)
+                0x05, 0x07, // Usage Page (Key Codes)
+                0x19, 0xE0, // Usage Minimum (224)
+                0x29, 0xE7, // Usage Maximum (231)
+                0x15, 0x00, // Logical Minimum (0)
+                0x25, 0x01, // Logical Maximum (1)
+                0x75, 0x01, // Report Size (1)
+                0x95, 0x08, // Report Count (8)
+                0x81, 0x02, // Input (Data, Variable, Absolute)  ; Modifier byte
+                0x95, 0x01, // Report Count (1)
+                0x75, 0x08, // Report Size (8)
+                0x81, 0x01, // Input (Constant)                  ; Reserved byte
+                0x95, 0x05, // Report Count (5)
+                0x75, 0x01, // Report Size (1)
+                0x05, 0x08, // Usage Page (Page# for LEDs)
+                0x19, 0x01, // Usage Minimum (1)
+                0x29, 0x05, // Usage Maximum (5)
+                0x91, 0x02, // Output (Data, Variable, Absolute) ; LED report
+                0x95, 0x01, // Report Count (1)
+                0x75, 0x03, // Report Size (3)
+                0x91, 0x01, // Output (Constant)                 ; LED report padding
+                0x95, 0x06, // Report Count (6)
+                0x75, 0x08, // Report Size (8)
+                0x15, 0x00, // Logical Minimum (0)
+                0x25, 0x65, // Logical Maximum(101)
+                0x05, 0x07, // Usage Page (Key Codes)
+                0x19, 0x00, // Usage Minimum (0)
+                0x29, 0x65, // Usage Maximum (101)
+                0x81, 0x00, // Input (Data, Array)               ; Key arrays (6 bytes)
+                0xC0, // End Collection
+            ])
+        );
+    }
+
+    /// Mouse report descriptor (\[HID\] Section E.10).
+    #[test]
+    fn mouse_report_descriptor_e10() {
+        use Item::*;
+        assert_eq!(
+            ReportDescriptor::new([
+                GUsagePage(Page::GenericDesktop),
+                LUsage(GenericDesktop::Mouse as _),
+                Collection::application([
+                    LUsage(GenericDesktop::Pointer as _),
                     Collection::physical([
-                        GUsagePage(0x09),
+                        GUsagePage(Page::Button),
                         LUsageMin(1),
                         LUsageMax(3),
                         GLogicalMin(0),
                         GLogicalMax(1),
                         GReportCount(3),
                         GReportSize(1),
-                        MInput(Flag::VAR),
+                        MInput(Flag::VAR), // 3 button bits
                         GReportCount(1),
                         GReportSize(5),
-                        MInput(Flag::CONST),
-                        GUsagePage(0x01),
-                        LUsage(0x30),
-                        LUsage(0x31),
+                        MInput(Flag::CONST), // 5 bit padding
+                        GUsagePage(Page::GenericDesktop),
+                        LUsage(GenericDesktop::X as _),
+                        LUsage(GenericDesktop::Y as _),
                         GLogicalMin(-127),
                         GLogicalMax(127),
                         GReportSize(8),
                         GReportCount(2),
-                        MInput(Flag::VAR | Flag::REL),
+                        MInput(Flag::VAR | Flag::REL), // 2 position bytes (X & Y)
                     ]),
                 ]),
+            ]),
+            ReportDescriptor(vec![
+                0x05, 0x01, // Usage Page (Generic Desktop)
+                0x09, 0x02, // Usage (Mouse)
+                0xA1, 0x01, // Collection (Application)
+                0x09, 0x01, // Usage (Pointer)
+                0xA1, 0x00, // Collection (Physical)
+                0x05, 0x09, // Usage Page (Buttons)
+                0x19, 0x01, // Usage Minimum (01)
+                0x29, 0x03, // Usage Maximun (03)
+                0x15, 0x00, // Logical Minimum (0)
+                0x25, 0x01, // Logical Maximum (1)
+                0x95, 0x03, // Report Count (3)
+                0x75, 0x01, // Report Size (1)
+                0x81, 0x02, // Input (Data, Variable, Absolute) ; 3 button bits
+                0x95, 0x01, // Report Count (1)
+                0x75, 0x05, // Report Size (5)
+                0x81, 0x01, // Input (Constant)                 ; 5 bit padding
+                0x05, 0x01, // Usage Page (Generic Desktop)
+                0x09, 0x30, // Usage (X)
+                0x09, 0x31, // Usage (Y)
+                0x15, 0x81, // Logical Minimum (-127)
+                0x25, 0x7F, // Logical Maximum (127)
+                0x75, 0x08, // Report Size (8)
+                0x95, 0x02, // Report Count (2)
+                0x81, 0x06, // Input (Data, Variable, Relative) ; 2 position bytes (X & Y)
+                0xC0, // End Collection
+                0xC0, // End Collection
             ])
         );
     }
@@ -573,36 +761,124 @@ mod tests {
     #[test]
     fn items() {
         use Item::*;
-        let _ = ReportDescriptor::new([
-            // Main
-            MInput(Flag::CONST),
-            MOutput(Flag::VAR),
-            MFeature(Flag::REL),
-            Collection::application([]),
-            // Global
-            GUsagePage(u16::MIN),
-            GLogicalMin(i32::MIN),
-            GLogicalMax(i32::MAX),
-            GPhysicalMin(-1),
-            GPhysicalMax(0x7FFF),
-            GUnitExp(1),
-            GUnit(Unit::CENTIMETERS),
-            GReportSize(u8::MIN),
-            GReportId(u8::MAX),
-            GReportCount(0),
-            GPush,
-            GPop,
-            // Local
-            LUsage(u32::MIN),
-            LUsageMin(u32::MAX),
-            LUsageMax(1),
-            LDesigIndex(2),
-            LDesigMin(3),
-            LDesigMax(4),
-            LStringIndex(5),
-            LStringMin(6),
-            LStringMax(0xFFFF),
-            Item::delim([]),
-        ]);
+        assert_eq!(
+            ReportDescriptor::new([
+                MInput(Flag::empty()),
+                MOutput(Flag::VAR | Flag::WRAP | Flag::NO_PREF | Flag::VOLATILE),
+                MFeature(Flag::all()),
+                Collection::physical([]),
+                GUsagePage(Page::GenericDesktop),
+                GLogicalMin(1),
+                GLogicalMax(2),
+                GPhysicalMin(3),
+                GPhysicalMax(4),
+                Item::unit_exp_compat(-8),
+                GUnit(Unit::INCHES),
+                GReportSize(7),
+                GReportId(8),
+                GReportCount(9),
+                GPush,
+                GPop,
+                LUsage(0),
+                LUsageMin(1),
+                LUsageMax(2),
+                LDesignatorIndex(3),
+                LDesignatorMin(4),
+                LDesignatorMax(5),
+                LStringIndex(7),
+                LStringMin(8),
+                LStringMax(9),
+                Item::delim([]),
+            ]),
+            ReportDescriptor(vec![
+                0x81, 0x00, // MInput
+                0x91, 0xAA, // MOutput
+                0xB2, 0xFF, 0x01, // MFeature
+                0xA1, 0x00, // MCollection
+                0xC0, // End MCollection
+                0x05, 0x01, // GUsagePage
+                0x15, 0x01, // GLogicalMin
+                0x25, 0x02, // GLogicalMax
+                0x35, 0x03, // GPhysicalMin
+                0x45, 0x04, // GPhysicalMax
+                0x55, 0x08, // GUnitExp
+                0x65, 0x13, // GUnit
+                0x75, 0x07, // GReportSize
+                0x85, 0x08, // GReportId
+                0x95, 0x09, // GReportCount
+                0xA4, // GPush
+                0xB4, // GPop
+                0x09, 0x00, // LUsage
+                0x19, 0x01, // LUsageMin
+                0x29, 0x02, // LUsageMax
+                0x39, 0x03, // LDesignatorIndex
+                0x49, 0x04, // LDesignatorMin
+                0x59, 0x05, // LDesignatorMax
+                0x79, 0x07, // LStringIndex
+                0x89, 0x08, // LStringMin
+                0x99, 0x09, // LStringMax
+                0xA9, 0x01, // LDelim
+                0xA9, 0x00, // End LDelim
+            ])
+        );
+    }
+
+    #[test]
+    fn u32_range() {
+        use Item::LStringIndex;
+        assert_eq!(
+            ReportDescriptor::new([
+                LStringIndex(u32::MIN),
+                LStringIndex(u32::from(u8::MAX)),
+                LStringIndex(u32::from(u8::MAX) + 1),
+                LStringIndex(u32::from(u16::MAX)),
+                LStringIndex(u32::from(u16::MAX) + 1),
+                LStringIndex(u32::MAX),
+            ]),
+            // HID Descriptor Tool encodes the tag as 0x6X, which is a bug
+            ReportDescriptor(vec![
+                0x79, 0x00, // u32::MIN
+                0x79, 0xFF, // u8::MAX
+                0x7A, 0x00, 0x01, // u8::MAX + 1
+                0x7A, 0xFF, 0xFF, // u16::MAX
+                0x7B, 0x00, 0x00, 0x01, 0x00, // u16::MAX + 1
+                0x7B, 0xFF, 0xFF, 0xFF, 0xFF, // u32::MAX
+            ])
+        );
+    }
+
+    #[test]
+    fn i32_range() {
+        use Item::GLogicalMin;
+        assert_eq!(
+            ReportDescriptor::new([
+                GLogicalMin(-1),
+                GLogicalMin(0),
+                GLogicalMin(i32::from(i8::MIN)),
+                GLogicalMin(i32::from(i8::MAX)),
+                GLogicalMin(i32::from(i8::MIN) - 1),
+                GLogicalMin(i32::from(i8::MAX) + 1),
+                GLogicalMin(i32::from(i16::MIN)),
+                GLogicalMin(i32::from(i16::MAX)),
+                GLogicalMin(i32::from(i16::MIN) - 1),
+                GLogicalMin(i32::from(i16::MAX) + 1),
+                GLogicalMin(i32::MIN),
+                GLogicalMin(i32::MAX),
+            ]),
+            ReportDescriptor(vec![
+                0x15, 0xFF, // -1
+                0x15, 0x00, // 0
+                0x15, 0x80, // i8::MIN
+                0x15, 0x7F, // i8::MAX
+                0x16, 0x7F, 0xFF, // i8::MIN - 1
+                0x16, 0x80, 0x00, // i8::MAX + 1
+                0x16, 0x00, 0x80, // i16::MIN
+                0x16, 0xFF, 0x7F, // i16::MAX
+                0x17, 0xFF, 0x7F, 0xFF, 0xFF, // i16::MIN - 1
+                0x17, 0x00, 0x80, 0x00, 0x00, // i16::MAX + 1
+                0x17, 0x00, 0x00, 0x00, 0x80, // i32::MIN
+                0x17, 0xFF, 0xFF, 0xFF, 0x7F, // i32::MAX
+            ])
+        );
     }
 }

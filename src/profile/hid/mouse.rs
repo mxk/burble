@@ -1,6 +1,7 @@
 //! Mouse HID device.
 
 use super::{descriptor::*, Dev, InputBuf, InputDev};
+use crate::hid::usage::Page;
 
 /// HID mouse.
 #[derive(Debug, Default)]
@@ -56,7 +57,7 @@ impl Dev for Mouse {
     fn report_descriptor(&self, report_id: u8) -> ReportDescriptor {
         use Item::*;
         ReportDescriptor::new([
-            GUsagePage(0x01), // Generic Desktop Page
+            GUsagePage(Page::GenericDesktop),
             LUsage(0x02),     // Mouse
             Collection::application([
                 GReportId(report_id),
@@ -66,7 +67,7 @@ impl Dev for Mouse {
                 //
 
                 // Buttons
-                GUsagePage(0x09), // Button Page
+                GUsagePage(Page::Button),
                 GReportSize(1),
                 GReportCount(8),
                 GLogicalMin(0),
@@ -76,7 +77,7 @@ impl Dev for Mouse {
                 MInput(Flag::VAR),
 
                 // Movement and scrolling
-                GUsagePage(0x01), // Generic Desktop Page
+                GUsagePage(Page::GenericDesktop),
                 GReportSize(8),
                 GReportCount(Self::IN_LEN - 1),
                 GLogicalMin(i32::from(i8::MIN)), // TODO: -127?

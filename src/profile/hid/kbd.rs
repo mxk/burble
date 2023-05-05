@@ -112,8 +112,8 @@ impl Dev for Kbd {
         use Item::*;
         use super::usage::KeyUsage::*;
         ReportDescriptor::new([
-            GUsagePage(0x01), // Generic Desktop Page
-            LUsage(0x06),     // Keyboard
+            GUsagePage(Page::GenericDesktop),
+            LUsage(GenericDesktop::Keyboard as _),
             Collection::application([
                 GReportId(report_id),
 
@@ -122,7 +122,7 @@ impl Dev for Kbd {
                 //
 
                 // Modifier flags
-                GUsagePage(0x07), // Keyboard/Keypad Page
+                GUsagePage(Page::Key),
                 GReportSize(1),
                 GReportCount(8),
                 GLogicalMin(0),
@@ -145,7 +145,7 @@ impl Dev for Kbd {
                 //
 
                 // Indicators
-                GUsagePage(0x08), // LED Page
+                GUsagePage(Page::Led),
                 GReportSize(1),
                 GReportCount(5),
                 GLogicalMin(0),
