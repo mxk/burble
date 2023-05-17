@@ -2,6 +2,7 @@
 
 use super::usage::Page;
 use super::{descriptor::*, Dev, InputBuf, InputDev};
+use crate::usage::GenericDesktop;
 
 /// HID mouse.
 #[derive(Debug, Default)]
@@ -58,7 +59,7 @@ impl Dev for Mouse {
         use Item::*;
         ReportDescriptor::new([
             GUsagePage(Page::GenericDesktop),
-            LUsage(0x02),     // Mouse
+            LUsage(GenericDesktop::Mouse as _),
             Collection::application([
                 GReportId(report_id),
 
@@ -82,9 +83,9 @@ impl Dev for Mouse {
                 GReportCount(Self::IN_LEN - 1),
                 GLogicalMin(i32::from(i8::MIN)), // TODO: -127?
                 GLogicalMax(i32::from(i8::MAX)),
-                LUsage(0x30), // X
-                LUsage(0x31), // Y
-                LUsage(0x38), // Wheel
+                LUsage(GenericDesktop::X as _),
+                LUsage(GenericDesktop::Y as _),
+                LUsage(GenericDesktop::Wheel as _),
                 MInput(Flag::VAR | Flag::REL),
             ]),
         ])
