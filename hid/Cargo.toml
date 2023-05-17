@@ -1,0 +1,15 @@
+[package]
+name = "burble-hid"
+version = "0.2.2"
+description = "Bluetooth LE Human Interface Device library"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+bitflags.workspace = true
+num_enum.workspace = true

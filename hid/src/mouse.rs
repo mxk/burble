@@ -1,7 +1,7 @@
 //! Mouse HID device.
 
+use super::usage::Page;
 use super::{descriptor::*, Dev, InputBuf, InputDev};
-use crate::hid::usage::Page;
 
 /// HID mouse.
 #[derive(Debug, Default)]

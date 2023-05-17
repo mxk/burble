@@ -2,21 +2,19 @@
 #![allow(clippy::print_stdout)]
 #![allow(clippy::print_stderr)]
 
-use std::io::BufRead;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
 use clap::Parser;
 use futures_core::future::BoxFuture;
-use sscanf::sscanf;
 use tracing::info;
 
 use burble::att::Access;
 use burble::gap::Appearance;
+use burble::gatt::service::{bas, dis};
 use burble::gatt::Db;
 use burble::hci::AdvEvent;
-use burble::hogp::{Input, MouseIn};
 use burble::*;
 use burble_const::Service;
 use burble_crypto::NumCompare;
@@ -61,6 +59,7 @@ async fn main() -> Result<()> {
     r
 }
 
+/*
 fn read_input(srv: Arc<hogp::HidService>) -> tokio::task::JoinHandle<()> {
     let (tx, mut rx) = tokio::sync::mpsc::channel(1);
     std::thread::spawn(move || {
@@ -101,6 +100,7 @@ fn read_input(srv: Arc<hogp::HidService>) -> tokio::task::JoinHandle<()> {
         }
     })
 }
+ */
 
 async fn serve(args: Args, host: hci::Host) -> Result<()> {
     // [HOGP] Section 6.1
@@ -114,11 +114,11 @@ async fn serve(args: Args, host: hci::Host) -> Result<()> {
         .with_pnp_id(dis::PnpId::new(dis::VendorId::USB(0x1209), 0x0001, (1, 0, 0)).unwrap())
         .define(&mut db, SEC);
     bas::BatteryService::new().define(&mut db, SEC);
-    let hid = hogp::HidService::new();
+    //let hid = hogp::HidService::new();
     //#[cfg(debug_assertions)]
     //db.morph_next();
-    hid.define(&mut db);
-    let mut input_task = read_input(hid);
+    //hid.define(&mut db);
+    //let mut input_task = read_input(hid);
 
     let srv = gatt::Server::new(db, Arc::new(fs::GattServerStore::per_user("burble")));
     srv.db().dump();
@@ -138,7 +138,7 @@ async fn serve(args: Args, host: hci::Host) -> Result<()> {
             adv_task = Some(tokio::task::spawn(advertise(args, host.clone())));
         }
         tokio::select! {
-            _ = &mut input_task => return Ok(()),
+            //_ = &mut input_task => return Ok(()),
             adv = async { adv_task.as_mut().unwrap().await }, if adv_task.is_some() => {
                 info!("Advertisement result: {:?}", adv);
                 adv_task = None;

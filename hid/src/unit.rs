@@ -1,4 +1,4 @@
-use std::ops;
+use core::ops;
 
 /// Unit definition (\[HID\] Section 6.2.2.6).
 ///
@@ -9,7 +9,7 @@ use std::ops;
 /// # Example
 ///
 /// ```
-/// # use burble::hid::descriptor::Unit;
+/// # use burble_hid::descriptor::Unit;
 /// let acceleration = Unit::CENTIMETERS / Unit::SECONDS.pow(2);
 /// ```
 #[derive(Clone, Copy, Debug)]

@@ -1,8 +1,10 @@
 //! HID descriptor data types.
 
+use alloc::vec::Vec;
+
 pub use unit::*;
 
-use crate::hid::usage::Page;
+use crate::usage::Page;
 
 #[path = "unit.rs"]
 mod unit;
@@ -614,7 +616,9 @@ impl Collection {
 
 #[cfg(test)]
 mod tests {
-    use crate::hid::usage::GenericDesktop;
+    use alloc::vec;
+
+    use crate::usage::GenericDesktop;
 
     use super::*;
 

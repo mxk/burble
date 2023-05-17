@@ -24,43 +24,6 @@ use crate::hid::mouse::*;
 use crate::hid::{Dev, InputDev, OutputDev};
 use crate::{att, SyncMutex};
 
-/// HID input event.
-#[derive(Debug)]
-#[non_exhaustive]
-pub enum Input {
-    /// Keyboard input event.
-    Kbd(KbdIn),
-    /// Mouse input event.
-    Mouse(MouseIn),
-}
-
-/// Keyboard input.
-#[derive(Debug)]
-#[non_exhaustive]
-pub enum KbdIn {
-    /// Single key press.
-    Press(Key),
-    /// String of characters.
-    Write(String),
-}
-
-/// Mouse input.
-#[derive(Debug)]
-#[non_exhaustive]
-pub enum MouseIn {
-    /// Mouse click (with button number).
-    Click(u8),
-    /// Relative mouse movement.
-    MoveRel {
-        /// Relative horizontal (X axis) movement.
-        dx: i32,
-        /// Relative vertical (Y axis) movement.
-        dy: i32,
-    },
-    /// Vertical scroll.
-    VScroll(i32),
-}
-
 /// HID-over-GATT service.
 #[derive(Debug)]
 pub struct HidService {

@@ -1,11 +1,10 @@
-//! Human Interface Device API ([HID]).
-//!
-//! See [HID] and [HUT] for official documentation.
-//!
-//! [HID]: https://www.usb.org/sites/default/files/hid1_11.pdf
-//! [HUT]: https://www.usb.org/sites/default/files/hut1_4.pdf
+#![doc = include_str!("../README.md")]
+#![no_std]
+#![warn(unused_crate_dependencies)]
 
-use std::collections::VecDeque;
+extern crate alloc;
+
+use alloc::collections::VecDeque;
 
 pub mod descriptor;
 pub mod kbd;

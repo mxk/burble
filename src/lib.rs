@@ -1,8 +1,6 @@
 #![doc = include_str!("../README.md")]
 #![cfg_attr(test, allow(unused_crate_dependencies))]
 
-pub use profile::*;
-
 #[path = "att/att.rs"]
 pub mod att;
 #[cfg(feature = "fs")]
@@ -24,15 +22,6 @@ pub mod smp;
 /// Service Discovery Protocol constants ([Vol 3] Part B).
 pub mod sdp {
     pub use burble_const::ServiceClass;
-}
-
-/// Independent Bluetooth profile and service implementations.
-mod profile {
-    pub mod bas;
-    pub mod dis;
-    #[path = "hid/hid.rs"]
-    pub mod hid;
-    pub mod hogp;
 }
 
 type SyncMutex<T> = parking_lot::Mutex<T>;

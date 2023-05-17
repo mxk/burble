@@ -1,8 +1,9 @@
 //! Keyboard HID device.
 
-use crate::hid::usage;
-use crate::hid::usage::{GenericDesktop, Page};
+use alloc::boxed::Box;
 
+use super::usage;
+use super::usage::{GenericDesktop, Page};
 use super::{descriptor::*, Dev, InputBuf, InputDev, OutputDev};
 
 /// An interface for converting characters into keyboard usage codes.
@@ -13,7 +14,7 @@ pub(super) trait KbdMap {
     fn key(&self, c: char) -> Option<Key>;
 }
 
-impl std::fmt::Debug for dyn KbdMap + Send + Sync {
+impl core::fmt::Debug for dyn KbdMap + Send + Sync {
     fn fmt(&self, _: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         Ok(())
     }
@@ -421,6 +422,8 @@ impl KbdMap for USKbd {
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec;
+
     use super::*;
 
     #[test]

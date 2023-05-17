@@ -18,6 +18,12 @@ mod db;
 mod io;
 mod server;
 
+/// Independent GATT service implementations.
+pub mod service {
+    pub mod bas;
+    pub mod dis;
+}
+
 /// Interface to persistent GATT cache storage.
 pub type CacheStore = dyn crate::PeerStore<Value = Cache>;
 
