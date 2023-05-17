@@ -1,6 +1,9 @@
 //! Keyboard HID device.
 
-use super::{descriptor::*, usage::*, Dev, InputBuf, InputDev, OutputDev};
+use crate::hid::usage;
+use crate::hid::usage::{GenericDesktop, Page};
+
+use super::{descriptor::*, Dev, InputBuf, InputDev, OutputDev};
 
 /// An interface for converting characters into keyboard usage codes.
 pub(super) trait KbdMap {
@@ -110,7 +113,7 @@ impl Dev for Kbd {
     #[rustfmt::skip]
     fn report_descriptor(&self, report_id: u8) -> ReportDescriptor {
         use Item::*;
-        use super::usage::KeyUsage::*;
+        use super::usage::Key::*;
         ReportDescriptor::new([
             GUsagePage(Page::GenericDesktop),
             LUsage(GenericDesktop::Keyboard as _),
@@ -218,11 +221,11 @@ bitflags::bitflags! {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Key {
     m: KeyMod,
-    u: KeyUsage,
+    u: usage::Key,
 }
 
-impl From<KeyUsage> for Key {
-    fn from(u: KeyUsage) -> Self {
+impl From<usage::Key> for Key {
+    fn from(u: usage::Key) -> Self {
         Self {
             m: KeyMod::empty(),
             u,
@@ -233,7 +236,7 @@ impl From<KeyUsage> for Key {
 impl Key {
     /// Returns a combination of left shift and key.
     #[must_use]
-    pub fn shift(u: KeyUsage) -> Self {
+    pub fn shift(u: usage::Key) -> Self {
         Self::from(u).with(KeyMod::LSHIFT)
     }
 
@@ -292,6 +295,130 @@ impl From<KbdInd> for Out {
     }
 }
 
+/// US keyboard map.
+pub(super) struct USKbd;
+
+impl KbdMap for USKbd {
+    #[allow(clippy::too_many_lines)]
+    fn key(&self, c: char) -> Option<Key> {
+        use usage::Key::*;
+        Some(match c {
+            // Row 1
+            '`' => Key::from(KeyBackquote),
+            '1' => Key::from(Key1),
+            '2' => Key::from(Key2),
+            '3' => Key::from(Key3),
+            '4' => Key::from(Key4),
+            '5' => Key::from(Key5),
+            '6' => Key::from(Key6),
+            '7' => Key::from(Key7),
+            '8' => Key::from(Key8),
+            '9' => Key::from(Key9),
+            '0' => Key::from(Key0),
+            '-' => Key::from(KeyMinus),
+            '=' => Key::from(KeyEqual),
+            '\u{08}' => Key::from(KeyBackspace),
+            '~' => Key::shift(KeyBackquote),
+            '!' => Key::shift(Key1),
+            '@' => Key::shift(Key2),
+            '#' => Key::shift(Key3),
+            '$' => Key::shift(Key4),
+            '%' => Key::shift(Key5),
+            '^' => Key::shift(Key6),
+            '&' => Key::shift(Key7),
+            '*' => Key::shift(Key8),
+            '(' => Key::shift(Key9),
+            ')' => Key::shift(Key0),
+            '_' => Key::shift(KeyMinus),
+            '+' => Key::shift(KeyEqual),
+
+            // Row 2
+            '\t' => Key::from(KeyTab),
+            'q' => Key::from(KeyQ),
+            'w' => Key::from(KeyW),
+            'e' => Key::from(KeyE),
+            'r' => Key::from(KeyR),
+            't' => Key::from(KeyT),
+            'y' => Key::from(KeyY),
+            'u' => Key::from(KeyU),
+            'i' => Key::from(KeyI),
+            'o' => Key::from(KeyO),
+            'p' => Key::from(KeyP),
+            '[' => Key::from(KeyLeftBracket),
+            ']' => Key::from(KeyRightBracket),
+            '\\' => Key::from(KeyBackslash),
+            'Q' => Key::shift(KeyQ),
+            'W' => Key::shift(KeyW),
+            'E' => Key::shift(KeyE),
+            'R' => Key::shift(KeyR),
+            'T' => Key::shift(KeyT),
+            'Y' => Key::shift(KeyY),
+            'U' => Key::shift(KeyU),
+            'I' => Key::shift(KeyI),
+            'O' => Key::shift(KeyO),
+            'P' => Key::shift(KeyP),
+            '{' => Key::shift(KeyLeftBracket),
+            '}' => Key::shift(KeyRightBracket),
+            '|' => Key::shift(KeyBackslash),
+
+            // Row 3
+            'a' => Key::from(KeyA),
+            's' => Key::from(KeyS),
+            'd' => Key::from(KeyD),
+            'f' => Key::from(KeyF),
+            'g' => Key::from(KeyG),
+            'h' => Key::from(KeyH),
+            'j' => Key::from(KeyJ),
+            'k' => Key::from(KeyK),
+            'l' => Key::from(KeyL),
+            ';' => Key::from(KeySemicolon),
+            '\'' => Key::from(KeyQuote),
+            '\n' => Key::from(KeyEnter),
+            'A' => Key::shift(KeyA),
+            'S' => Key::shift(KeyS),
+            'D' => Key::shift(KeyD),
+            'F' => Key::shift(KeyF),
+            'G' => Key::shift(KeyG),
+            'H' => Key::shift(KeyH),
+            'J' => Key::shift(KeyJ),
+            'K' => Key::shift(KeyK),
+            'L' => Key::shift(KeyL),
+            ':' => Key::shift(KeySemicolon),
+            '"' => Key::shift(KeyQuote),
+
+            // Row 4
+            'z' => Key::from(KeyZ),
+            'x' => Key::from(KeyX),
+            'c' => Key::from(KeyC),
+            'v' => Key::from(KeyV),
+            'b' => Key::from(KeyB),
+            'n' => Key::from(KeyN),
+            'm' => Key::from(KeyM),
+            ',' => Key::from(KeyComma),
+            '.' => Key::from(KeyPeriod),
+            '/' => Key::from(KeySlash),
+            'Z' => Key::shift(KeyZ),
+            'X' => Key::shift(KeyX),
+            'C' => Key::shift(KeyC),
+            'V' => Key::shift(KeyV),
+            'B' => Key::shift(KeyB),
+            'N' => Key::shift(KeyN),
+            'M' => Key::shift(KeyM),
+            '<' => Key::shift(KeyComma),
+            '>' => Key::shift(KeyPeriod),
+            '?' => Key::shift(KeySlash),
+
+            // Row 5
+            ' ' => Key::from(KeySpace),
+
+            // ASCII
+            '\u{007F}' => Key::from(KeyDelete),
+
+            _ => return None,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -304,7 +431,7 @@ mod tests {
 
     #[test]
     fn input() {
-        use KeyUsage::*;
+        use usage::Key::*;
         let mut b = Kbd::new();
         b.write("Hello!\n");
 
@@ -370,5 +497,26 @@ mod tests {
     #[should_panic]
     fn invalid_output() {
         Kbd::new().set_output(&[0, 0]);
+    }
+
+    #[test]
+    fn us_kbd() {
+        let keys = vec![
+            '`', '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\u{08}', '~', '!',
+            '@', '#', '$', '%', '^', '&', '*', '(', ')', '_', '+', // Row 1
+            '\t', 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', '\\', 'Q', 'W', 'E',
+            'R', 'T', 'Y', 'U', 'I', 'O', 'P', '{', '}', '|', // Row 2
+            'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', ';', '\'', '\n', 'A', 'S', 'D', 'F', 'G',
+            'H', 'J', 'K', 'L', ':', '"', // Row 3
+            'z', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.', '/', 'Z', 'X', 'C', 'V', 'B', 'N', 'M',
+            '<', '>', '?',        // Row 4
+            ' ',        // Row 5
+            '\u{007F}', // ASCII
+        ];
+        let kbd = USKbd {};
+        for k in keys {
+            assert!(kbd.key(k).is_some());
+        }
+        assert!(kbd.key('\u{0080}').is_none());
     }
 }

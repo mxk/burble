@@ -67,9 +67,9 @@ impl ReportDescriptor {
             })
         }
         let items = items.as_ref();
-        let mut rd = Self(Vec::with_capacity(bytes(items)));
-        rd.extend(items);
-        rd
+        let mut this = Self(Vec::with_capacity(bytes(items)));
+        this.extend(items);
+        this
     }
 
     /// Appends the contents of another report descriptor to this one.
@@ -160,7 +160,7 @@ impl ReportDescriptor {
         #[allow(clippy::cast_possible_truncation)]
         let hdr = t as u8 | (n.trailing_zeros() as u8 + 1);
         let item = [hdr, v[0], v[1], v[2], v[3]];
-        // SAFETY: 1 + n <= full.len()
+        // SAFETY: 1 + n <= item.len()
         unsafe { self.0.extend_from_slice(item.get_unchecked(..=n)) };
     }
 }
@@ -180,7 +180,7 @@ impl AsRef<[u8]> for ReportDescriptor {
 /// items only describe the data fields defined by the next Main item. Global
 /// items become the default attributes for all subsequent data fields.
 ///
-/// The following items are required:
+/// # Required items
 ///
 /// * [`Item::GUsagePage`]
 /// * [`Item::GLogicalMin`]
