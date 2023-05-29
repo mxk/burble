@@ -1,6 +1,9 @@
 //! HID descriptor data types.
 
+#![allow(clippy::unusual_byte_groupings)] // For num_enum::TryFromPrimitive
+
 use alloc::vec::Vec;
+use core::iter::FusedIterator;
 
 pub use unit::*;
 
@@ -84,6 +87,13 @@ impl ReportDescriptor {
         for v in items.as_ref() {
             self.push(v);
         }
+    }
+
+    /// Returns an iterator over report descriptor items.
+    #[inline(always)]
+    #[must_use]
+    pub fn iter(&self) -> Iter {
+        Iter(&self.0)
     }
 
     /// Appends item `v` to the descriptor.
@@ -171,6 +181,55 @@ impl AsRef<[u8]> for ReportDescriptor {
         &self.0
     }
 }
+
+impl<'a> IntoIterator for &'a ReportDescriptor {
+    type Item = <Iter<'a> as Iterator>::Item;
+    type IntoIter = Iter<'a>;
+
+    #[inline(always)]
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+/// Report descriptor iterator. Yields `(tag, size, data)` values. For long
+/// items, `data` is the tag value and the actual data is skipped.
+#[derive(Clone, Debug)]
+pub struct Iter<'a>(&'a [u8]);
+
+impl Iterator for Iter<'_> {
+    type Item = (Tag, usize, u32);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        use num_enum::TryFromPrimitive;
+        let (&t, tail) = self.0.split_first()?;
+        let n = 4 >> (3 - (t & 3));
+        let t = Tag::try_from_primitive(t & !3).ok()?;
+        if tail.len() < n {
+            return None;
+        }
+        let mut v = [0_u8; 4];
+        let (data, tail) = tail.split_at(n);
+        v[..n].copy_from_slice(data);
+        self.0 = tail;
+        if !matches!(t, Tag::Long) {
+            return Some((t, n, u32::from_le_bytes(v)));
+        }
+        let sz = usize::from(v[0]);
+        if n != 2 || sz > self.0.len() {
+            return None;
+        }
+        self.0 = &self.0[sz..];
+        Some((t, sz, u32::from(v[1])))
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (0, Some(self.0.len()))
+    }
+}
+
+impl FusedIterator for Iter<'_> {}
 
 /// Report descriptor item (\[HID\] Section 5.2, 6.2.2).
 ///
@@ -353,10 +412,10 @@ impl Item {
 
 /// Item tag specifying the function of the item
 /// (\[HID\] Section 6.2.2.3, 6.2.2.4, 6.2.2.7, 6.2.2.8).
-#[allow(clippy::unusual_byte_groupings)]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, num_enum::TryFromPrimitive)]
+#[non_exhaustive]
 #[repr(u8)]
-enum Tag {
+pub enum Tag {
     // Main
     Input = 0b1000_00 << 2,
     Output = 0b1001_00 << 2,
@@ -391,7 +450,7 @@ enum Tag {
     Delim = 0b1010_10 << 2,
 
     // Long
-    _Long = 0b1111_11 << 2,
+    Long = 0b1111_11 << 2,
 }
 
 bitflags::bitflags! {
@@ -882,5 +941,40 @@ mod tests {
                 0x17, 0xFF, 0xFF, 0xFF, 0x7F, // i32::MAX
             ])
         );
+    }
+
+    #[test]
+    fn iter() {
+        use Item::*;
+        let mut d = ReportDescriptor::new([
+            GPush,
+            GUsagePage(Page::GenericDesktop),
+            LUsage(GenericDesktop::Keyboard as _),
+            Collection::application([
+                GLogicalMin(0),
+                GLogicalMax(0x80),
+                GPhysicalMin(0x7FFF),
+                GPhysicalMax(0x8000),
+                MInput(Flag::VAR),
+            ]),
+        ]);
+        d.0.extend_from_slice(&[Tag::Long as u8 | 2, 6, 42, 0, 1, 2, 3, 4, 5, Tag::Pop as _]);
+        let want = &[
+            (Tag::Push, 0, 0),
+            (Tag::UsagePage, 1, Page::GenericDesktop as _),
+            (Tag::Usage, 1, GenericDesktop::Keyboard as _),
+            (Tag::Collection, 1, Collection::Application as _),
+            (Tag::LogicalMin, 1, 0),
+            (Tag::LogicalMax, 2, 0x80),
+            (Tag::PhysicalMin, 2, 0x7FFF),
+            (Tag::PhysicalMax, 4, 0x8000),
+            (Tag::Input, 1, u32::from(Flag::VAR.bits())),
+            (Tag::EndCollection, 0, 0),
+            (Tag::Long, 6, 42),
+            (Tag::Pop, 0, 0),
+        ];
+        let mut it = d.iter();
+        assert_eq!(want, (&mut it).collect::<Vec<_>>().as_slice());
+        assert_eq!(it.0.len(), 0);
     }
 }
