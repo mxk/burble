@@ -646,6 +646,22 @@ pub enum Key {
     RightGui = 0xE7,
 }
 
+impl Key {
+    /// Returns whether the key is `None`.
+    #[inline(always)]
+    #[must_use]
+    pub const fn is_none(self) -> bool {
+        matches!(self, Self::None)
+    }
+
+    /// Returns whether the key is not `None`.
+    #[inline(always)]
+    #[must_use]
+    pub const fn is_some(self) -> bool {
+        !self.is_none()
+    }
+}
+
 /// LED usage IDs (\[HUT\] Section 11).
 #[derive(Clone, Copy, Debug)]
 #[non_exhaustive]

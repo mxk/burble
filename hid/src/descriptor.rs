@@ -4,8 +4,6 @@ use alloc::vec::Vec;
 
 pub use unit::*;
 
-use crate::usage::Page;
-
 #[path = "unit.rs"]
 mod unit;
 
@@ -110,13 +108,13 @@ impl ReportDescriptor {
             GPhysicalMax(v) => self.i32(PhysicalMax, v),
             GUnitExp(v) => self.i32(UnitExp, i32::from(v)),
             GUnit(v) => self.u32(Unit, v.raw()),
-            GReportSize(v) => self.u32(ReportSize, u32::from(v)),
+            GReportSize(v) => self.u32(ReportSize, v),
             GReportId(v) => {
                 if v != 0 {
                     self.u32(ReportId, u32::from(v));
                 }
             }
-            GReportCount(v) => self.u32(ReportCount, u32::from(v)),
+            GReportCount(v) => self.u32(ReportCount, v),
             GPush => self.0.push(Push as _),
             GPop => self.0.push(Pop as _),
 
@@ -217,7 +215,7 @@ pub enum Item {
     /// order 16 bits of subsequent usages. Any Usage that follows which defines
     /// 16 bits or fewer is interpreted as a Usage ID and concatenated with the
     /// Usage Page to form a 32-bit usage.
-    GUsagePage(Page),
+    GUsagePage(super::usage::Page),
 
     /// Extent value in logical units. This is the minimum value that a variable
     /// or array item will report. For example, a mouse reporting X position
@@ -245,7 +243,7 @@ pub enum Item {
 
     /// Size of the report fields in bits. This allows the parser to build an
     /// item map for the report handler to use.
-    GReportSize(u8),
+    GReportSize(u32),
 
     /// Allows the host to distinguish different types of reports arriving over
     /// a single interrupt in pipe, and allows the device to distinguish
@@ -262,7 +260,7 @@ pub enum Item {
     /// Determines how many fields are included in the report for this
     /// particular item (and consequently how many bits are added to the
     /// report).
-    GReportCount(u8),
+    GReportCount(u32),
 
     /// Places a copy of the global item state table on the stack.
     GPush,
@@ -618,7 +616,7 @@ impl Collection {
 mod tests {
     use alloc::vec;
 
-    use crate::usage::GenericDesktop;
+    use crate::usage::{GenericDesktop, Page};
 
     use super::*;
 
