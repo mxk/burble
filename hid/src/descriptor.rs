@@ -192,8 +192,9 @@ impl<'a> IntoIterator for &'a ReportDescriptor {
     }
 }
 
-/// Report descriptor iterator. Yields `(tag, size, data)` values. For long
-/// items, `data` is the tag value and the actual data is skipped.
+/// Report descriptor iterator. Yields `(tag, size, data)` values. For short
+/// items, `size` is the number of bytes used for `data`. For long items, `size`
+/// is `bDataSize`, `data` is `bLongItemTag`, and the actual data is skipped.
 #[derive(Clone, Debug)]
 pub struct Iter<'a>(&'a [u8]);
 
@@ -205,21 +206,21 @@ impl Iterator for Iter<'_> {
         let (&t, tail) = self.0.split_first()?;
         let n = 4 >> (3 - (t & 3));
         let t = Tag::try_from_primitive(t & !3).ok()?;
-        if tail.len() < n {
+        if n > tail.len() {
             return None;
         }
         let mut v = [0_u8; 4];
         let (data, tail) = tail.split_at(n);
         v[..n].copy_from_slice(data);
-        self.0 = tail;
         if !matches!(t, Tag::Long) {
+            self.0 = tail;
             return Some((t, n, u32::from_le_bytes(v)));
         }
         let sz = usize::from(v[0]);
-        if n != 2 || sz > self.0.len() {
+        if n != 2 || sz > tail.len() {
             return None;
         }
-        self.0 = &self.0[sz..];
+        self.0 = &tail[sz..];
         Some((t, sz, u32::from(v[1])))
     }
 
