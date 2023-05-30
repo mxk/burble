@@ -7,7 +7,7 @@ use core::{fmt, ops};
 
 use crate::descriptor::ReportDescriptor;
 use crate::usage::Key;
-use crate::Report;
+use crate::{Device, Report, ReportType};
 
 /// Error indicating that a char cannot be typed in the current keyboard map.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -51,23 +51,10 @@ impl Keyboard {
         }
     }
 
-    /// Enables or disables boot protocol mode. Default is report mode.
-    #[inline(always)]
-    pub fn set_boot_mode(&mut self, boot: bool) {
-        self.boot = boot;
-    }
-
     /// Sets the keyboard map. Any buffered inputs are not affected.
     #[inline(always)]
     pub fn set_map(&mut self, map: Box<dyn KeyMap + Send + Sync>) {
         self.map = map;
-    }
-
-    /// Returns the report descriptor.
-    #[inline]
-    #[must_use]
-    pub fn descriptor(&self) -> ReportDescriptor {
-        Keys::descriptor(self.report_id)
     }
 
     /// Presses and releases the specified key(s). Pressed keys that are already
@@ -109,43 +96,6 @@ impl Keyboard {
         Ok(())
     }
 
-    /// Returns whether a new report is available.
-    #[must_use]
-    pub fn poll(&mut self) -> bool {
-        let Some(mut head) = self.buf.pop_front() else { return false };
-        while let Some(next) = self.buf.front() {
-            // Report head if it contains any new inputs
-            if !(head - self.inp).is_empty() {
-                break;
-            }
-            // Report head if skipping it would change key releases
-            if self.inp - *next != (self.inp - head) + (head - *next) {
-                break;
-            }
-            head = *next;
-            self.buf.pop_front();
-        }
-        self.inp = head;
-        true
-    }
-
-    /// Returns the current input report. The report changes when
-    /// [`Self::poll()`] returns `true`.
-    #[inline]
-    #[must_use]
-    pub fn report(&self) -> Report {
-        self.inp.to_report(self.report_id, self.boot)
-    }
-
-    /// Sets the current output report. Returns whether the report is valid.
-    pub fn set_report(&mut self, out: Report) -> bool {
-        match *out.as_ref() {
-            [v] if out.id() == self.report_id => self.ind = Ind::from_bits_retain(v),
-            _ => return false,
-        }
-        true
-    }
-
     /// Returns whether number lock is enabled.
     #[inline]
     #[must_use]
@@ -168,12 +118,83 @@ impl Keyboard {
     }
 }
 
+impl Device for Keyboard {
+    fn descriptor(&self) -> ReportDescriptor {
+        use super::descriptor::{Collection, Item::*};
+        use super::usage::{GenericDesktop, Page};
+        ReportDescriptor::new([
+            GUsagePage(Page::GenericDesktop),
+            LUsage(GenericDesktop::Keyboard as _),
+            Collection::application(
+                [
+                    &[GReportId(self.report_id)],
+                    Keys::DESCRIPTOR,
+                    Ind::DESCRIPTOR,
+                ]
+                .concat(),
+            ),
+        ])
+    }
+
+    fn reset(&mut self) {
+        self.boot = false;
+        self.hold = Keys::NONE;
+        self.buf.clear();
+        self.inp = Keys::NONE;
+        self.ind = Ind::empty();
+    }
+
+    fn get_report(&self, typ: ReportType, id: u8) -> Option<Report> {
+        if id != self.report_id {
+            return None;
+        }
+        Some(match typ {
+            ReportType::Input => self.inp.to_report(id, self.boot),
+            ReportType::Output => self.ind.to_report(id),
+            ReportType::Feature => return None,
+        })
+    }
+
+    fn set_report(&mut self, r: Report) -> bool {
+        if r.typ().is_output() && r.id() == self.report_id {
+            if let &[v] = r.as_ref() {
+                self.ind = Ind::from_bits_retain(v);
+                return true;
+            }
+        }
+        false
+    }
+
+    #[inline(always)]
+    fn is_boot_mode(&self) -> bool {
+        self.boot
+    }
+
+    #[inline(always)]
+    fn set_boot_mode(&mut self, boot: bool) {
+        self.boot = boot;
+    }
+}
+
 impl Iterator for Keyboard {
     type Item = Report;
 
-    #[inline]
     fn next(&mut self) -> Option<Self::Item> {
-        self.poll().then(|| self.report())
+        let Some(mut head) = self.buf.pop_front() else { return None };
+        while let Some(next) = self.buf.front() {
+            // Report head if it contains any new inputs
+            if !(head - self.inp).is_empty() {
+                break;
+            }
+            // Report head if skipping it would change key releases
+            if self.inp - *next != (self.inp - head) + (head - *next) {
+                break;
+            }
+            head = *next;
+            self.buf.pop_front();
+        }
+        self.inp = head;
+        Some(self.inp.to_report(self.report_id, self.boot))
     }
 
     #[inline]
@@ -192,6 +213,35 @@ bitflags::bitflags! {
         const SCROLL_LOCK = 1 << 2;
         const COMPOSE = 1 << 3;
         const KANA = 1 << 4;
+    }
+}
+
+impl Ind {
+    /// Output report descriptor items.
+    const DESCRIPTOR: &[super::descriptor::Item] = {
+        use super::descriptor::{Flag, Item::*};
+        use super::usage::{Led, Page};
+        &[
+            // Indicators
+            GUsagePage(Page::Led),
+            GReportSize(1),
+            GReportCount(5),
+            GLogicalMin(0),
+            GLogicalMax(1),
+            LUsageMin(Led::NumLock as _),
+            LUsageMax(Led::Kana as _),
+            MOutput(Flag::VAR),
+            // Indicator padding
+            GReportSize(3),
+            GReportCount(1),
+            MOutput(Flag::CONST),
+        ]
+    };
+
+    /// Returns the binary report representation.
+    #[must_use]
+    fn to_report(self, id: u8) -> Report {
+        Report::output(id, &[self.bits()])
     }
 }
 
@@ -255,55 +305,36 @@ impl Keys {
     /// Maximum number of concurrent key presses in boot mode.
     const BOOT_KEYS: usize = 6;
 
-    /// Returns the report descriptor.
-    #[allow(clippy::cast_possible_truncation)]
-    #[must_use]
-    fn descriptor(id: u8) -> ReportDescriptor {
-        use super::descriptor::{Collection, Flag, Item::*};
-        use super::usage::{GenericDesktop, Led, Page};
-        ReportDescriptor::new([
-            GUsagePage(Page::GenericDesktop),
-            LUsage(GenericDesktop::Keyboard as _),
-            Collection::application([
-                GReportId(id),
-                // Modifier flags
-                GUsagePage(Page::Key),
-                GReportSize(1),
-                GReportCount(8),
-                GLogicalMin(0),
-                GLogicalMax(1),
-                LUsageMin(Key::LeftCtrl as _),
-                LUsageMax(Key::RightGui as _),
-                MInput(Flag::VAR),
-                // Keys
-                GReportSize(8),
-                GReportCount(Self::BOOT_KEYS as _),
-                GLogicalMin(Key::ErrRollOver as _),
-                GLogicalMax(Key::PadHex as _),
-                LUsageMin(Key::ErrRollOver as _),
-                LUsageMax(Key::PadHex as _),
-                MInput(Flag::empty()),
-                // Indicators
-                GUsagePage(Page::Led),
-                GReportSize(1),
-                GReportCount(5),
-                GLogicalMin(0),
-                GLogicalMax(1),
-                LUsageMin(Led::NumLock as _),
-                LUsageMax(Led::Kana as _),
-                MOutput(Flag::VAR),
-                // Indicator padding
-                GReportSize(3),
-                GReportCount(1),
-                MOutput(Flag::CONST),
-            ]),
-        ])
-    }
+    /// Input report descriptor items.
+    const DESCRIPTOR: &[super::descriptor::Item] = {
+        use super::descriptor::{Flag, Item::*};
+        use super::usage::Page;
+        #[allow(clippy::cast_possible_truncation)]
+        &[
+            // Modifier flags
+            GUsagePage(Page::Key),
+            GReportSize(1),
+            GReportCount(8),
+            GLogicalMin(0),
+            GLogicalMax(1),
+            LUsageMin(Key::LeftCtrl as _),
+            LUsageMax(Key::RightGui as _),
+            MInput(Flag::VAR),
+            // Keys
+            GReportSize(8),
+            GReportCount(Self::BOOT_KEYS as _),
+            GLogicalMin(Key::ErrRollOver as _),
+            GLogicalMax(Key::PadHex as _),
+            LUsageMin(Key::ErrRollOver as _),
+            LUsageMax(Key::PadHex as _),
+            MInput(Flag::empty()),
+        ]
+    };
 
     /// Returns the binary report representation.
     #[must_use]
     fn to_report(self, id: u8, boot: bool) -> Report {
-        let mut r = Report::new(id, &[self.m.bits()]);
+        let mut r = Report::input(id, &[self.m.bits()]);
         if boot {
             r.push(0); // Reserved byte ([HID] Appendix B.1)
         }
@@ -613,9 +644,15 @@ mod tests {
         b.press(Mod::LSHIFT + X);
         assert_eq!(
             b.next(),
-            Some(Report::new(0, &[Mod::LSHIFT.bits(), X as _, 0, 0, 0, 0, 0]))
+            Some(Report::input(
+                0,
+                &[Mod::LSHIFT.bits(), X as _, 0, 0, 0, 0, 0]
+            ))
         );
-        assert_eq!(b.next(), Some(Report::zero(0, 1 + Keys::BOOT_KEYS)));
+        assert_eq!(
+            b.next(),
+            Some(Report::zero(ReportType::Input, 0, 1 + Keys::BOOT_KEYS))
+        );
 
         b.write("Hello!\n").unwrap();
         let want = [
@@ -633,7 +670,10 @@ mod tests {
             assert_eq!(b.next(), Some(k.to_report(0, false)));
         }
         assert_eq!(b.next(), Option::None);
-        assert_eq!(b.report(), Report::zero(0, 1 + Keys::BOOT_KEYS));
+        assert_eq!(
+            b.get_report(ReportType::Input, 0),
+            Some(Report::zero(ReportType::Input, 0, 1 + Keys::BOOT_KEYS))
+        );
     }
 
     #[test]
@@ -643,15 +683,15 @@ mod tests {
             assert!(!b.num_lock());
             assert!(!b.caps_lock());
             assert!(!b.scroll_lock());
-            assert!(!b.set_report(Report::new(0, &[])));
+            assert!(!b.set_report(Report::output(0, &[])));
         }
 
-        assert!(b.set_report(Report::new(0, &[Ind::NUM_LOCK.bits()])));
+        assert!(b.set_report(Report::output(0, &[Ind::NUM_LOCK.bits()])));
         assert!(b.num_lock());
         assert!(!b.caps_lock());
         assert!(!b.scroll_lock());
 
-        assert!(b.set_report(Report::new(
+        assert!(b.set_report(Report::output(
             0,
             &[Ind::CAPS_LOCK.union(Ind::SCROLL_LOCK).bits()],
         )));
@@ -659,8 +699,9 @@ mod tests {
         assert!(b.caps_lock());
         assert!(b.scroll_lock());
 
-        assert!(!b.set_report(Report::new(0, &[0, 0])));
-        assert!(!b.set_report(Report::new(1, &[0])));
+        assert!(!b.set_report(Report::output(0, &[0, 0])));
+        assert!(!b.set_report(Report::output(1, &[0])));
+        assert!(!b.set_report(Report::input(0, &[0])));
     }
 
     #[test]

@@ -4,7 +4,7 @@ use alloc::collections::VecDeque;
 use core::ops::RangeInclusive;
 
 use crate::descriptor::ReportDescriptor;
-use crate::Report;
+use crate::{Device, Report, ReportType};
 
 /// Software HID mouse.
 ///
@@ -34,19 +34,6 @@ impl Mouse {
             buf: VecDeque::new(),
             inp: Pointer::NONE,
         }
-    }
-
-    /// Enables or disables boot protocol mode. Default is report mode.
-    #[inline(always)]
-    pub fn set_boot_mode(&mut self, boot: bool) {
-        self.boot = boot;
-    }
-
-    /// Returns the report descriptor.
-    #[inline]
-    #[must_use]
-    pub fn descriptor(&self) -> ReportDescriptor {
-        Pointer::descriptor(self.report_id, self.dpi)
     }
 
     /// Clicks the specified button(s). Clicked buttons that are already being
@@ -117,11 +104,54 @@ impl Mouse {
             (cx, cy) = (Pointer::clamp(dx), Pointer::clamp(dy));
         }
     }
+}
 
-    /// Returns whether a new report is available.
-    #[must_use]
-    pub fn poll(&mut self) -> bool {
-        let Some(mut head) = self.buf.pop_front() else { return false };
+impl Device for Mouse {
+    fn descriptor(&self) -> ReportDescriptor {
+        use super::descriptor::{Collection, Item::*};
+        use super::usage::{GenericDesktop, Page};
+        ReportDescriptor::new([
+            GUsagePage(Page::GenericDesktop),
+            LUsage(GenericDesktop::Mouse as _),
+            Collection::application([
+                GReportId(self.report_id),
+                LUsage(GenericDesktop::Pointer as _),
+                Collection::physical(Pointer::descriptor(self.dpi)),
+            ]),
+        ])
+    }
+
+    fn reset(&mut self) {
+        self.boot = false;
+        self.hold = Button::empty();
+        self.buf.clear();
+        self.inp = Pointer::NONE;
+    }
+
+    fn get_report(&self, typ: ReportType, id: u8) -> Option<Report> {
+        (typ.is_input() && id == self.report_id).then(|| self.inp.to_report(id, self.boot))
+    }
+
+    fn set_report(&mut self, _: Report) -> bool {
+        false
+    }
+
+    #[inline(always)]
+    fn is_boot_mode(&self) -> bool {
+        self.boot
+    }
+
+    #[inline(always)]
+    fn set_boot_mode(&mut self, boot: bool) {
+        self.boot = boot;
+    }
+}
+
+impl Iterator for Mouse {
+    type Item = Report;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let Some(mut head) = self.buf.pop_front() else { return None };
         while let Some(next) = self.buf.front() {
             // Report head if it contains any new inputs
             if head != Pointer::button(self.inp.b) {
@@ -131,24 +161,7 @@ impl Mouse {
             self.buf.pop_front();
         }
         self.inp = head;
-        true
-    }
-
-    /// Returns the current input report. The report changes when
-    /// [`Self::poll()`] returns `true`.
-    #[inline]
-    #[must_use]
-    pub fn report(&self) -> Report {
-        self.inp.to_report(self.report_id, self.boot)
-    }
-}
-
-impl Iterator for Mouse {
-    type Item = Report;
-
-    #[inline]
-    fn next(&mut self) -> Option<Self::Item> {
-        self.poll().then(|| self.report())
+        Some(self.inp.to_report(self.report_id, self.boot))
     }
 
     #[inline]
@@ -195,6 +208,41 @@ impl Pointer {
     /// Maximum movement delta value.
     const DMAX: i32 = i8::MAX as _;
 
+    /// Returns the input report descriptor items.
+    #[inline(always)]
+    #[must_use]
+    fn descriptor(dpi: u16) -> [super::descriptor::Item; 20] {
+        use super::descriptor::{Flag, Item, Item::*, Unit};
+        use super::usage::{Button, GenericDesktop, Page};
+        let logical = -Self::DMAX..=Self::DMAX;
+        let (physical, exp) = to_physical(logical.clone(), dpi);
+        let unit = if dpi == 0 { Unit::NONE } else { Unit::INCHES };
+        [
+            // Buttons
+            GUsagePage(Page::Button),
+            GReportSize(1),
+            GReportCount(8),
+            GLogicalMin(0),
+            GLogicalMax(1),
+            LUsageMin(u32::from(Button::PRIMARY.id())),
+            LUsageMax(u32::from(Button::nth(8).unwrap().id())),
+            MInput(Flag::VAR),
+            // Movement
+            GUsagePage(Page::GenericDesktop),
+            GReportSize(8),
+            GReportCount(2),
+            GLogicalMin(*logical.start()),
+            GLogicalMax(*logical.end()),
+            GPhysicalMin(*physical.start()),
+            GPhysicalMax(*physical.end()),
+            Item::unit_exp_compat(exp),
+            GUnit(unit),
+            LUsage(GenericDesktop::X as _),
+            LUsage(GenericDesktop::Y as _),
+            MInput(Flag::VAR | Flag::REL),
+        ]
+    }
+
     /// Clamps `v` to the pointer movement delta range.
     #[allow(clippy::cast_possible_truncation)]
     #[inline]
@@ -209,48 +257,6 @@ impl Pointer {
         Self { b, ..Self::NONE }
     }
 
-    /// Returns the report descriptor.
-    #[must_use]
-    fn descriptor(id: u8, dpi: u16) -> ReportDescriptor {
-        use super::descriptor::{Collection, Flag, Item, Item::*, Unit};
-        use super::usage::{Button, GenericDesktop, Page};
-        let logical = -Self::DMAX..=Self::DMAX;
-        let (physical, exp) = to_physical(logical.clone(), dpi);
-        let unit = if dpi == 0 { Unit::NONE } else { Unit::INCHES };
-        ReportDescriptor::new([
-            GUsagePage(Page::GenericDesktop),
-            LUsage(GenericDesktop::Mouse as _),
-            Collection::application([
-                GReportId(id),
-                LUsage(GenericDesktop::Pointer as _),
-                Collection::physical([
-                    // Buttons
-                    GUsagePage(Page::Button),
-                    GReportSize(1),
-                    GReportCount(8),
-                    GLogicalMin(0),
-                    GLogicalMax(1),
-                    LUsageMin(u32::from(Button::PRIMARY.id())),
-                    LUsageMax(u32::from(Button::nth(8).unwrap().id())),
-                    MInput(Flag::VAR),
-                    // Movement
-                    GUsagePage(Page::GenericDesktop),
-                    GReportSize(8),
-                    GReportCount(2),
-                    GLogicalMin(*logical.start()),
-                    GLogicalMax(*logical.end()),
-                    GPhysicalMin(*physical.start()),
-                    GPhysicalMax(*physical.end()),
-                    Item::unit_exp_compat(exp),
-                    GUnit(unit),
-                    LUsage(GenericDesktop::X as _),
-                    LUsage(GenericDesktop::Y as _),
-                    MInput(Flag::VAR | Flag::REL),
-                ]),
-            ]),
-        ])
-    }
-
     /// Returns the binary report representation.
     #[must_use]
     pub fn to_report(self, id: u8, boot: bool) -> Report {
@@ -259,7 +265,7 @@ impl Pointer {
             b &= 0b111;
         }
         #[allow(clippy::cast_sign_loss)]
-        Report::new(id, &[b, self.dx as _, self.dy as _])
+        Report::input(id, &[b, self.dx as _, self.dy as _])
     }
 }
 
@@ -292,6 +298,8 @@ fn to_physical(logi: RangeInclusive<i32>, res: u16) -> (RangeInclusive<i32>, i8)
 
 #[cfg(test)]
 mod tests {
+    use crate::ReportType;
+
     use super::*;
 
     #[test]
@@ -303,8 +311,8 @@ mod tests {
     fn click() {
         let mut m = Mouse::new(1, 0);
         m.click(Button::PRIMARY);
-        assert_eq!(m.next(), Some(Report::new(1, &[1, 0, 0])));
-        assert_eq!(m.next(), Some(Report::zero(1, 3)));
+        assert_eq!(m.next(), Some(Report::input(1, &[1, 0, 0])));
+        assert_eq!(m.next(), Some(Report::zero(ReportType::Input, 1, 3)));
         assert_eq!(m.next(), None);
     }
 
@@ -316,25 +324,28 @@ mod tests {
         assert_eq!(m.next(), None);
 
         m.move_rel(Pointer::DMAX, -Pointer::DMAX);
-        assert_eq!(m.next(), Some(Report::new(0, &[0, 127, -127_i8 as _])));
+        assert_eq!(m.next(), Some(Report::input(0, &[0, 127, -127_i8 as _])));
 
         m.move_rel(-128, 1);
-        assert_eq!(m.next(), Some(Report::new(0, &[0, -127_i8 as _, 1])));
-        assert_eq!(m.next(), Some(Report::new(0, &[0, -1_i8 as _, 0])));
+        assert_eq!(m.next(), Some(Report::input(0, &[0, -127_i8 as _, 1])));
+        assert_eq!(m.next(), Some(Report::input(0, &[0, -1_i8 as _, 0])));
 
         m.move_rel(128, -200);
-        assert_eq!(m.next(), Some(Report::new(0, &[0, 81, -127_i8 as _])));
-        assert_eq!(m.next(), Some(Report::new(0, &[0, 47, -73_i8 as _])));
+        assert_eq!(m.next(), Some(Report::input(0, &[0, 81, -127_i8 as _])));
+        assert_eq!(m.next(), Some(Report::input(0, &[0, 47, -73_i8 as _])));
 
         m.move_rel(450, 8);
-        assert_eq!(m.next(), Some(Report::new(0, &[0, 127, 2])));
-        assert_eq!(m.next(), Some(Report::new(0, &[0, 127, 3])));
-        assert_eq!(m.next(), Some(Report::new(0, &[0, 127, 2])));
-        assert_eq!(m.next(), Some(Report::new(0, &[0, 69, 1])));
+        assert_eq!(m.next(), Some(Report::input(0, &[0, 127, 2])));
+        assert_eq!(m.next(), Some(Report::input(0, &[0, 127, 3])));
+        assert_eq!(m.next(), Some(Report::input(0, &[0, 127, 2])));
+        assert_eq!(m.next(), Some(Report::input(0, &[0, 69, 1])));
         assert_eq!(m.next(), None);
 
         // TODO: Should relative values be reset?
-        assert_eq!(m.report(), Report::new(0, &[0, 69, 1]));
+        assert_eq!(
+            m.get_report(ReportType::Input, 0),
+            Some(Report::input(0, &[0, 69, 1]))
+        );
     }
 
     #[test]
