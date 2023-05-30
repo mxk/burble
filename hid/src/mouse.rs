@@ -137,8 +137,8 @@ impl Device for Mouse {
     }
 
     #[inline(always)]
-    fn is_boot_mode(&self) -> bool {
-        self.boot
+    fn is_boot_mode(&self) -> Option<bool> {
+        Some(self.boot)
     }
 
     #[inline(always)]

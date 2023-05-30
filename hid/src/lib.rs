@@ -31,12 +31,12 @@ pub trait Device: Iterator<Item = Report> {
     #[must_use]
     fn set_report(&mut self, r: Report) -> bool;
 
-    /// Returns whether the device is in boot protocol mode. Default is report
-    /// mode.
+    /// Returns whether the device is in boot protocol mode or [`None`] if boot
+    /// protocol is not supported. Default is report mode.
     #[inline(always)]
     #[must_use]
-    fn is_boot_mode(&self) -> bool {
-        false
+    fn is_boot_mode(&self) -> Option<bool> {
+        None
     }
 
     /// Enables or disables boot protocol mode. Default is report mode.
