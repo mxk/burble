@@ -9,13 +9,13 @@
 //! [HIDS]: https://www.bluetooth.com/specifications/specs/human-interface-device-service-1-0/
 //! [HOGP]: https://www.bluetooth.com/specifications/specs/hid-over-gatt-profile-1-0/
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use tracing::debug;
 
 use burble_const::{Characteristic, Descriptor, Service};
-use burble_hid::descriptor::{Locale, ReportDescriptor, Tag};
+use burble_hid::descriptor::{Collection, Locale, ReportDescriptor, Tag};
 use burble_hid::kbd::{Keyboard, Led};
 use burble_hid::mouse::Mouse;
 use burble_hid::usage::{GenericDesktop, Page};
@@ -25,7 +25,7 @@ use crate::att::{Access, ErrorCode};
 use crate::gatt::{Builder, Db, Io, IoReq, IoResult, Notify, NotifyReq, Prop};
 use crate::SyncMutex;
 
-/// HID-over-GATT service.
+/// Human Interface Device service.
 #[derive(Clone, Debug)]
 #[repr(transparent)]
 pub struct HidService<T>(Arc<SyncMutex<Dev<T>>>);
@@ -38,14 +38,22 @@ impl<T: Device + Send + 'static> HidService<T> {
         Self(Dev::new(dev))
     }
 
-    /// Calls `f` to control the device. Any updates are not reported to the
-    /// remote host until [`Self::flush()`] is called.
+    /// Returns a watch receiver that reflects device state changes.
+    #[inline]
+    #[must_use]
+    pub fn state(&self) -> tokio::sync::watch::Receiver<HidState> {
+        self.0.lock().w.subscribe()
+    }
+
+    /// Calls `f` to control the device. Updates are not reported to the host
+    /// until [`Self::flush()`] is called.
     #[inline(always)]
     pub fn control<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
         f(&mut self.0.lock().dev)
     }
 
-    /// Sends all pending reports to the host. The current implementation also
+    /// Notifies the host of any pending reports. Reports that do not have
+    /// notifications enabled are discarded. The current implementation also
     /// detects connection loss during this call.
     pub async fn flush(&self) {
         // TODO: Use a separate task to detect connection loss
@@ -57,6 +65,13 @@ impl<T: Device + Send + 'static> HidService<T> {
         }
     }
 
+    /// Calls `f` to control the device followed by a flush.
+    #[inline(always)]
+    pub async fn exec(&self, f: impl FnOnce(&mut T) + Send) {
+        f(&mut self.0.lock().dev);
+        self.flush().await;
+    }
+
     /// Defines the service structure.
     ///
     /// # Panics
@@ -66,14 +81,27 @@ impl<T: Device + Send + 'static> HidService<T> {
         const RO: Access = Access::READ.authn().encrypt();
         const WO: Access = Access::WRITE.authn().encrypt();
         const RW: Access = Access::READ_WRITE.authn().encrypt();
-        db.primary_service(Service::HumanInterfaceDevice, [], |db| {
+        let ((ver, loc), rd, boot_support) = {
+            let d = self.0.lock();
+            (
+                d.dev.hid_descriptor(),
+                d.dev.report_descriptor(),
+                d.dev.boot_mode().is_some(),
+            )
+        };
+        db.primary_service(Service::HumanInterfaceDevice, [], move |db| {
             use Characteristic::*;
             use GenericDesktop::{Keyboard, Mouse};
-            let rd = self.0.lock().dev.descriptor();
 
             // HID Information ([HIDS] Section 2.10)
-            let info = Self::hid_info(0x01_11, Locale::None, true, false);
-            db.ro_characteristic(HidInformation, RO, info, |_| {});
+            let ver = ver.to_le_bytes();
+            let flags = 0b10; // NormallyConnectable = 1, RemoteWake = 0
+            db.ro_characteristic(
+                HidInformation,
+                RO,
+                [ver[0], ver[1], loc as _, flags],
+                |_| {},
+            );
 
             // Report Map ([HIDS] Section 2.6)
             assert!(rd.as_ref().len() <= 512, "report descriptor too long");
@@ -89,20 +117,21 @@ impl<T: Device + Send + 'static> HidService<T> {
             );
 
             // Reports ([HIDS] Section 2.5, 2.7, 2.8, 2.9)
-            for (key, app) in Self::reports(&rd, None)
+            let mut boot = BTreeSet::new();
+            for (app, rref) in Self::reports(&rd, None)
                 .chain(Self::reports(&rd, Some(Keyboard)))
                 .chain(Self::reports(&rd, Some(Mouse)))
             {
                 use ReportType::*;
-                let uuid = match (app, key.typ) {
+                let uuid = match (app, rref.typ) {
                     (None, _) => Report,
                     (Some(Keyboard), Input) => BootKeyboardInputReport,
                     (Some(Keyboard), Output) => BootKeyboardOutputReport,
                     (Some(Mouse), Input) => BootMouseInputReport,
                     _ => continue,
                 };
-                let (props, perms) = match key.typ {
-                    Input => (Prop::NOTIFY, RO), // TODO: Optional write?
+                let (props, perms) = match rref.typ {
+                    Input => (Prop::NOTIFY, RO), // TODO: Optional Write?
                     Output => (Prop::WRITE_CMD.union(Prop::WRITE), RW),
                     Feature => (Prop::WRITE, RW),
                 };
@@ -110,24 +139,28 @@ impl<T: Device + Send + 'static> HidService<T> {
                     uuid,
                     Prop::READ.union(props),
                     perms,
-                    Io::with(&self.0, move |this, req| this.lock().report_io(key, req)),
+                    Io::with(&self.0, move |this, req| this.lock().report_io(rref, req)),
                     |db| {
-                        if key.typ.is_input() {
+                        if rref.typ.is_input() {
                             db.cccd(RW);
                         }
                         if matches!(uuid, Report) {
                             db.ro_descriptor(
                                 Descriptor::ReportReference,
                                 RO,
-                                [key.id, key.typ as _],
+                                [rref.id, rref.typ as _],
                             );
                         }
                     },
                 );
+                if rref.boot {
+                    boot.insert((rref.typ, rref.id));
+                }
             }
 
             // Protocol Mode ([HIDS] Section 2.4)
-            if self.0.lock().dev.is_boot_mode().is_some() {
+            if boot_support {
+                self.0.lock().boot = boot;
                 db.characteristic(
                     ProtocolMode,
                     Prop::READ.union(Prop::WRITE_CMD),
@@ -139,44 +172,33 @@ impl<T: Device + Send + 'static> HidService<T> {
         });
     }
 
-    /// Returns HID information characteristic value (\[HIDS\] Section 2.10).
-    #[allow(clippy::cast_possible_truncation)]
-    #[inline]
-    #[must_use]
-    const fn hid_info(ver: u16, loc: Locale, norm_conn: bool, wake: bool) -> [u8; 4] {
-        let mut info = [0; 4];
-        (info[0], info[1]) = (ver as u8, (ver >> 8) as u8); // bcdHID
-        info[2] = loc as _; // bCountryCode
-        info[3] = (norm_conn as u8) << 1 | wake as u8; // Flags
-        info
-    }
-
-    /// Returns an iterator over all report types in the descriptor. If `col` is
-    /// [`Some`], then only the reports in the specified collection are
-    /// returned.
+    /// Returns an iterator over all report types in the descriptor. If `app` is
+    /// [`Some`], then only the reports in the specified application collections
+    /// are returned.
     fn reports(
         rd: &ReportDescriptor,
-        col: Option<GenericDesktop>,
-    ) -> impl Iterator<Item = (Key, Option<GenericDesktop>)> + '_ {
-        let want = (Page::GenericDesktop as u32) << 16 | col.map_or(0xFFFF, |u| u as _);
-        let (mut depth, mut app_match) = (0, if col.is_some() { 0 } else { usize::MAX });
+        app: Option<GenericDesktop>,
+    ) -> impl Iterator<Item = (Option<GenericDesktop>, ReportRef)> + '_ {
+        let want = (Page::GenericDesktop as u32) << 16 | app.map_or(0xFFFF, |u| u as _);
+        let (mut depth, mut app_match) = (0, if app.is_some() { 0 } else { usize::MAX });
         let (mut page, mut usage) = (0, 0);
-        let mut report_id = 0;
+        let mut rref = ReportRef {
+            typ: ReportType::Input,
+            id: 0,
+            boot: app.is_some(),
+        };
         rd.iter().filter_map(move |(t, n, v)| {
             match t {
                 Tag::Input | Tag::Output | Tag::Feature => {
                     if app_match != 0 {
-                        let k = Key {
-                            typ: t.as_report_type(),
-                            id: report_id,
-                            boot: col.is_some(),
-                        };
-                        return Some((k, col));
+                        usage = 0;
+                        rref.typ = t.as_report_type();
+                        return Some((app, rref));
                     }
                 }
                 Tag::Collection => {
                     depth += 1;
-                    if app_match == 0 && usage == want {
+                    if app_match == 0 && v == Collection::Application as u32 && usage == want {
                         app_match = depth;
                     }
                 }
@@ -187,7 +209,8 @@ impl<T: Device + Send + 'static> HidService<T> {
                     depth -= 1;
                 }
                 Tag::UsagePage => page = v << 16,
-                Tag::ReportId => report_id = u8::try_from(v).expect("invalid report ID"),
+                Tag::ReportId => rref.id = u8::try_from(v).expect("invalid report ID"),
+                Tag::Pop => panic!("pop tag not supported"),
                 Tag::Usage => usage = if n > 2 { v } else { page | v },
                 _ => {}
             }
@@ -199,9 +222,9 @@ impl<T: Device + Send + 'static> HidService<T> {
     }
 }
 
-/// Report identification key. `id` is [`None`] for boot reports.
+/// Report reference.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-struct Key {
+struct ReportRef {
     typ: ReportType,
     id: u8,
     boot: bool,
@@ -211,8 +234,9 @@ struct Key {
 #[derive(Debug)]
 struct Dev<T> {
     dev: T,
-    ntf: BTreeMap<Key, NotifyReq>,
-    w: tokio::sync::watch::Sender<DeviceState>,
+    boot: BTreeSet<(ReportType, u8)>,
+    ntf: BTreeMap<ReportRef, NotifyReq>,
+    w: tokio::sync::watch::Sender<HidState>,
 }
 
 impl<T: Device> Dev<T> {
@@ -220,22 +244,108 @@ impl<T: Device> Dev<T> {
     #[inline]
     #[must_use]
     fn new(dev: T) -> Arc<SyncMutex<Self>> {
+        let boot = BTreeSet::new();
         let ntf = BTreeMap::new();
-        let (w, _) = tokio::sync::watch::channel(DeviceState(Flag::empty()));
-        Arc::new(SyncMutex::new(Self { dev, ntf, w }))
+        let mut s = HidState(Flag::empty());
+        s.0.set(Flag::BOOT, Self::boot_mode(&dev));
+        let (w, _) = tokio::sync::watch::channel(s);
+        Arc::new(SyncMutex::new(Self { dev, boot, ntf, w }))
+    }
+
+    /// Updates connection state when an I/O request comes in.
+    fn on_io(&mut self) {
+        self.ntf.retain(|_, n| !n.is_closed());
+        self.w.send_if_modified(|s| {
+            let prev = *s;
+            if s.is_active() && self.ntf.is_empty() {
+                // This is a bit problematic because if the host just disables
+                // notifications without actually disconnecting, then the next
+                // I/O request will treat this as a new connection and reset the
+                // device.
+                s.0.remove(Flag::CONN.union(Flag::ACTIVE));
+                debug!("Disconnected: {s:?}");
+            }
+            if !s.is_connected() {
+                // [HIDS] Section 2.4.1.1
+                self.dev.reset();
+                s.0.insert(Flag::CONN);
+                s.0.set(Flag::BOOT, Self::boot_mode(&self.dev));
+                debug!("Connected: {s:?}");
+            }
+            *s != prev
+        });
+    }
+
+    /// Handles control point characteristic I/O (\[HIDS\] Section 2.11).
+    #[allow(clippy::needless_pass_by_value)]
+    fn control_point_io(&mut self, req: IoReq) -> IoResult {
+        self.on_io();
+        let IoReq::Write(w) = req else { unreachable!() };
+        let mut v = [u8::from(!self.w.borrow().is_suspended())];
+        w.update(&mut v)?;
+        self.w.send_if_modified(|s| {
+            let diff = s.is_suspended() != (v[0] == 0);
+            if diff {
+                s.0.toggle(Flag::SUSPEND);
+                debug!("Suspended: {}", s.is_suspended());
+            }
+            diff
+        });
+        Ok(())
+    }
+
+    /// Handles report characteristic I/O (\[HIDS\] Section 2.5, 2.7, 2.8, 2.9).
+    fn report_io(&mut self, rref: ReportRef, req: IoReq) -> IoResult {
+        self.on_io();
+        match req {
+            IoReq::Read(r) => {
+                if Self::boot_mode(&self.dev) != rref.boot {
+                    return Err(ErrorCode::UnlikelyError);
+                }
+                (self.dev.get_report(rref.typ, rref.id))
+                    .map_or(Err(ErrorCode::RequestNotSupported), |v| r.complete(v))
+            }
+            IoReq::Write(w) => {
+                let mut v = (self.dev.get_report(rref.typ, rref.id))
+                    .ok_or(ErrorCode::RequestNotSupported)?;
+                w.update(&mut v)?;
+                if self.dev.set_report(v) {
+                    Ok(())
+                } else {
+                    Err(ErrorCode::ValueNotAllowed)
+                }
+            }
+            IoReq::Notify(n) => {
+                if n.is_indicate() {
+                    return Err(ErrorCode::CccdImproperlyConfigured);
+                }
+                if self.ntf.is_empty() {
+                    self.w.send_modify(|s| {
+                        s.0.insert(Flag::ACTIVE);
+                        debug!("Active: true");
+                    });
+                }
+                self.ntf.insert(rref, n);
+                Ok(())
+            }
+        }
     }
 
     /// Handles Protocol Mode characteristic I/O (\[HIDS\] Section 2.4).
     fn protocol_mode_io(&mut self, req: IoReq) -> IoResult {
+        self.on_io();
+        let mut v = [u8::from(!Self::boot_mode(&self.dev))];
         match req {
-            IoReq::Read(r) => r.complete([u8::from(!self.dev.is_boot_mode().unwrap_or_default())]),
+            IoReq::Read(r) => r.complete(v),
             IoReq::Write(w) => {
-                let mut v = [0; 1];
                 w.update(&mut v)?;
                 let boot = v[0] == 0;
-                if self.dev.is_boot_mode().map_or(false, |b| b != boot) {
+                if self.dev.boot_mode().map_or(false, |b| b != boot) {
                     self.dev.set_boot_mode(boot);
-                    self.w.send_modify(|s| s.0.set(Flag::BOOT, boot));
+                    self.w.send_modify(|s| {
+                        s.0.set(Flag::BOOT, boot);
+                        debug!("Boot protocol mode: {boot}");
+                    });
                 }
                 Ok(())
             }
@@ -243,51 +353,11 @@ impl<T: Device> Dev<T> {
         }
     }
 
-    /// Handles control point characteristic I/O (\[HIDS\] Section 2.11).
-    #[allow(clippy::needless_pass_by_value)]
-    fn control_point_io(&mut self, req: IoReq) -> IoResult {
-        let IoReq::Write(w) = req else { unreachable!() };
-        let mut v = [0; 1];
-        w.update(&mut v)?;
-        let suspend = v[0] == 0;
-        self.w.send_if_modified(|s| {
-            let diff = s.0.contains(Flag::SUSPEND) != suspend;
-            if diff {
-                s.0.toggle(Flag::SUSPEND);
-            }
-            diff
-        });
-        Ok(())
-    }
-
-    /// Handles report characteristic I/O.
-    fn report_io(&mut self, k: Key, req: IoReq) -> IoResult {
-        match req {
-            IoReq::Read(r) => {
-                if Some(k.boot) != self.dev.is_boot_mode() {
-                    return Err(ErrorCode::UnlikelyError);
-                }
-                (self.dev.get_report(k.typ, k.id))
-                    .map_or(Err(ErrorCode::RequestNotSupported), |v| r.complete(v))
-            }
-            IoReq::Write(w) => {
-                if w.off != 0 {
-                    // TODO: Update current report from get_report?
-                    return Err(ErrorCode::InvalidOffset);
-                }
-                if !self.dev.set_report(Report::new(k.typ, k.id, w.val)) {
-                    return Err(ErrorCode::ValueNotAllowed);
-                }
-                Ok(())
-            }
-            IoReq::Notify(n) => {
-                if self.ntf.is_empty() {
-                    self.w.send_modify(|s| s.0 |= Flag::CONN);
-                }
-                self.ntf.insert(k, n);
-                Ok(())
-            }
-        }
+    /// Returns the device boot protocol mode state.
+    #[inline(always)]
+    #[must_use]
+    fn boot_mode(dev: &T) -> bool {
+        matches!(dev.boot_mode(), Some(true))
     }
 }
 
@@ -295,27 +365,26 @@ impl<T: Device> Iterator for Dev<T> {
     type Item = Notify;
 
     fn next(&mut self) -> Option<Self::Item> {
+        let active = !self.ntf.is_empty();
         self.ntf.retain(|_, n| !n.is_closed());
-        if self.ntf.is_empty() {
+        if active && self.ntf.is_empty() {
             self.dev.reset();
-            self.w.send_if_modified(|s| {
-                let diff = s.0.contains(Flag::CONN) != self.ntf.is_empty();
-                if diff {
-                    s.0.toggle(Flag::CONN);
-                }
-                diff
+            self.w.send_modify(|s| {
+                s.0.remove(Flag::CONN.union(Flag::ACTIVE));
+                s.0.set(Flag::BOOT, Self::boot_mode(&self.dev));
+                debug!("Disconnected: {s:?}");
             });
-            return None;
         }
-        while let Some(r) = self.dev.next() {
-            let key = Key {
+        let boot = Self::boot_mode(&self.dev);
+        for r in self.dev.by_ref() {
+            let rref = ReportRef {
                 typ: r.typ(),
                 id: r.id(),
-                boot: self.dev.is_boot_mode().unwrap_or_default(),
+                boot: boot && self.boot.contains(&(r.typ(), r.id())),
             };
-            if let Some(n) = self.ntf.get(&key) {
+            if let Some(n) = self.ntf.get(&rref) {
                 return Some(n.notify(|p| {
-                    p.put(r.as_ref());
+                    p.put(r);
                 }));
             }
         }
@@ -325,28 +394,39 @@ impl<T: Device> Iterator for Dev<T> {
 
 /// HID device state.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct DeviceState(Flag);
+#[repr(transparent)]
+pub struct HidState(Flag);
 
 bitflags::bitflags! {
     /// HID device state flags.
     #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
     struct Flag: u8 {
         const CONN = 1 << 0;
-        const BOOT = 1 << 1;
-        const SUSPEND = 1 << 2;
+        const ACTIVE = 1 << 1;
+        const BOOT = 1 << 2;
+        const SUSPEND = 1 << 3;
     }
 }
 
-impl DeviceState {
-    /// Returns whether the device is connected to a host as determined by
-    /// having at least one active notification session.
+impl HidState {
+    /// Returns whether the device is connected to a host. Currently, a
+    /// connection starts from the first I/O request and until the last
+    /// notification session is closed.
     #[inline(always)]
     #[must_use]
     pub const fn is_connected(self) -> bool {
         self.0.contains(Flag::CONN)
     }
 
-    /// Returns whether the device is using boot protocol mode.
+    /// Returns whether there is at least one active notification session (host
+    /// receiving input).
+    #[inline(always)]
+    #[must_use]
+    pub const fn is_active(self) -> bool {
+        self.0.contains(Flag::ACTIVE)
+    }
+
+    /// Returns whether the device is in boot protocol mode.
     #[inline(always)]
     #[must_use]
     pub const fn is_boot_mode(self) -> bool {
@@ -374,12 +454,16 @@ impl KeyboardMouse {
     ///
     /// # Panics
     ///
-    /// Panics if the device report IDs are the same.
+    /// Panics if the keyboard and mouse report IDs are the same.
     #[inline]
     #[must_use]
     pub fn new(k: Keyboard, m: Mouse) -> Self {
-        assert_ne!(k.report_id(), m.report_id(), "report ID collision");
-        let (w, _) = tokio::sync::watch::channel(Led::empty());
+        assert_ne!(
+            k.report_id(),
+            m.report_id(),
+            "keyboard/mouse report ID collision"
+        );
+        let (w, _) = tokio::sync::watch::channel(k.led());
         Self { k, m, w }
     }
 
@@ -404,6 +488,16 @@ impl KeyboardMouse {
         self.w.subscribe()
     }
 
+    /// Notifies watchers of any keyboard LED changes.
+    #[inline]
+    fn notify(&self) {
+        self.w.send_if_modified(|s| {
+            let prev = *s;
+            *s = self.k.led();
+            *s != prev
+        });
+    }
+
     /// Performs approximate fair scheduling between `a` and `b`, returning
     /// whether `a` should be selected (i.e. decremented) next.
     #[allow(clippy::cast_possible_wrap)]
@@ -419,17 +513,26 @@ impl KeyboardMouse {
 }
 
 impl Device for KeyboardMouse {
-    fn descriptor(&self) -> ReportDescriptor {
-        let mut rd = self.k.descriptor();
-        rd.append(&self.m.descriptor());
+    #[inline(always)]
+    fn hid_descriptor(&self) -> (u16, Locale) {
+        self.k.hid_descriptor()
+    }
+
+    #[inline]
+    fn report_descriptor(&self) -> ReportDescriptor {
+        let mut rd = self.k.report_descriptor();
+        rd.append(&self.m.report_descriptor());
         rd
     }
 
+    #[inline]
     fn reset(&mut self) {
         self.k.reset();
         self.m.reset();
+        self.notify();
     }
 
+    #[inline]
     fn get_report(&self, typ: ReportType, id: u8) -> Option<Report> {
         if id == self.k.report_id() {
             self.k.get_report(typ, id)
@@ -438,26 +541,20 @@ impl Device for KeyboardMouse {
         }
     }
 
+    #[inline]
     fn set_report(&mut self, r: Report) -> bool {
-        if r.id() != self.k.report_id() {
-            return self.m.set_report(r);
+        if r.id() == self.k.report_id() {
+            let ok = self.k.set_report(r);
+            self.notify();
+            ok
+        } else {
+            self.m.set_report(r)
         }
-        if !self.k.set_report(r) {
-            return false;
-        }
-        self.w.send_if_modified(|s| {
-            if *s == self.k.led() {
-                return false;
-            }
-            *s = self.k.led();
-            true
-        });
-        true
     }
 
     #[inline(always)]
-    fn is_boot_mode(&self) -> Option<bool> {
-        self.k.is_boot_mode()
+    fn boot_mode(&self) -> Option<bool> {
+        self.k.boot_mode()
     }
 
     #[inline]

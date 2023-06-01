@@ -264,6 +264,14 @@ impl NotifyReq {
         self.uuid
     }
 
+    /// Returns whether the client requested indications (notifications with
+    /// confirmation).
+    #[inline(always)]
+    #[must_use]
+    pub const fn is_indicate(&self) -> bool {
+        self.ind
+    }
+
     // TODO: Add a robust version of notifications that places a barrier in the
     // send queue and doesn't return until the PDU is acknowledged with
     // NumberOfCompletedPackets? We don't want to do this unconditionally
