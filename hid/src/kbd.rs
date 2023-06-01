@@ -5,7 +5,7 @@ use alloc::collections::VecDeque;
 use core::fmt::Debug;
 use core::{fmt, ops};
 
-use crate::descriptor::ReportDescriptor;
+use crate::descriptor::{Locale, ReportDescriptor};
 use crate::usage::Key;
 use crate::{Device, Report, ReportType};
 
@@ -112,7 +112,14 @@ impl Keyboard {
 }
 
 impl Device for Keyboard {
-    fn descriptor(&self) -> ReportDescriptor {
+    /// Returns the `bcdHID` and `bCountryCode` from the HID descriptor.
+    #[inline(always)]
+    #[must_use]
+    fn hid_descriptor(&self) -> (u16, Locale) {
+        (super::BCD_HID, self.map.locale())
+    }
+
+    fn report_descriptor(&self) -> ReportDescriptor {
         use super::descriptor::{Collection, Item::*};
         use super::usage::{GenericDesktop, Page};
         ReportDescriptor::new([
@@ -159,7 +166,7 @@ impl Device for Keyboard {
     }
 
     #[inline(always)]
-    fn is_boot_mode(&self) -> Option<bool> {
+    fn boot_mode(&self) -> Option<bool> {
         Some(self.boot)
     }
 
@@ -508,6 +515,10 @@ impl ops::SubAssign<Key> for Keys {
 
 /// A keyboard map of characters to key inputs.
 pub trait KeyMap: Debug {
+    /// Returns the keyboard map's locale.
+    #[must_use]
+    fn locale(&self) -> Locale;
+
     /// Returns the key input that represents character `c` or [`None`] if `c`
     /// does not have a valid representation in this keyboard map. This is the
     /// inverse of what the host does when it receives a keyboard input report,
@@ -521,6 +532,11 @@ pub trait KeyMap: Debug {
 struct US;
 
 impl KeyMap for US {
+    #[inline(always)]
+    fn locale(&self) -> Locale {
+        Locale::Us
+    }
+
     #[allow(clippy::too_many_lines)]
     fn map(&self, c: char) -> Option<Keys> {
         use Key::*;
@@ -646,8 +662,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn descriptor() {
-        assert!(!Keyboard::us(0).descriptor().as_ref().is_empty());
+    fn report_descriptor() {
+        assert!(!Keyboard::us(0).report_descriptor().as_ref().is_empty());
     }
 
     #[test]

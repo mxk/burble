@@ -11,12 +11,22 @@ pub mod kbd;
 pub mod mouse;
 pub mod usage;
 
+/// HID Class Specification release number (v1.11).
+const BCD_HID: u16 = 0x01_11;
+
 /// Common Human Interface Device API. The [`Iterator`] implementation
 /// corresponds to the "Interrupt In" pipe.
 pub trait Device: Iterator<Item = Report> {
+    /// Returns the `bcdHID` and `bCountryCode` from the HID descriptor.
+    #[inline(always)]
+    #[must_use]
+    fn hid_descriptor(&self) -> (u16, descriptor::Locale) {
+        (BCD_HID, descriptor::Locale::None)
+    }
+
     /// Returns the device report descriptor.
     #[must_use]
-    fn descriptor(&self) -> descriptor::ReportDescriptor;
+    fn report_descriptor(&self) -> descriptor::ReportDescriptor;
 
     /// Resets the device to its initial state.
     fn reset(&mut self);
@@ -39,7 +49,7 @@ pub trait Device: Iterator<Item = Report> {
     /// protocol is not supported. Default is report mode.
     #[inline(always)]
     #[must_use]
-    fn is_boot_mode(&self) -> Option<bool> {
+    fn boot_mode(&self) -> Option<bool> {
         None
     }
 
@@ -193,6 +203,17 @@ impl AsRef<[u8]> for Report {
     fn as_ref(&self) -> &[u8] {
         // SAFETY: 1..self.len() is always in-bounds
         unsafe { self.v.get_unchecked(1..self.len()) }
+    }
+}
+
+impl AsMut<[u8]> for Report {
+    /// Returns the report payload without the ID prefix.
+    #[inline]
+    #[must_use]
+    fn as_mut(&mut self) -> &mut [u8] {
+        let n = self.len();
+        // SAFETY: 1..n is always in-bounds
+        unsafe { self.v.get_unchecked_mut(1..n) }
     }
 }
 

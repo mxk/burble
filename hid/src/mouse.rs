@@ -114,7 +114,7 @@ impl Mouse {
 }
 
 impl Device for Mouse {
-    fn descriptor(&self) -> ReportDescriptor {
+    fn report_descriptor(&self) -> ReportDescriptor {
         use super::descriptor::{Collection, Item::*};
         use super::usage::{GenericDesktop, Page};
         ReportDescriptor::new([
@@ -140,7 +140,7 @@ impl Device for Mouse {
     }
 
     #[inline(always)]
-    fn is_boot_mode(&self) -> Option<bool> {
+    fn boot_mode(&self) -> Option<bool> {
         Some(self.boot)
     }
 
@@ -306,8 +306,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn descriptor() {
-        assert!(!Mouse::new(0, 0).descriptor().as_ref().is_empty());
+    fn report_descriptor() {
+        assert!(!Mouse::new(0, 0).report_descriptor().as_ref().is_empty());
     }
 
     #[test]
