@@ -1,8 +1,10 @@
+use std::marker::PhantomData;
 use std::mem;
 
 use structbuf::Unpack;
 use tracing::trace;
 
+use burble_const::UuidPacker;
 use {ErrorCode::*, Opcode::*};
 
 use crate::gap::Uuid16;
@@ -163,6 +165,12 @@ impl Pdu {
         self.read_by_type_op(ReadByTypeReq)
     }
 
+    /// Returns `ATT_READ_BY_TYPE_RSP` PDU parameters
+    /// ([Vol 3] Part F, Section 3.4.4.2).
+    pub fn read_by_type_rsp(&self) -> RspResult<MultiValueRsp<Handle>> {
+        MultiValueRsp::new(self)
+    }
+
     /// Returns `ATT_READ_REQ` PDU parameters ([Vol 3] Part F, Section 3.4.4.3).
     pub fn read_req(&self) -> RspResult<Handle> {
         self.unpack(ReadReq, |p| self.handle(p))
@@ -223,6 +231,13 @@ impl Pdu {
 
 /// Reading attributes encoders ([Vol 3] Part F, Section 3.4.4).
 impl Bearer {
+    /// Returns an `ATT_READ_BY_TYPE_REQ` PDU ([Vol 3] Part F, Section 3.4.4.1).
+    pub fn read_by_type_req(&self, hdls: HandleRange, uuid: impl Into<Uuid>) -> Req {
+        Req(self.pack(ReadByTypeReq, |p| {
+            p.u16(hdls.start()).u16(hdls.end()).uuid(uuid);
+        }))
+    }
+
     /// Returns an `ATT_READ_BY_TYPE_RSP` PDU ([Vol 3] Part F, Section 3.4.4.2).
     #[allow(single_use_lifetimes)]
     pub fn read_by_type_rsp(&self, start: Handle, it: impl ValueIter<Handle>) -> RspResult<Rsp> {
@@ -423,6 +438,45 @@ impl Bearer {
         });
         self.send(ntf).await
     }
+}
+
+/// Iterator over a multi-value response.
+#[derive(Clone, Debug)]
+pub struct MultiValueRsp<'a, T> {
+    p: Unpacker<'a>,
+    n: u8,
+    _format: PhantomData<T>,
+}
+
+impl<'a> MultiValueRsp<'a, Handle> {
+    #[inline]
+    fn new(pdu: &'a Pdu) -> RspResult<Self> {
+        pdu.unpack(pdu.opcode(), |p| {
+            p.u8().checked_sub(2).map_or_else(
+                || pdu.err(InvalidPdu),
+                |n| {
+                    Ok(Self {
+                        p: p.take(),
+                        n,
+                        _format: PhantomData,
+                    })
+                },
+            )
+        })
+    }
+}
+
+impl<'a> Iterator for MultiValueRsp<'a, Handle> {
+    type Item = (Handle, &'a [u8]);
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        let hdl = Handle::new(self.p.u16())?;
+        let n = self.p.len().min(usize::from(self.n));
+        self.p.skip(n).map(|v| (hdl, v.into_inner()))
+    }
+
+    // TODO: size_hint
 }
 
 /// Consumes any remaining bytes in `p`.

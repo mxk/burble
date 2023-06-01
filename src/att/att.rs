@@ -42,7 +42,12 @@ pub type RspResult<T> = std::result::Result<T, ErrorRsp>;
 #[repr(transparent)]
 pub struct Pdu(Payload);
 
-/// Response PDU.
+/// Outbound request PDU.
+#[derive(Debug)]
+#[repr(transparent)]
+pub struct Req(Payload);
+
+/// Outbound response PDU.
 #[derive(Debug)]
 #[repr(transparent)]
 pub struct Rsp(Payload);
@@ -111,6 +116,14 @@ impl Bearer {
     #[must_use]
     pub const fn mtu(&self) -> u16 {
         self.0.mtu()
+    }
+
+    /// Executes a request and returns the response PDU.
+    pub async fn exec(&mut self, req: Req) -> Result<Pdu> {
+        let pdu = Pdu(req.0);
+        let rsp = pdu.opcode().rsp().expect("invalid request");
+        self.send(pdu.0).await?;
+        self.recv_rsp(rsp).await.map(Pdu)
     }
 
     /// Returns the next command, request, notification, or indication PDU. This
@@ -262,7 +275,7 @@ impl Bearer {
     fn rsp(&self, op: Opcode, f: impl FnOnce(&mut Packer) -> RspResult<()>) -> RspResult<Rsp> {
         let mut pdu = self.0.alloc();
         f(pdu.append().u8(op))?;
-        trace!("{op}: {:02X?}", pdu.as_ref());
+        trace!("{op}: {:02X?}", &pdu.as_ref()[1..]);
         Ok(Rsp(pdu))
     }
 
@@ -272,7 +285,7 @@ impl Bearer {
     fn pack(&self, op: Opcode, f: impl FnOnce(&mut Packer)) -> Payload {
         let mut pdu = self.0.alloc();
         f(pdu.append().u8(op));
-        trace!("{op}: {:02X?}", pdu.as_ref());
+        trace!("{op}: {:02X?}", &pdu.as_ref()[1..]);
         pdu
     }
 

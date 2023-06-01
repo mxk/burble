@@ -161,9 +161,20 @@ impl Opcode {
             ReadMultipleVariableRsp => None,
             MultipleHandleValueNtf => None,
             HandleValueNtf => None,
-            HandleValueInd => None,
+            HandleValueInd =>q None,
             HandleValueCfm => None,
             SignedWriteCmd => WRITE,
+        }
+    }
+
+    /// Returns the expected response/confirmation opcode or [`None`] if `self`
+    /// is not a request or indication.
+    #[inline]
+    pub(crate) fn rsp(self) -> Option<Self> {
+        use {num_enum::TryFromPrimitive, PduType::*};
+        match self.typ() {
+            Cmd | Rsp | Ntf | Cfm => None,
+            Req | Ind => Self::try_from_primitive(self as u8 + 1).ok(),
         }
     }
 }
