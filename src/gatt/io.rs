@@ -28,7 +28,7 @@ impl Io {
 
     /// Returns an I/O callback for a method of `T`.
     #[inline(always)]
-    pub fn map<T: Send + Sync + 'static>(
+    pub fn with<T: Send + Sync + 'static>(
         this: &Arc<T>,
         f: impl Fn(&T, IoReq) -> IoResult + Send + Sync + 'static,
     ) -> Self {

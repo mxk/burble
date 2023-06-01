@@ -22,6 +22,8 @@ mod server;
 pub mod service {
     pub mod bas;
     pub mod dis;
+    #[cfg(feature = "hid")]
+    pub mod hids;
 }
 
 /// Interface to persistent GATT cache storage.

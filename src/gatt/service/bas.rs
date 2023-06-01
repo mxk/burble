@@ -8,7 +8,7 @@
 use crate::att::{Handle, Perms};
 use crate::gatt::{Builder, Characteristic, Db, Service};
 
-/// Battery service state.
+/// Battery service state. This is currently a stub that always reports 100%.
 #[derive(Clone, Debug, Default)]
 #[non_exhaustive]
 pub struct BatteryService;
