@@ -182,6 +182,7 @@ impl<T: Device + Send + 'static> HidService<T> {
         let want = (Page::GenericDesktop as u32) << 16 | app.map_or(0xFFFF, |u| u as _);
         let (mut depth, mut app_match) = (0, if app.is_some() { 0 } else { usize::MAX });
         let (mut page, mut usage) = (0, 0);
+        let mut known = BTreeSet::new();
         let mut rref = ReportRef {
             typ: ReportType::Input,
             id: 0,
@@ -191,9 +192,11 @@ impl<T: Device + Send + 'static> HidService<T> {
             match t {
                 Tag::Input | Tag::Output | Tag::Feature => {
                     if app_match != 0 {
-                        usage = 0;
                         rref.typ = t.as_report_type();
-                        return Some((app, rref));
+                        if known.insert((rref.typ, rref.id)) {
+                            usage = 0;
+                            return Some((app, rref));
+                        }
                     }
                 }
                 Tag::Collection => {
