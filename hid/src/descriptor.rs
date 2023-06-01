@@ -454,6 +454,53 @@ pub enum Tag {
     Long = 0b1111_11 << 2,
 }
 
+impl Tag {
+    /// Converts Input, Output, and Feature tags to the associated
+    /// [`ReportType`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if the tag does not represent a report type.
+    #[inline]
+    #[must_use]
+    pub const fn as_report_type(self) -> super::ReportType {
+        use super::ReportType::*;
+        match self {
+            Self::Input => Input,
+            Self::Output => Output,
+            Self::Feature => Feature,
+            _ => panic!("not a report type tag"),
+        }
+    }
+
+    /// Returns whether this is a main item tag.
+    #[inline(always)]
+    #[must_use]
+    pub const fn is_main(self) -> bool {
+        self.typ() == 0
+    }
+
+    /// Returns whether this is a global item tag.
+    #[inline(always)]
+    #[must_use]
+    pub const fn is_global(self) -> bool {
+        self.typ() == 1
+    }
+
+    /// Returns whether this is a local item tag.
+    #[inline(always)]
+    #[must_use]
+    pub const fn is_local(self) -> bool {
+        self.typ() == 2
+    }
+
+    #[inline(always)]
+    #[must_use]
+    const fn typ(self) -> u8 {
+        (self as u8 >> 2) & 0b11
+    }
+}
+
 bitflags::bitflags! {
     /// Input, Output, and Feature item data flags (\[HID\] Section 6.2.2.5).
     #[derive(Clone, Copy, Debug, Default)]
