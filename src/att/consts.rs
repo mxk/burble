@@ -161,7 +161,7 @@ impl Opcode {
             ReadMultipleVariableRsp => None,
             MultipleHandleValueNtf => None,
             HandleValueNtf => None,
-            HandleValueInd =>q None,
+            HandleValueInd => None,
             HandleValueCfm => None,
             SignedWriteCmd => WRITE,
         }

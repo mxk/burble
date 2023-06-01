@@ -22,6 +22,7 @@ mod server;
 pub mod service {
     pub mod bas;
     pub mod dis;
+    pub mod gaps;
     #[cfg(feature = "hid")]
     pub mod hids;
 }

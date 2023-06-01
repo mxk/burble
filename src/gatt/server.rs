@@ -8,6 +8,7 @@ use tracing::{debug, error, info, trace, warn};
 use ErrorCode::*;
 
 use crate::gap::{Uuid, UuidType};
+use crate::gatt::service::gaps::GapService;
 use crate::{hci, le, SyncMutex, SyncMutexGuard};
 
 use super::*;
@@ -155,6 +156,7 @@ impl ServerCtx {
     /// Runs a server event loop for the specified bearer.
     pub async fn serve(mut self, mut br: Bearer) -> Result<()> {
         br.exchange_mtu().await?;
+        info!("Serving: {:?}", GapService::read(&mut br).await?);
         if self.notify.is_none() {
             // Additional bearer for an existing client connection that will not
             // handle notifications, indications, or connection events.

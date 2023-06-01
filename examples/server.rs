@@ -2,22 +2,27 @@
 #![allow(clippy::print_stdout)]
 #![allow(clippy::print_stderr)]
 
+use std::io::BufRead;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
 use clap::Parser;
 use futures_core::future::BoxFuture;
+use sscanf::sscanf;
 use tracing::info;
 
 use burble::att::Access;
 use burble::gap::Appearance;
-use burble::gatt::service::{bas, dis};
+use burble::gatt::service::hids::{HidService, KeyboardMouse};
+use burble::gatt::service::{bas, dis, gaps};
 use burble::gatt::Db;
 use burble::hci::AdvEvent;
 use burble::*;
 use burble_const::Service;
 use burble_crypto::NumCompare;
+use burble_hid::kbd::Keyboard;
+use burble_hid::mouse::{Button, Mouse};
 
 #[derive(Clone, Copy, Debug, clap::Parser)]
 struct Args {
@@ -59,8 +64,7 @@ async fn main() -> Result<()> {
     r
 }
 
-/*
-fn read_input(srv: Arc<hogp::HidService>) -> tokio::task::JoinHandle<()> {
+fn read_input(hid: HidService<KeyboardMouse>) -> tokio::task::JoinHandle<()> {
     let (tx, mut rx) = tokio::sync::mpsc::channel(1);
     std::thread::spawn(move || {
         // https://github.com/tokio-rs/tokio/issues/2466
@@ -70,7 +74,6 @@ fn read_input(srv: Arc<hogp::HidService>) -> tokio::task::JoinHandle<()> {
         Ok::<_, anyhow::Error>(())
     });
     tokio::task::spawn(async move {
-        use {Input::*, MouseIn::*};
         loop {
             let ln: String = tokio::select! {
                 ln = rx.recv() => match ln {
@@ -81,44 +84,45 @@ fn read_input(srv: Arc<hogp::HidService>) -> tokio::task::JoinHandle<()> {
             };
             let mut tok = ln.split_ascii_whitespace();
             let Some(cmd) = tok.next() else { continue };
-            let inp = match (cmd, tok.collect::<Vec<&str>>().join(" ")) {
+            match (cmd, tok.collect::<Vec<&str>>().join(" ")) {
                 ("click" | "c", params) => {
                     if params.is_empty() {
-                        Mouse(Click(0))
+                        hid.exec(|km| km.mouse().click(Button::PRIMARY)).await;
                     } else {
-                        let Ok(v) = sscanf!(params, "{u8}") else { continue };
-                        Mouse(Click(v))
+                        let btn = match sscanf!(params, "{u8}") {
+                            Ok(v) if v < 8 => Button::from_bits_retain(1 << v),
+                            _ => continue,
+                        };
+                        hid.exec(|km| km.mouse().click(btn)).await;
                     }
                 }
                 ("move" | "m", params) => {
                     let Ok(v) = sscanf!(params, "{i32} {i32}") else { continue };
-                    Mouse(MoveRel { dx: v.0, dy: v.1 })
+                    hid.exec(|km| km.mouse().move_rel(v.0, v.1)).await;
                 }
-                _ => continue,
-            };
-            srv.exec(inp).await.unwrap();
+                _ => {}
+            }
         }
     })
 }
- */
 
 async fn serve(args: Args, host: hci::Host) -> Result<()> {
     // [HOGP] Section 6.1
     const SEC: Access = Access::READ.authn().encrypt();
     let mut db = Db::build();
     gatt::Server::define_service(&mut db);
-    gap::GapService::new("Burble", Appearance::GenericHumanInterfaceDevice).define(&mut db);
+    gaps::GapService::new("Burble", Appearance::GenericHumanInterfaceDevice).define(&mut db);
     dis::DeviceInfoService::new()
         .with_manufacturer_name("Blackrock Neurotech")
         // [HOGP] Section 3.3.2
         .with_pnp_id(dis::PnpId::new(dis::VendorId::USB(0x1209), 0x0001, (1, 0, 0)).unwrap())
         .define(&mut db, SEC);
     bas::BatteryService::new().define(&mut db, SEC);
-    //let hid = hogp::HidService::new();
+    let hid = HidService::new(KeyboardMouse::new(Keyboard::us(1), Mouse::new(2, 400)));
     //#[cfg(debug_assertions)]
     //db.morph_next();
-    //hid.define(&mut db);
-    //let mut input_task = read_input(hid);
+    hid.define(&mut db);
+    let mut input_task = read_input(hid);
 
     let srv = gatt::Server::new(db, Arc::new(fs::GattServerStore::per_user("burble")));
     srv.db().dump();
@@ -138,7 +142,7 @@ async fn serve(args: Args, host: hci::Host) -> Result<()> {
             adv_task = Some(tokio::task::spawn(advertise(args, host.clone())));
         }
         tokio::select! {
-            //_ = &mut input_task => return Ok(()),
+            _ = &mut input_task => return Ok(()),
             adv = async { adv_task.as_mut().unwrap().await }, if adv_task.is_some() => {
                 info!("Advertisement result: {:?}", adv);
                 adv_task = None;
