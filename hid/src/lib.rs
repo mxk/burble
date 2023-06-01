@@ -28,8 +28,12 @@ pub trait Device: Iterator<Item = Report> {
     fn get_report(&self, typ: ReportType, id: u8) -> Option<Report>;
 
     /// Sets the specified report and returns whether it is valid.
+    #[inline(always)]
     #[must_use]
-    fn set_report(&mut self, r: Report) -> bool;
+    fn set_report(&mut self, r: Report) -> bool {
+        let _ = r;
+        false
+    }
 
     /// Returns whether the device is in boot protocol mode or [`None`] if boot
     /// protocol is not supported. Default is report mode.
@@ -194,14 +198,14 @@ impl AsRef<[u8]> for Report {
 
 /// HID report type (\[HID\] Section 7.2.1).
 #[allow(clippy::exhaustive_enums)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[repr(u8)]
 pub enum ReportType {
-    /// Device to host report.
+    /// Device to host data report.
     Input = 1,
-    /// Host to device report.
+    /// Host to device data report.
     Output = 2,
-    /// Host to device or device to host report.
+    /// Configuration or application-specific data in either direction.
     Feature = 3,
 }
 

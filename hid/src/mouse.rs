@@ -36,6 +36,13 @@ impl Mouse {
         }
     }
 
+    /// Returns the mouse report ID.
+    #[inline(always)]
+    #[must_use]
+    pub const fn report_id(&self) -> u8 {
+        self.report_id
+    }
+
     /// Clicks the specified button(s). Clicked buttons that are already being
     /// held will be released.
     #[inline]
@@ -130,10 +137,6 @@ impl Device for Mouse {
 
     fn get_report(&self, typ: ReportType, id: u8) -> Option<Report> {
         (typ.is_input() && id == self.report_id).then(|| self.inp.to_report(id, self.boot))
-    }
-
-    fn set_report(&mut self, _: Report) -> bool {
-        false
     }
 
     #[inline(always)]

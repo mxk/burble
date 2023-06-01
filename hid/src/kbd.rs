@@ -32,7 +32,7 @@ pub struct Keyboard {
     hold: Keys,
     buf: VecDeque<Keys>,
     inp: Keys,
-    ind: Ind,
+    led: Led,
 }
 
 impl Keyboard {
@@ -47,8 +47,15 @@ impl Keyboard {
             hold: Keys::NONE,
             buf: VecDeque::new(),
             inp: Keys::NONE,
-            ind: Ind::empty(),
+            led: Led::empty(),
         }
+    }
+
+    /// Returns the keyboard report ID.
+    #[inline(always)]
+    #[must_use]
+    pub const fn report_id(&self) -> u8 {
+        self.report_id
     }
 
     /// Sets the keyboard map. Any buffered inputs are not affected.
@@ -96,25 +103,11 @@ impl Keyboard {
         Ok(())
     }
 
-    /// Returns whether number lock is enabled.
-    #[inline]
+    /// Returns keyboard LED flags.
+    #[inline(always)]
     #[must_use]
-    pub const fn num_lock(&self) -> bool {
-        self.ind.contains(Ind::NUM_LOCK)
-    }
-
-    /// Returns whether caps lock is enabled.
-    #[inline]
-    #[must_use]
-    pub const fn caps_lock(&self) -> bool {
-        self.ind.contains(Ind::CAPS_LOCK)
-    }
-
-    /// Returns whether scroll lock is enabled.
-    #[inline]
-    #[must_use]
-    pub const fn scroll_lock(&self) -> bool {
-        self.ind.contains(Ind::SCROLL_LOCK)
+    pub const fn led(&self) -> Led {
+        self.led
     }
 }
 
@@ -129,7 +122,7 @@ impl Device for Keyboard {
                 [
                     &[GReportId(self.report_id)],
                     Keys::DESCRIPTOR,
-                    Ind::DESCRIPTOR,
+                    Led::DESCRIPTOR,
                 ]
                 .concat(),
             ),
@@ -141,7 +134,7 @@ impl Device for Keyboard {
         self.hold = Keys::NONE;
         self.buf.clear();
         self.inp = Keys::NONE;
-        self.ind = Ind::empty();
+        self.led = Led::empty();
     }
 
     fn get_report(&self, typ: ReportType, id: u8) -> Option<Report> {
@@ -150,7 +143,7 @@ impl Device for Keyboard {
         }
         Some(match typ {
             ReportType::Input => self.inp.to_report(id, self.boot),
-            ReportType::Output => self.ind.to_report(id),
+            ReportType::Output => self.led.to_report(id),
             ReportType::Feature => return None,
         })
     }
@@ -158,7 +151,7 @@ impl Device for Keyboard {
     fn set_report(&mut self, r: Report) -> bool {
         if r.typ().is_output() && r.id() == self.report_id {
             if let &[v] = r.as_ref() {
-                self.ind = Ind::from_bits_retain(v);
+                self.led = Led::from_bits_retain(v);
                 return true;
             }
         }
@@ -205,9 +198,9 @@ impl Iterator for Keyboard {
 }
 
 bitflags::bitflags! {
-    /// Keyboard indicator flags.
+    /// Keyboard LED flags.
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-    struct Ind: u8 {
+    pub struct Led: u8 {
         const NUM_LOCK = 1 << 0;
         const CAPS_LOCK = 1 << 1;
         const SCROLL_LOCK = 1 << 2;
@@ -216,13 +209,13 @@ bitflags::bitflags! {
     }
 }
 
-impl Ind {
+impl Led {
     /// Output report descriptor items.
     const DESCRIPTOR: &[super::descriptor::Item] = {
         use super::descriptor::{Flag, Item::*};
         use super::usage::{Led, Page};
         &[
-            // Indicators
+            // LEDs
             GUsagePage(Page::Led),
             GReportSize(1),
             GReportCount(5),
@@ -231,7 +224,7 @@ impl Ind {
             LUsageMin(Led::NumLock as _),
             LUsageMax(Led::Kana as _),
             MOutput(Flag::VAR),
-            // Indicator padding
+            // LED padding
             GReportSize(3),
             GReportCount(1),
             MOutput(Flag::CONST),
@@ -242,6 +235,27 @@ impl Ind {
     #[must_use]
     fn to_report(self, id: u8) -> Report {
         Report::output(id, &[self.bits()])
+    }
+
+    /// Returns whether number lock is enabled.
+    #[inline(always)]
+    #[must_use]
+    pub const fn num_lock(self) -> bool {
+        self.contains(Self::NUM_LOCK)
+    }
+
+    /// Returns whether caps lock is enabled.
+    #[inline(always)]
+    #[must_use]
+    pub const fn caps_lock(self) -> bool {
+        self.contains(Self::CAPS_LOCK)
+    }
+
+    /// Returns whether scroll lock is enabled.
+    #[inline(always)]
+    #[must_use]
+    pub const fn scroll_lock(self) -> bool {
+        self.contains(Self::SCROLL_LOCK)
     }
 }
 
@@ -680,24 +694,24 @@ mod tests {
     fn output() {
         let mut b = Keyboard::us(0);
         for _ in 0..2 {
-            assert!(!b.num_lock());
-            assert!(!b.caps_lock());
-            assert!(!b.scroll_lock());
+            assert!(!b.led().num_lock());
+            assert!(!b.led().caps_lock());
+            assert!(!b.led().scroll_lock());
             assert!(!b.set_report(Report::output(0, &[])));
         }
 
-        assert!(b.set_report(Report::output(0, &[Ind::NUM_LOCK.bits()])));
-        assert!(b.num_lock());
-        assert!(!b.caps_lock());
-        assert!(!b.scroll_lock());
+        assert!(b.set_report(Report::output(0, &[Led::NUM_LOCK.bits()])));
+        assert!(b.led().num_lock());
+        assert!(!b.led().caps_lock());
+        assert!(!b.led().scroll_lock());
 
         assert!(b.set_report(Report::output(
             0,
-            &[Ind::CAPS_LOCK.union(Ind::SCROLL_LOCK).bits()],
+            &[Led::CAPS_LOCK.union(Led::SCROLL_LOCK).bits()],
         )));
-        assert!(!b.num_lock());
-        assert!(b.caps_lock());
-        assert!(b.scroll_lock());
+        assert!(!b.led().num_lock());
+        assert!(b.led().caps_lock());
+        assert!(b.led().scroll_lock());
 
         assert!(!b.set_report(Report::output(0, &[0, 0])));
         assert!(!b.set_report(Report::output(1, &[0])));
