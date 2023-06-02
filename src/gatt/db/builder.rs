@@ -142,6 +142,7 @@ impl Builder<Db> {
         let hdl = self.decl(typ, |v| v.uuid(uuid));
         for &inc in include {
             let s = self.service_group(inc).expect("invalid service handle");
+            #[allow(clippy::collection_is_never_read)] // TODO: False positive?
             let uuid = (s.first().len() == 2).then(|| self.value(s.first()).unpack().u16());
             let end = s.last().hdl;
             self.decl(Declaration::Include, |v| {

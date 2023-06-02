@@ -444,6 +444,7 @@ mod libusb {
 
     impl<T: UsbContext> Transfer<T> {
         /// Creates a new control transfer.
+        #[allow(clippy::unnecessary_box_returns)]
         pub fn new_control(hdl: &Arc<DeviceHandle<T>>, mut buf_cap: usize) -> Box<Self> {
             buf_cap += LIBUSB_CONTROL_SETUP_SIZE;
             let mut t = Self::new(hdl, LIBUSB_TRANSFER_TYPE_CONTROL, 0, buf_cap);
@@ -452,6 +453,7 @@ mod libusb {
         }
 
         /// Creates a new interrupt transfer.
+        #[allow(clippy::unnecessary_box_returns)]
         pub fn new_interrupt(
             hdl: &Arc<DeviceHandle<T>>,
             endpoint: u8,
@@ -462,11 +464,13 @@ mod libusb {
         }
 
         /// Creates a new bulk transfer.
+        #[allow(clippy::unnecessary_box_returns)]
         pub fn new_bulk(hdl: &Arc<DeviceHandle<T>>, endpoint: u8, buf_cap: usize) -> Box<Self> {
             Self::new(hdl, LIBUSB_TRANSFER_TYPE_BULK, endpoint, buf_cap)
         }
 
         /// Creates new transfer state and buffer.
+        #[allow(clippy::unnecessary_box_returns)]
         fn new(hdl: &Arc<DeviceHandle<T>>, typ: u8, endpoint: u8, buf_cap: usize) -> Box<Self> {
             // SAFETY: C API call
             let inner = NonNull::new(unsafe { libusb_alloc_transfer(0) })
@@ -707,6 +711,7 @@ mod libusb {
 
     impl<T: UsbContext> TransferFuture<T> {
         /// Takes ownership of a finished transfer.
+        #[allow(clippy::unnecessary_box_returns)]
         #[inline]
         unsafe fn take(&mut self) -> Box<Transfer<T>> {
             debug_assert_ne!(self.0, null_mut());
