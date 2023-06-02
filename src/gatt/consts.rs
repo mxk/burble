@@ -5,7 +5,7 @@ pub use burble_const::{Characteristic, Declaration, Descriptor, Service, Unit};
 
 bitflags::bitflags! {
     /// Characteristic properties ([Vol 3] Part G, Section 3.3.1.1).
-    #[derive(Clone, Copy, Debug, Default)]
+    #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
     #[repr(transparent)]
     pub struct Prop: u8 {
         /// Permits broadcasts of the Characteristic Value using Server

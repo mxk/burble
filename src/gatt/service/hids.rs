@@ -132,7 +132,7 @@ impl<T: Device + Send + 'static> HidService<T> {
                 };
                 let (props, perms) = match rref.typ {
                     Input => (Prop::NOTIFY, RO), // TODO: Optional Write?
-                    Output => (Prop::WRITE_CMD.union(Prop::WRITE), RW),
+                    Output => (Prop::WRITE.union(Prop::WRITE_CMD), RW),
                     Feature => (Prop::WRITE, RW),
                 };
                 db.characteristic(
@@ -342,9 +342,10 @@ impl<T: Device> Dev<T> {
             IoReq::Read(r) => r.complete(v),
             IoReq::Write(w) => {
                 w.update(&mut v)?;
-                let boot = v[0] == 0;
+                let mut boot = v[0] == 0;
                 if self.dev.boot_mode().map_or(false, |b| b != boot) {
                     self.dev.set_boot_mode(boot);
+                    boot = Self::boot_mode(&self.dev);
                     self.w.send_modify(|s| {
                         s.0.set(Flag::BOOT, boot);
                         debug!("Boot protocol mode: {boot}");
@@ -583,5 +584,192 @@ impl Iterator for KeyboardMouse {
     fn size_hint(&self) -> (usize, Option<usize>) {
         let (k, m) = (self.k.size_hint(), self.m.size_hint());
         (k.0 + m.0, k.1.zip(m.1).map(|(a, b)| a + b))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fmt::Debug;
+    use std::pin::pin;
+    use std::time::Duration;
+
+    use structbuf::StructBuf;
+    use tokio::sync::{mpsc, watch};
+    use tokio::time::timeout;
+    use tokio_util::sync::CancellationToken;
+
+    use burble_hid::mouse::Button;
+    use burble_hid::usage::Key;
+
+    use crate::att::{Handle, Opcode};
+    use crate::gatt::io::NotifyVal;
+    use crate::gatt::{CharacteristicDef, DbEntry, ReadReq, WriteReq};
+
+    use super::*;
+
+    #[allow(clippy::items_after_statements)]
+    #[allow(clippy::too_many_lines)]
+    #[tokio::test]
+    async fn keyboard_mouse() {
+        const IN_PROPS: Prop = Prop::READ.union(Prop::NOTIFY);
+        const OUT_PROPS: Prop = Prop::READ.union(Prop::WRITE).union(Prop::WRITE_CMD);
+
+        // Create device
+        let km = KeyboardMouse::new(Keyboard::us(1), Mouse::new(2, 0));
+        let mut led = km.led();
+        let rd = km.report_descriptor();
+
+        // Define GATT service
+        let mut db = Db::build();
+        let hid = HidService::new(km);
+        let mut state = hid.state();
+        hid.define(&mut db);
+        let (db, io) = db.freeze();
+        let srv = db.primary_services(Handle::MIN, None).next().unwrap();
+        let mut chars = db.characteristics(srv.handle_range());
+
+        // Helper functions
+        let mut next_char = |uuid: Characteristic, props: Prop| {
+            let c = chars.next().unwrap();
+            assert_eq!(c.uuid(), uuid);
+            assert_eq!(c.properties(), props);
+            c
+        };
+        fn assert_changed<T: Copy + Debug + PartialEq>(r: &mut watch::Receiver<T>, v: T) {
+            assert!(r.has_changed().unwrap());
+            assert_eq!(*r.borrow_and_update(), v);
+        }
+        let read = |char: DbEntry<CharacteristicDef>| {
+            let mut req = ReadReq {
+                op: Opcode::ReadReq,
+                hdl: char.value_handle(),
+                uuid: Some(char.uuid()),
+                off: 0,
+                buf: StructBuf::new(255),
+            };
+            io.read(&mut req).unwrap();
+            req.buf
+        };
+        let write = |char: DbEntry<CharacteristicDef>, val: &[u8]| {
+            let req = WriteReq {
+                op: Opcode::WriteCmd,
+                hdl: char.value_handle(),
+                uuid: char.uuid(),
+                off: 0,
+                val,
+            };
+            io.write(&req).unwrap();
+        };
+        let enable_notify = |char: DbEntry<CharacteristicDef>| {
+            let (tx, rx) = mpsc::channel(1);
+            let ct = CancellationToken::new();
+            let req = NotifyReq {
+                hdl: char.value_handle(),
+                uuid: char.uuid(),
+                mtu: 255,
+                ind: false,
+                tx,
+                ct: ct.clone(),
+            };
+            io.notify(req).unwrap();
+            (rx, ct)
+        };
+
+        // HID Information
+        let ch = next_char(Characteristic::HidInformation, Prop::READ);
+        assert_eq!(
+            db.get(ch.value_handle()).unwrap().1,
+            [0x11, 0x01, Locale::Us as u8, 0b10].as_slice()
+        );
+
+        // Report Map
+        let c = next_char(Characteristic::ReportMap, Prop::READ);
+        assert_eq!(db.get(c.value_handle()).unwrap().1, rd.as_ref());
+
+        // HID Control Point
+        let c = next_char(Characteristic::HidControlPoint, Prop::WRITE_CMD);
+        assert_eq!(state.borrow_and_update().0, Flag::empty());
+        write(c, &[0]);
+        assert_changed(&mut state, HidState(Flag::CONN.union(Flag::SUSPEND)));
+        write(c, &[1]);
+        assert_changed(&mut state, HidState(Flag::CONN));
+
+        // Keyboard Input
+        let c = next_char(Characteristic::Report, IN_PROPS);
+        assert_eq!(read(c).as_ref(), &[0; 7]);
+        let (mut krx, kct) = enable_notify(c);
+        assert_changed(&mut state, HidState(Flag::CONN.union(Flag::ACTIVE)));
+
+        // Keyboard Output
+        let c = next_char(Characteristic::Report, OUT_PROPS);
+        assert_eq!(*led.borrow_and_update(), Led::empty());
+        write(c, &[Led::NUM_LOCK.bits()]);
+        assert_changed(&mut led, Led::NUM_LOCK);
+        assert_eq!(read(c).as_ref(), &[Led::NUM_LOCK.bits()]);
+
+        // Mouse Input
+        let c = next_char(Characteristic::Report, IN_PROPS);
+        assert_eq!(read(c).as_ref(), &[0; 3]);
+        let (mut mrx, mct) = enable_notify(c);
+
+        // Boot Reports
+        next_char(Characteristic::BootKeyboardInputReport, IN_PROPS);
+        next_char(Characteristic::BootKeyboardOutputReport, OUT_PROPS);
+        next_char(Characteristic::BootMouseInputReport, IN_PROPS);
+
+        // Protocol Mode
+        let c = next_char(
+            Characteristic::ProtocolMode,
+            Prop::READ.union(Prop::WRITE_CMD),
+        );
+        assert_eq!(read(c).as_ref(), &[1]);
+        write(c, &[0]);
+        assert_eq!(read(c).as_ref(), &[0]);
+        assert_changed(
+            &mut state,
+            HidState(Flag::CONN.union(Flag::ACTIVE).union(Flag::BOOT)),
+        );
+        assert_eq!(hid.control(|km| km.boot_mode()), Some(true));
+        write(c, &[1]);
+        assert_changed(&mut state, HidState(Flag::CONN.union(Flag::ACTIVE)));
+        assert_eq!(hid.control(|km| km.boot_mode()), Some(false));
+
+        // Notifications
+        let mut exec = pin!(timeout(
+            Duration::from_secs(1),
+            hid.exec(|km| {
+                km.mouse().hold(Button::PRIMARY.union(Button::SECONDARY));
+                km.kbd().press(Key::X);
+                km.mouse().release(Button::SECONDARY);
+            })
+        ));
+        let mut reports = Vec::new();
+        loop {
+            let (id, ntf): (u8, NotifyVal) = tokio::select! {
+                r = &mut exec => {
+                    r.unwrap();
+                    break;
+                }
+                ntf = krx.recv() => (1, ntf.unwrap()),
+                ntf = mrx.recv() => (2, ntf.unwrap()),
+            };
+            reports.push(Report::input(id, ntf.as_ref()));
+            ntf.result(Ok(()));
+        }
+        assert_eq!(
+            reports,
+            vec![
+                Report::input(1, &[0, Key::X as _, 0, 0, 0, 0, 0]),
+                Report::input(2, &[3, 0, 0]),
+                Report::input(1, &[0, 0, 0, 0, 0, 0, 0]),
+                Report::input(2, &[1, 0, 0]),
+            ]
+        );
+
+        // Disable notifications
+        kct.cancel();
+        mct.cancel();
+        timeout(Duration::from_secs(1), hid.flush()).await.unwrap();
+        assert_changed(&mut state, HidState(Flag::empty()));
     }
 }

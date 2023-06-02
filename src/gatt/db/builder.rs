@@ -8,19 +8,19 @@ use burble_const::UuidPacker;
 use super::*;
 
 /// Database service definition marker type.
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct ServiceDef;
 
 /// Database characteristic definition marker type.
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct CharacteristicDef;
 
 /// Database include definition marker type.
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct IncludeDef;
 
 /// Database descriptor definition marker type.
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct DescriptorDef;
 
 /// Database builder used to define services, characteristics, and descriptors.

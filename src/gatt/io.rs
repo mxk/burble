@@ -15,6 +15,8 @@ use crate::name_of;
 
 use super::*;
 
+// TODO: Add support for async callbacks?
+
 /// I/O callback result type.
 pub type IoResult = std::result::Result<(), ErrorCode>;
 
@@ -389,10 +391,25 @@ impl NotifyVal {
     /// Executes notification or indication procedure.
     #[inline]
     pub async fn exec(self, br: &mut Bearer) {
-        let _ = self.tx.send(if self.ind {
-            br.handle_value_ind(self.hdl, self.val.as_ref()).await
+        let val = self.val.as_ref();
+        let r = if self.ind {
+            br.handle_value_ind(self.hdl, val).await
         } else {
-            br.handle_value_ntf(self.hdl, self.val.as_ref()).await
-        });
+            br.handle_value_ntf(self.hdl, val).await
+        };
+        self.result(r);
+    }
+
+    /// Reports the notification/indication result to the source.
+    #[inline(always)]
+    pub fn result(self, r: Result<()>) {
+        let _ = self.tx.send(r);
+    }
+}
+
+impl AsRef<[u8]> for NotifyVal {
+    #[inline(always)]
+    fn as_ref(&self) -> &[u8] {
+        self.val.as_ref()
     }
 }
